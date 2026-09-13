@@ -38,6 +38,7 @@ from pathlib import Path
 import pytest
 
 from orbi import systemd_deploy
+from orbi.delivery_scene import RunContext
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPO = "owner/repo"
@@ -1095,11 +1096,7 @@ def _run_ref_hammer(
                 runner.create_worktree(
                     clone, "owner/repo", number, "01234567", base_sha,
                 )
-                runner.verify_pr(
-                    worktree, "orbi/owner-repo-issue-9",
-                    "main", "01234567", repo_dir=clone, issue=9,
-                    require_latest_base=False,
-                )
+                runner.verify_pr(RunContext(run_id="01234567", issue=9, branch="orbi/owner-repo-issue-9", worktree=worktree, source_repo="owner/repo"), "main", repo_dir=clone, require_latest_base=False)
                 runner.sync_base_checkout(clone, "main")
             except Exception as exc:
                 with errors_lock:

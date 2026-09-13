@@ -11,6 +11,7 @@ import subprocess
 import pytest
 
 from orbi import progress
+from orbi.delivery_scene import RunContext
 
 
 def test_quote_value_quotes_only_values_with_spaces():
@@ -894,11 +895,7 @@ def test_progress_state_survives_an_activity_snapshot_failure(monkeypatch, tmp_p
         raise RuntimeError("unreadable session")
 
     monkeypatch.setattr(progress, "activity_snapshot", boom)
-    state = progress._progress_state(
-        issue=4, title="t", run_id="a1b2c3d4", role="review",
-        branch="b", worktree=tmp_path, started=0.0,
-        pr_url=None, review_round=0, priority="normal",
-    )
+    state = progress._progress_state(RunContext(run_id="a1b2c3d4", issue=4, branch="b", worktree=tmp_path, source_repo="owner/repo"), title="t", role="review", started=0.0, pr_url=None, review_round=0, priority="normal")
     assert state["phase"] == "starting"
     assert state["last_activity"] is None
     assert state["session"] is None

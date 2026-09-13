@@ -14,6 +14,7 @@ import pytest
 
 from orbi import journal
 import orbi.journal as journal
+from orbi.delivery_scene import RunContext
 
 
 @pytest.fixture(autouse=True)
@@ -92,7 +93,7 @@ def test_validate_run_id_accepts_only_eight_hex_characters():
 
 
 def test_active_run_scene_binds_and_clears():
-    journal.set_active_run(785, "title", "branch", "/tmp/wt")
+    journal.set_active_run(RunContext(run_id="a1b2c3d4", issue=785, branch="branch", worktree="/tmp/wt", source_repo="owner/repo"), "title")
     scene = journal.active_run()
     assert scene == {
         "issue": 785, "title": "title", "branch": "branch",

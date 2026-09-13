@@ -19,6 +19,12 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Annotation-only: this module stays the runtime leaf (no `orbi`
+    # imports at runtime); the run-identity bundle travels as a value.
+    from orbi.delivery_scene import RunContext
 
 LOGGER = logging.getLogger("orbi.bootstrap")
 
@@ -481,14 +487,14 @@ def run_git_network_command(
 _ACTIVE_RUN: dict | None = None
 
 
-def set_active_run(issue: int, title: str, branch: str, worktree: str) -> None:
+def set_active_run(ctx: RunContext, title: str) -> None:
     """Bind the in-flight delivery scene for the stop handler."""
     global _ACTIVE_RUN
     _ACTIVE_RUN = {
-        "issue": int(issue),
+        "issue": int(ctx.issue),
         "title": title,
-        "branch": branch,
-        "worktree": worktree,
+        "branch": ctx.branch,
+        "worktree": str(ctx.worktree),
         "pi": None,
     }
 

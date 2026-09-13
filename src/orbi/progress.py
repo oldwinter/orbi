@@ -24,6 +24,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Callable
 
+from orbi.delivery_scene import RunContext
 from orbi.journal import (
     LOGGER,
     RUN_ID_PATTERN,
@@ -530,9 +531,9 @@ def _run_info_fields(run_info: str) -> dict[str, str]:
     )
 
 
-def _progress_state(*, issue: int, title: str, run_id: str, role: str,
-                    branch: str, worktree: Path, started: float,
-                    pr_url: str | None, review_round: int, priority: str,
+def _progress_state(ctx: RunContext, *, title: str, role: str,
+                    started: float, pr_url: str | None,
+                    review_round: int, priority: str,
                     activity: dict | None = None) -> dict:
     """Collect the current run state for the GitHub progress comment.
 
@@ -552,13 +553,13 @@ def _progress_state(*, issue: int, title: str, run_id: str, role: str,
     """
     if activity is None:
         try:
-            activity = activity_snapshot(worktree / ".pi-session")
+            activity = activity_snapshot(ctx.worktree / ".pi-session")
         except Exception:
-            LOGGER.exception("issue=%s activity snapshot failed", issue)
+            LOGGER.exception("issue=%s activity snapshot failed", ctx.issue)
             activity = None
     return {
-        "run_id": run_id,
-        "issue": issue,
+        "run_id": ctx.run_id,
+        "issue": ctx.issue,
         "issue_title": title,
         "role": role,
         "priority": priority,
@@ -566,9 +567,9 @@ def _progress_state(*, issue: int, title: str, run_id: str, role: str,
         "elapsed": format_elapsed(time.monotonic() - started),
         "last_activity": (activity or {}).get("last_activity"),
         "last_action": (activity or {}).get("action"),
-        "tests": read_test_result(worktree),
+        "tests": read_test_result(ctx.worktree),
         "review_round": review_round,
-        "branch": branch,
+        "branch": ctx.branch,
         "pr": pr_url,
         "session": (activity or {}).get("session_id"),
         # Idle-stall recovery state: `term` / `kill` while
