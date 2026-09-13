@@ -15996,6 +15996,55 @@ def test_derive_release_scope_from_milestone_empty_scope(monkeypatch):
     assert open_evidence == ["open Issue #255 Still open work"]
 
 
+def test_derive_release_scope_from_milestone_excludes_release_issue(
+        monkeypatch):
+    # Issue #818: the release Issue itself is necessarily still open
+    # when the notes are generated (it closes after the release), so
+    # listing it as "NOT released" is a self-referential false
+    # statement. It must be exempted like the #663 gate does.
+    make_milestone_gh(
+        monkeypatch,
+        milestones=[{"number": 5, "title": "v1.0.0", "state": "open"}],
+        items_by_milestone={5: {
+            "issues_closed": [
+                {"number": 50, "title": "Deliver A", "state": "closed"},
+            ],
+            "issues_open": [
+                {"number": 52, "title": "Release v1.0.0", "state": "open"},
+            ],
+        }},
+    )
+    scope, open_evidence = release.derive_release_scope_from_milestone(
+        "o/r", "v1.0.0", release_issue=52,
+    )
+    assert scope == [50]
+    assert open_evidence == []
+
+
+def test_derive_release_scope_from_milestone_keeps_genuinely_open_items(
+        monkeypatch):
+    # Issue #818: only the release Issue is exempt — a real unfinished
+    # Issue in the milestone must still surface as NOT released.
+    make_milestone_gh(
+        monkeypatch,
+        milestones=[{"number": 5, "title": "v1.0.0", "state": "open"}],
+        items_by_milestone={5: {
+            "issues_closed": [
+                {"number": 50, "title": "Deliver A", "state": "closed"},
+            ],
+            "issues_open": [
+                {"number": 52, "title": "Release v1.0.0", "state": "open"},
+                {"number": 60, "title": "Unfinished work", "state": "open"},
+            ],
+        }},
+    )
+    scope, open_evidence = release.derive_release_scope_from_milestone(
+        "o/r", "v1.0.0", release_issue=52,
+    )
+    assert scope == [50]
+    assert open_evidence == ["open Issue #60 Unfinished work"]
+
+
 def make_gate_gh(monkeypatch, *, leftover_labels=None, check_runs=None,
                  leftover_milestones=None):
     """Answer the gh calls of `check_release_gates`.
