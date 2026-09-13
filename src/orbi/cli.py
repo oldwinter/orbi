@@ -338,7 +338,8 @@ def slot_lines(state_dir: Path, capacity: int) -> list[str]:
 # truth. `install-units` deploys them idempotently (it never
 # starts/stops/restarts the service — a running Runner keeps running,
 # the new config takes effect at the next service start) and enables
-# the two timer instances (orbi@1.timer / @2.timer); `doctor`
+# the timer instances through max_concurrency (orbi@1..N.timer,
+# Issue #827); `doctor`
 # is the read-only report (repo commit, unit drift, timer/service
 # instance state, slots, Pi session, current Issue, recent journal).
 JOURNAL_LINES = 20
