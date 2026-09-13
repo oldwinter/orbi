@@ -454,3 +454,15 @@ def test_fake_fails_fast_on_bad_search_qualifiers(fake_gh):
         ),
         "two milestone qualifiers",
     )
+
+
+def test_fake_repo_config_unseeded_is_a_404(fake_gh):
+    """A read of `.github/orbi.toml` with nothing seeded is GitHub's 404 —
+    the exact failure `read_repo_config` maps to its designed silent
+    no-op (the host-config fallback), never a generic error."""
+    assert_fails_with(
+        lambda: fake_gh(
+            ["gh", "api", "repos/owner/repo/contents/.github/orbi.toml"]
+        ),
+        "HTTP 404",
+    )
