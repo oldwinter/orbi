@@ -2559,6 +2559,23 @@ def test_record_pushed_head_degrades_without_the_state_file(
     assert "pushed_head_unrecorded" in caplog.text
 
 
+def test_record_pushed_head_degrades_on_a_corrupt_state_file(
+        tmp_path, caplog):
+    """The same bypass safety for a corrupt record: the resume readers
+    fail fast on it before any record point, and the recorder itself
+    only logs and degrades the merge record to `unknown`."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    path = runner.run_state_path(worktree)
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json", encoding="utf-8")
+    caplog.set_level("WARNING")
+    runner.record_pushed_head(worktree, "h1")
+    runner.record_pushed_base(worktree, "b1")
+    assert runner.read_pushed_head(worktree) is None
+    assert "pushed_head_unrecorded" in caplog.text
+
+
 def make_session_jsonl(worktree: Path, session_id: str = "sess-1") -> Path:
     """A minimal previous session file (Issue #219 resume context)."""
     session_dir = worktree / ".pi-session"
