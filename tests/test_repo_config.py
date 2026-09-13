@@ -41,17 +41,27 @@ def test_parse_repo_config_accepts_every_whitelisted_key():
     text = (
         'base_branch = "beta"\n'
         'active_milestone = "v0.5.0"\n'
-        'test_command = "pytest -q"\n'
         'context_files = ["AGENTS.md", "docs/testing.mdx"]\n'
         'dispatch_label = "ai-ready"\n'
     )
     assert repo_config.parse_repo_config(text) == repo_config.RepoPolicy(
         base_branch="beta",
         active_milestone="v0.5.0",
-        test_command="pytest -q",
         context_files=("AGENTS.md", "docs/testing.mdx"),
         dispatch_label="ai-ready",
     )
+
+
+def test_parse_repo_config_tolerates_a_legacy_test_command():
+    """Issue #805: `test_command` left the whitelist — the merge gate is
+    the GitHub Actions check runs and the AI infers the test method
+    itself. A repository file that still declares the legacy key must
+    keep delivering: it is ignored, never rejected and never stored."""
+    policy = repo_config.parse_repo_config(
+        'base_branch = "beta"\ntest_command = "pytest -q"\n',
+    )
+    assert policy == repo_config.RepoPolicy(base_branch="beta")
+    assert not hasattr(policy, "test_command")
 
 
 def test_parse_repo_config_empty_document_is_a_no_op():
@@ -103,7 +113,6 @@ def test_parse_repo_config_lists_every_offending_host_only_key():
         'base_branch = 1\n',
         "base_branch = []\n",
         'active_milestone = ""\n',
-        "test_command = true\n",
         'dispatch_label = 7\n',
         "context_files = []\n",
         'context_files = "AGENTS.md"\n',
@@ -149,7 +158,6 @@ def test_resolve_policy_overrides_only_the_declared_keys():
         base_branch="main",
         active_milestone="v0.1.0",
         context_files=(Path("/host/ctx.md"),),
-        test_command="host-cmd",
         dispatch_label="ai-ready",
     )
     effective = repo_config.resolve_policy(
@@ -162,7 +170,6 @@ def test_resolve_policy_overrides_only_the_declared_keys():
     # Omitted keys keep the host fallback.
     assert effective.active_milestone == "v0.1.0"
     assert effective.context_files == (Path("/host/ctx.md"),)
-    assert effective.test_command == "host-cmd"
     # Repository context files are additive under their own key.
     assert effective.repo_context_files == ()
 
@@ -185,9 +192,9 @@ def test_policy_diff_reports_changed_keys_only():
     ) is None
     diff = repo_config.policy_diff(
         repo_config.RepoPolicy(base_branch="main"),
-        repo_config.RepoPolicy(base_branch="beta", test_command="pytest"),
+        repo_config.RepoPolicy(base_branch="beta"),
     )
-    assert diff == "base_branch=main->beta test_command=(none)->pytest"
+    assert diff == "base_branch=main->beta"
 
 
 def test_repo_config_audit_marks_a_changed_sha_with_the_diff():
@@ -629,9 +636,7 @@ def test_process_issue_applies_repo_base_branch_and_records_sha(
     monkeypatch.setattr(runner, "apply_runner_runtime_excludes", lambda *a: None)
     monkeypatch.setattr(
         runner, "run_pi",
-        lambda issue, worktree, config, repo, **kwargs: seen.setdefault(
-            "test_command", config.test_command,
-        ),
+        lambda issue, worktree, config, repo, **kwargs: "done",
     )
     monkeypatch.setattr(
         runner, "deliver_pr",
@@ -758,25 +763,20 @@ def test_main_blocks_a_claim_when_the_repo_config_is_invalid(
     assert "pi_model" in str(blocked[0][0][2])
 
 
-def test_resolve_policy_overrides_milestone_and_test_command():
+def test_resolve_policy_overrides_the_declared_milestone():
     effective = repo_config.resolve_policy(
-        runner.RunnerConfig(active_milestone="v1", test_command="host"),
-        repo_config.RepoPolicy(active_milestone="v2", test_command="repo"),
+        runner.RunnerConfig(active_milestone="v1"),
+        repo_config.RepoPolicy(active_milestone="v2"),
     )
     assert effective.active_milestone == "v2"
-    assert effective.test_command == "repo"
 
 
 def test_policy_diff_formats_lists_and_none():
     diff = repo_config.policy_diff(
         repo_config.RepoPolicy(context_files=("a.md",)),
-        repo_config.RepoPolicy(
-            context_files=("a.md", "b.md"), test_command="pytest",
-        ),
+        repo_config.RepoPolicy(context_files=("a.md", "b.md")),
     )
-    assert diff == (
-        "context_files=a.md->a.md,b.md test_command=(none)->pytest"
-    )
+    assert diff == "context_files=a.md->a.md,b.md"
 
 
 def test_read_repo_config_missing_size_field_is_ok():
@@ -834,11 +834,12 @@ def test_block_repo_config_failure_is_best_effort(monkeypatch, caplog):
     assert "repo_config_failure_report_failed" in caplog.text
 
 
-def test_run_pi_injects_repo_test_command_and_context_files(
-    monkeypatch, tmp_path,
-):
+def test_run_pi_injects_repo_context_files(monkeypatch, tmp_path):
+    """Issue #805: the implementer prompt no longer carries a declared
+    test command — the agent infers the test method from the repository;
+    only the context files stay injectable."""
     prompt = tmp_path / "prompt.md"
-    prompt.write_text("{{TEST_COMMAND}}|{{CONTEXT_FILES}}", encoding="utf-8")
+    prompt.write_text("{{CONTEXT_FILES}}", encoding="utf-8")
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     calls = []
     monkeypatch.setattr(
@@ -850,14 +851,13 @@ def test_run_pi_injects_repo_test_command_and_context_files(
         prompt=prompt, repo_dir=tmp_path,
         source_repos=("owner/repo",), workspace_root=tmp_path,
         context_files=(), skills=(), base_branch="main",
-        base_sha="sha", run_id="run1", test_command="pytest -q",
+        base_sha="sha", run_id="run1",
         repo_context_files=("AGENTS.md",),
     )
     assert runner.run_pi(
         {"number": 4, "title": "T", "body": "b"}, tmp_path, config, "owner/repo",
     ) == "done"
     system_prompt = calls[0][calls[0].index("--system-prompt") + 1]
-    assert "pytest -q|" in system_prompt
     assert str(tmp_path / "AGENTS.md") in system_prompt
 
 
@@ -929,20 +929,19 @@ def test_repo_policies_are_isolated_per_repository(monkeypatch):
 
 # --- this repository's own policy file (Issue #731) -------------------------
 
-def test_this_repositorys_own_orbi_toml_is_valid_and_declares_test_command():
+def test_this_repositorys_own_orbi_toml_is_valid_and_legacy_free():
     """Orbi dogfoods its own config-as-code (Issue #731): the file this
     repository carries at `.github/orbi.toml` must pass the strict claim
-    schema and declare the test command the implementer prompt injects —
-    a broken file here would block every claim of this repository with
-    `repo_config_invalid`."""
+    schema and no longer declare the removed `test_command` key (Issue
+    #805) — a broken file here would block every claim of this
+    repository with `repo_config_invalid`."""
     path = Path(__file__).resolve().parents[1] / ".github" / "orbi.toml"
     assert path.is_file(), (
         "the repository must carry .github/orbi.toml (Issue #731)"
     )
-    policy = repo_config.parse_repo_config(
-        path.read_text(encoding="utf-8"),
-    )
-    assert isinstance(policy.test_command, str) and policy.test_command.strip()
+    text = path.read_text(encoding="utf-8")
+    repo_config.parse_repo_config(text)
+    assert "test_command" not in text
 
 
 def test_this_repositorys_own_orbi_toml_is_not_gitignored():
@@ -998,7 +997,7 @@ def test_resolve_policy_returns_a_runner_config_with_declared_overrides():
     host = runner.RunnerConfig(
         base_branch="main", active_milestone="v0.1.0",
         context_files=(Path("/host/ctx.md"),),
-        test_command="host-cmd", dispatch_label="ai-ready",
+        dispatch_label="ai-ready",
     )
     effective = repo_config.resolve_policy(
         host, repo_config.RepoPolicy(
@@ -1011,7 +1010,6 @@ def test_resolve_policy_returns_a_runner_config_with_declared_overrides():
     # Omitted keys keep the host fallback.
     assert effective.active_milestone == "v0.1.0"
     assert effective.context_files == (Path("/host/ctx.md"),)
-    assert effective.test_command == "host-cmd"
     assert effective.repo_context_files == ()
 
 
@@ -1031,9 +1029,9 @@ def test_policy_diff_compares_policy_fields_and_skips_the_sha():
     ) is None
     diff = repo_config.policy_diff(
         repo_config.RepoPolicy(base_branch="main"),
-        repo_config.RepoPolicy(base_branch="beta", test_command="pytest"),
+        repo_config.RepoPolicy(base_branch="beta"),
     )
-    assert diff == "base_branch=main->beta test_command=(none)->pytest"
+    assert diff == "base_branch=main->beta"
 
 
 def test_repo_config_audit_typed_marks_a_changed_sha_with_the_diff():

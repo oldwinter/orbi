@@ -13,7 +13,6 @@ Runtime context supplied by the runner:
   `{{SKILLS}}`
 - Delivery base branch: `{{BASE_BRANCH}}`
 - Delivery base SHA (frozen `origin/{{BASE_BRANCH}}` at claim time): `{{BASE_SHA}}`
-- Repository test command (declared in `.github/orbi.toml`): `{{TEST_COMMAND}}`
 - Run id: `{{RUN_ID}}`
 
 Issue comments from trusted authors (oldest first). These carry the
