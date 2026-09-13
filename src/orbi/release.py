@@ -441,8 +441,9 @@ def verify_release_scope(repo: str, scope: list[int], repo_dir: Path,
     return evidence
 
 
-def derive_release_scope_from_milestone(repo: str,
-                                        milestone_title: str) -> tuple[list[int], list[str]]:
+def derive_release_scope_from_milestone(
+        repo: str, milestone_title: str,
+        release_issue: int | None = None) -> tuple[list[int], list[str]]:
     """Derive the release scope from a Milestone.
 
     The release scope is the Milestone's COMPLETED Issues under the
@@ -459,7 +460,13 @@ def derive_release_scope_from_milestone(repo: str,
       forbidden);
     - open Issues are NEVER part of the scope (unfinished work is a
       human decision point) but are returned as a separate evidence list
-      so the release run surfaces them instead of swallowing them.
+      so the release run surfaces them instead of swallowing them;
+    - `release_issue` (the driving release Issue's own number) is
+      exempt from that open-item evidence: it is necessarily still
+      open while the release runs (it closes after the notes are
+      published), so listing it would put a self-referential "NOT
+      released" line on an immutable Release page — the same exemption
+      the #663 completeness gate applies.
 
     Returns (scope numbers sorted ascending, open-item evidence
     strings). A real `gh` failure (auth, rate limit, API error)
@@ -501,6 +508,7 @@ def derive_release_scope_from_milestone(repo: str,
     open_evidence = [
         f"open Issue #{item.get('number')} {item.get('title')}"
         for item in open_issues
+        if item.get("number") != release_issue
     ]
     return scope, open_evidence
 
@@ -1929,9 +1937,13 @@ def process_release(issue: dict, config: RunnerConfig,
         if declaration.get("scope_from_milestone") is not None:
             # The scope is derived from the Milestone, then
             # verified item by item exactly like a hand-listed scope.
+            # The release Issue itself is exempt from the open-item
+            # evidence (Issue #818): it is necessarily still open
+            # here and closes only after the notes are published.
             derived_scope, open_milestone_evidence = (
                 derive_release_scope_from_milestone(
                     source_repo, declaration["scope_from_milestone"],
+                    release_issue=number,
                 )
             )
             if not derived_scope:
