@@ -1,0 +1,47 @@
+# v0.5.2 发布（最新）
+
+`v0.5.2` 于 2026-09-13T09:58:28Z 发布为 GitHub Release [v0.5.2](https://github.com/orbi-build/orbi/releases/tag/v0.5.2)（release task：Issue #814）。
+
+## Tag 状态（对 origin 验证）
+
+| Ref | 对象 | 指向 |
+|---|---|---|
+| `v0.5.2` | 注解 tag `254cbf587d17070f9daf24da998eedc1bd68cd32` | 提交 `6565a0e48b74554b7fadade697222038b60042a4` |
+
+## Release notes
+
+## Changelog
+
+### Reliability and recovery
+
+- resume 时 worktree 缺失进入死循环：注释宣称可重建但代码从不重建 ([Issue #807](https://github.com/orbi-build/orbi/issues/807); [PR #810](https://github.com/orbi-build/orbi/pull/810))
+
+### Bug fixes
+
+- 发版关 milestone 存在秒级竞态：GitHub 索引未刷新时把正在关闭的 release 票自己算成未完成工作 ([Issue #808](https://github.com/orbi-build/orbi/issues/808); [PR #812](https://github.com/orbi-build/orbi/pull/812))
+- 发版通知丢失 base_branch：run_info 的中间赋值点在重构中被删 ([Issue #811](https://github.com/orbi-build/orbi/issues/811); [PR #813](https://github.com/orbi-build/orbi/pull/813))
+
+## Contributors
+
+<a href="https://github.com/xqliu"><img src="https://avatars.githubusercontent.com/u/22554?v=4&s=48" width="32" height="32" alt="xqliu" /></a>
+
+- tag: `v0.5.2`
+- release commit: `6565a0e48b74554b7fadade697222038b60042a4`
+- release task: Issue #814
+
+## Scope (verified item by item)
+
+- Issue #807 closed
+- Issue #808 closed
+- Issue #811 closed
+
+## Pre-release gates
+
+- no open Issue in milestone 'v0.5.2' carries ai-in-progress / ai-pr-opened / ai-fix-needed
+- CI on the release commit: 4 check(s) all success/neutral/skipped (waited 300s for pending checks)
+
+## Tests
+
+- release tests gated by GitHub Actions CI on the release commit 6565a0e48b74554b7fadade697222038b60042a4 (the #268 CI-wait gate; no local test execution)
+
+run_id=0f390fcd
