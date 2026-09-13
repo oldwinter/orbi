@@ -24,6 +24,8 @@ from orbi import pi_activity, pi_process, progress
 from tests.test_progress_wiring import make_fake_gh
 import orbi.journal as journal
 from seam import seam
+from orbi.delivery_scene import RunContext
+from orbi.pi_process import PiWatchOptions
 
 
 def test_runner_main_config_failure_is_one_structured_log_line(
@@ -2430,8 +2432,10 @@ def test_write_run_state_writes_the_run_identity(tmp_path):
     worktree = tmp_path / "wt"
     worktree.mkdir()
     runner.write_run_state(
-        worktree, run_id="a1b2c3d4", issue=3, source_repo="owner/repo",
-        branch="orbi/owner-repo-issue-3",
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
     )
     state = json.loads(runner.run_state_path(worktree).read_text())
     assert state["run_id"] == "a1b2c3d4"
@@ -2448,12 +2452,16 @@ def test_write_run_state_is_idempotent_for_a_resumed_run(tmp_path):
     worktree = tmp_path / "wt"
     worktree.mkdir()
     runner.write_run_state(
-        worktree, run_id="a1b2c3d4", issue=3, source_repo="owner/repo",
-        branch="orbi/owner-repo-issue-3",
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
     )
     runner.write_run_state(
-        worktree, run_id="a1b2c3d4", issue=3, source_repo="owner/repo",
-        branch="orbi/owner-repo-issue-3",
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
     )
     state = json.loads(runner.run_state_path(worktree).read_text())
     assert state["run_id"] == "a1b2c3d4"
@@ -2467,8 +2475,10 @@ def test_read_run_state_round_trips_the_written_state(tmp_path):
     worktree = tmp_path / "wt"
     worktree.mkdir()
     runner.write_run_state(
-        worktree, run_id="a1b2c3d4", issue=3, source_repo="owner/repo",
-        branch="orbi/owner-repo-issue-3",
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
     )
     state = runner.read_run_state(worktree)
     assert state["run_id"] == "a1b2c3d4"
@@ -2609,10 +2619,7 @@ def test_resume_run_id_matches_by_issue_and_repo_name_across_a_rename(
     worktree (Issue #219)."""
     old = tmp_path / ".worktrees" / "orbi-xqliu-orbi-issue-42-aaaa1111"
     old.mkdir(parents=True)
-    runner.write_run_state(
-        old, run_id="aaaa1111", issue=42, source_repo="xqliu/orbi",
-        branch="orbi/xqliu-orbi-issue-42",
-    )
+    runner.write_run_state(RunContext(run_id="aaaa1111", issue=42, branch="orbi/xqliu-orbi-issue-42", worktree=old, source_repo="xqliu/orbi"))
     assert runner.resume_run_id(
         tmp_path, "orbi-build/orbi", 42,
     ) == "aaaa1111"
@@ -2628,14 +2635,8 @@ def test_resume_run_id_returns_newest_matching_worktree(tmp_path):
     second = tmp_path / ".worktrees" / f"orbi-{slug}-issue-3-2e222222"
     first.mkdir(parents=True)
     second.mkdir(parents=True)
-    runner.write_run_state(
-        first, run_id="0d111111", issue=3, source_repo="owner/repo",
-        branch="b1",
-    )
-    runner.write_run_state(
-        second, run_id="2e222222", issue=3, source_repo="owner/repo",
-        branch="b2",
-    )
+    runner.write_run_state(RunContext(run_id="0d111111", issue=3, branch="b1", worktree=first, source_repo="owner/repo"))
+    runner.write_run_state(RunContext(run_id="2e222222", issue=3, branch="b2", worktree=second, source_repo="owner/repo"))
     os.utime(first, (300, 300))
     os.utime(second, (100, 100))
     assert runner.resume_run_id(tmp_path, "owner/repo", 3) == "0d111111"
@@ -2649,14 +2650,8 @@ def test_resume_run_id_excludes_other_issues_and_repos(tmp_path):
     other_repo = tmp_path / ".worktrees" / f"orbi-other-other-issue-3-ffff1111"
     other_issue.mkdir(parents=True)
     other_repo.mkdir(parents=True)
-    runner.write_run_state(
-        other_issue, run_id="ffff0000", issue=4, source_repo="owner/repo",
-        branch="b1",
-    )
-    runner.write_run_state(
-        other_repo, run_id="ffff1111", issue=3, source_repo="other/other",
-        branch="b2",
-    )
+    runner.write_run_state(RunContext(run_id="ffff0000", issue=4, branch="b1", worktree=other_issue, source_repo="owner/repo"))
+    runner.write_run_state(RunContext(run_id="ffff1111", issue=3, branch="b2", worktree=other_repo, source_repo="other/other"))
     assert runner.resume_run_id(tmp_path, "owner/repo", 3) is None
 
 
@@ -2691,10 +2686,7 @@ def test_resume_run_id_skips_unrelated_worktrees_without_a_state_file(
     other.mkdir(parents=True)
     mine = tmp_path / ".worktrees" / "orbi-owner-repo-issue-3-aaaa1111"
     mine.mkdir(parents=True)
-    runner.write_run_state(
-        mine, run_id="aaaa1111", issue=3, source_repo="owner/repo",
-        branch="b1",
-    )
+    runner.write_run_state(RunContext(run_id="aaaa1111", issue=3, branch="b1", worktree=mine, source_repo="owner/repo"))
     assert runner.resume_run_id(tmp_path, "owner/repo", 3) == "aaaa1111"
 
 
@@ -3723,10 +3715,7 @@ def test_run_pi_renders_base_sync_lock_into_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kwargs: calls.append(command) or "done")
     issue = {"number": 4, "title": "t", "body": "b"}
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1")
-    runner.run_pi(
-        issue, tmp_path, config, "owner/repo",
-        branch="orbi/owner-repo-issue-4",
-    )
+    runner.run_pi(issue, RunContext(run_id=config.run_id, issue=issue["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     command = calls[0]
     assert command[command.index("--system-prompt") + 1] == "SYSTEM " + str(
         tmp_path / "checkout" / ".orbi" / "base-sync.lock",
@@ -3745,10 +3734,7 @@ def test_run_pi_logs_provider_config_loaded_with_selection(
     issue = {"number": 4, "title": "t", "body": "b"}
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1", pi_provider="local-qwen", pi_model="qwen3.8:27b")
     with caplog.at_level("INFO"):
-        runner.run_pi(
-            issue, tmp_path, config, "owner/repo",
-            branch="orbi/owner-repo-issue-4",
-        )
+        runner.run_pi(issue, RunContext(run_id=config.run_id, issue=issue["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     lines = [line for line in caplog.text.splitlines()
              if " provider_config_loaded " in line]
     assert len(lines) == 1
@@ -3771,9 +3757,7 @@ def test_run_pi_logs_provider_config_loaded_unconfigured(
     issue = {"number": 4, "title": "t", "body": "b"}
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1")
     with caplog.at_level("INFO"):
-        runner.run_pi(
-            issue, tmp_path, config, "owner/repo", branch="b",
-        )
+        runner.run_pi(issue, RunContext(run_id=config.run_id, issue=issue["number"], branch="b", worktree=tmp_path, source_repo="owner/repo"), config)
     lines = [line for line in caplog.text.splitlines()
              if " provider_config_loaded " in line]
     assert len(lines) == 1
@@ -3791,13 +3775,8 @@ def test_run_review_logs_provider_config_loaded_with_review_role(
     prompt_path.write_text("REVIEW", encoding="utf-8")
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kwargs: "ok")
     with caplog.at_level("INFO"):
-        runner.run_review(
-            tmp_path,
-            {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-             "head_oid": "h1", "head_ref": "h"},
-            runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=(), pi_provider="local-qwen", pi_model="qwen3.8:27b"),
-            "owner/repo", 4, "branch", 1,
-        )
+        runner.run_review(RunContext(run_id=runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=(), pi_provider="local-qwen", pi_model="qwen3.8:27b").run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+             "head_oid": "h1", "head_ref": "h"}, runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=(), pi_provider="local-qwen", pi_model="qwen3.8:27b"), 1)
     lines = [line for line in caplog.text.splitlines()
              if " provider_config_loaded " in line]
     assert len(lines) == 1
@@ -3817,13 +3796,8 @@ def test_run_review_renders_base_sync_lock_into_prompt(monkeypatch, tmp_path):
     )
     calls = []
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kwargs: calls.append(command) or "ok")
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()),
-        "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()).run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()), 1)
     command = calls[0]
     assert command[command.index("--system-prompt") + 1] == "REVIEW " + str(
         tmp_path / "checkout" / ".orbi" / "base-sync.lock",
@@ -3944,10 +3918,7 @@ def test_run_pi_injects_trusted_issue_comments_into_the_prompt(
     )
     issue = {"number": 4, "title": "Fix title", "body": "Fix body"}
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1", issue_comments_limit=2)
-    assert runner.run_pi(
-        issue, tmp_path, config, "owner/repo",
-        branch="orbi/owner-repo-issue-4",
-    ) == "done"
+    assert runner.run_pi(issue, RunContext(run_id=config.run_id, issue=issue["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config) == "done"
     assert fetches == [(4, "owner/repo")]
     command = calls[0]
     system_prompt = command[command.index("--system-prompt") + 1]
@@ -3986,10 +3957,7 @@ def test_run_pi_skips_the_comment_fetch_without_the_placeholder(
         lambda command, **kwargs: calls.append(command) or "done",
     )
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1")
-    runner.run_pi(
-        {"number": 5, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-5",
-    )
+    runner.run_pi({"number": 5, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 5, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-5", worktree=tmp_path, source_repo="owner/repo"), config)
     assert fetches == []
     command = calls[0]
     assert command[command.index("--system-prompt") + 1] == "SYSTEM b"
@@ -4027,13 +3995,8 @@ def test_run_review_injects_trusted_issue_comments_into_the_prompt(
         runner, "stream_pi",
         lambda command, **kwargs: calls.append(command) or "ok",
     )
-    runner.run_review(
-        tmp_path,
-        {"number": 9, "url": "https://x/pull/9", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()),
-        "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()).run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 9, "url": "https://x/pull/9", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()), 1)
     assert fetches == [(4, "owner/repo")]
     command = calls[0]
     system_prompt = command[command.index("--system-prompt") + 1]
@@ -4057,13 +4020,8 @@ def test_run_review_skips_the_comment_fetch_without_the_placeholder(
         runner, "stream_pi",
         lambda command, **kwargs: calls.append(command) or "ok",
     )
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()),
-        "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()).run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()), 1)
     assert fetches == []
     command = calls[0]
     assert command[command.index("--system-prompt") + 1] == "REVIEW " + str(
@@ -4083,10 +4041,7 @@ def test_run_pi_injects_base_branch_sha_and_run_id_into_prompt(monkeypatch, tmp_
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kwargs: calls.append((command, kwargs)) or "done")
     issue = {"number": 4, "title": "Fix title", "body": "Fix body"}
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), workspace_root=tmp_path, context_files=("context.md",), skills=("skill.md",), base_branch="main", base_sha="abc123def456", run_id="run1")
-    assert runner.run_pi(
-        issue, tmp_path, config, "owner/repo",
-        branch="orbi/owner-repo-issue-4",
-    ) == "done"
+    assert runner.run_pi(issue, RunContext(run_id=config.run_id, issue=issue["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config) == "done"
     command, kwargs = calls[0]
     assert command[:5] == ["pi", "--no-extensions", "--skill", "skill.md", "--print"]
     assert "owner/repo" in command[8]
@@ -4102,10 +4057,10 @@ def test_run_pi_injects_base_branch_sha_and_run_id_into_prompt(monkeypatch, tmp_
     assert command[9] == "Issue #4: Fix title\n\nIssue body:\nFix body\n\nWorktree: " + str(tmp_path) + "\nComplete the delivery process in the system prompt."
     assert kwargs["cwd"] == tmp_path
     assert kwargs["timeout"] is None
-    assert kwargs["run_id"] == "run1"
-    assert kwargs["issue"] == 4
-    assert kwargs["source_repo"] == "owner/repo"
-    assert kwargs["branch"] == "orbi/owner-repo-issue-4"
+    assert kwargs["ctx"].run_id == "run1"
+    assert kwargs["ctx"].issue == 4
+    assert kwargs["ctx"].source_repo == "owner/repo"
+    assert kwargs["ctx"].branch == "orbi/owner-repo-issue-4"
     assert kwargs["log_command"][-2:] == ["<redacted>", "<issue-context-redacted>"]
 
 
@@ -4116,11 +4071,8 @@ def test_run_pi_passes_task_branch_to_stream_pi(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kwargs: calls.append(kwargs) or "done")
     issue = {"number": 5, "title": "t", "body": "b"}
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1")
-    runner.run_pi(
-        issue, tmp_path, config, "owner/repo",
-        timeout=7, branch="orbi/owner-repo-issue-5",
-    )
-    assert calls[0]["branch"] == "orbi/owner-repo-issue-5"
+    runner.run_pi(issue, RunContext(run_id=config.run_id, issue=issue["number"], branch="orbi/owner-repo-issue-5", worktree=tmp_path, source_repo="owner/repo"), config, timeout=7)
+    assert calls[0]["ctx"].branch == "orbi/owner-repo-issue-5"
     assert calls[0]["timeout"] == 7
 
 
@@ -4129,11 +4081,7 @@ def test_run_pi_redacts_prompt_and_issue_from_command_log(monkeypatch, tmp_path)
     prompt_path.write_text("PRIVATE SYSTEM {{ISSUE_BODY}}", encoding="utf-8")
     calls = []
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kwargs: calls.append((command, kwargs)) or "done")
-    runner.run_pi(
-        {"number": 5, "title": "secret", "body": "token"}, tmp_path,
-        runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1"),
-        "owner/repo", branch="orbi/owner-repo-issue-5",
-    )
+    runner.run_pi({"number": 5, "title": "secret", "body": "token"}, RunContext(run_id=runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1").run_id, issue={"number": 5, "title": "secret", "body": "token"}["number"], branch="orbi/owner-repo-issue-5", worktree=tmp_path, source_repo="owner/repo"), runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1"))
     command, kwargs = calls[0]
     assert "PRIVATE SYSTEM" in command[6]
     assert "token" in command[6]
@@ -4157,10 +4105,7 @@ def test_run_pi_keeps_the_fresh_context_without_a_resume_context(
         lambda command, **kwargs: calls.append(command) or "done",
     )
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1")
-    runner.run_pi(
-        {"number": 5, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-5",
-    )
+    runner.run_pi({"number": 5, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 5, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-5", worktree=tmp_path, source_repo="owner/repo"), config)
     command = calls[0]
     assert command[-1] == (
         "Issue #5: t\n\nIssue body:\nb\n\nWorktree: "
@@ -4192,11 +4137,7 @@ def test_run_pi_appends_the_resume_context_to_the_context_argument(
         "events=7 phase=test last_action=bash pytest last_result=ok\n"
         "Uncommitted changed files (2):\n- src/a.py\n- src/b.py"
     )
-    runner.run_pi(
-        {"number": 5, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-5",
-        resume_context=resume,
-    )
+    runner.run_pi({"number": 5, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 5, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-5", worktree=tmp_path, source_repo="owner/repo"), config, resume_context=resume)
     command = calls[0]
     context = command[-1]
     assert context.startswith(
@@ -4208,9 +4149,7 @@ def test_run_pi_appends_the_resume_context_to_the_context_argument(
 def test_verify_pr_rejects_wrong_branch(monkeypatch, tmp_path):
     monkeypatch.setattr(seam, "run_command", lambda command, **kwargs: "other-branch")
     with pytest.raises(RuntimeError, match="Pi changed branch"):
-        runner.verify_pr(
-            tmp_path, "orbi/issue-4", "main", "e07383c2", issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id="e07383c2", issue=4, branch="orbi/issue-4", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
 
 
 FAKE_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -4264,10 +4203,7 @@ def test_verify_pr_rejects_delivery_behind_latest_remote_base(monkeypatch, tmp_p
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError, match="behind latest remote base",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
     assert "base_branch=main" in caplog.text
 
 
@@ -4282,10 +4218,7 @@ def test_verify_pr_rejects_missing_pr(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr(seam, "run_command", lambda command, **kwargs: next(outputs))
     with pytest.raises(RuntimeError, match="exactly one open PR"):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
 
 
 def test_verify_pr_rejects_non_array(monkeypatch, tmp_path):
@@ -4294,10 +4227,7 @@ def test_verify_pr_rejects_non_array(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr(seam, "run_command", lambda command, **kwargs: next(outputs))
     with pytest.raises(RuntimeError, match="exactly one open PR"):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
 
 
 def test_verify_pr_returns_url_when_delivery_contains_latest_base(monkeypatch, tmp_path):
@@ -4308,10 +4238,7 @@ def test_verify_pr_returns_url_when_delivery_contains_latest_base(monkeypatch, t
         return fake_verify_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path,
-    ) == "https://github.com/orbi-build/orbi/pull/4"
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path) == "https://github.com/orbi-build/orbi/pull/4"
     assert ["git", "fetch", "origin", "main"] in calls
     assert ["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"] in calls
 
@@ -4324,10 +4251,7 @@ def test_verify_pr_requires_the_repo_dir_lock_location(
     # dir) must be explicit — there is no bypass path.
     monkeypatch.setattr(seam, "run_command", fake_verify_run)
     with pytest.raises(TypeError):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main")
 
 
 def test_verify_pr_fetches_under_the_base_sync_lock(
@@ -4344,10 +4268,7 @@ def test_verify_pr_fetches_under_the_base_sync_lock(
         return fake_verify_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-        FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-    )
+    runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
     assert held == [True]
     assert _probe_lock_free(tmp_path) is True
 
@@ -4361,10 +4282,7 @@ def test_verify_pr_rejects_pr_without_url(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr(seam, "run_command", lambda command, **kwargs: next(outputs))
     with pytest.raises(RuntimeError, match="open PR has no URL"):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
 
 
 def test_verify_pr_rejects_pr_based_on_wrong_branch(monkeypatch, tmp_path):
@@ -4377,10 +4295,7 @@ def test_verify_pr_rejects_pr_based_on_wrong_branch(monkeypatch, tmp_path):
     with pytest.raises(
         RuntimeError, match="PR base is develop, expected main",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
 
 
 def test_verify_pr_rejects_diverged_remote_pr_head(monkeypatch, tmp_path,
@@ -4407,10 +4322,7 @@ def test_verify_pr_rejects_diverged_remote_pr_head(monkeypatch, tmp_path,
         RuntimeError,
         match="PR head deadbeef.* is not local HEAD 01234567.*diverged",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
     assert "pr_head_diverged" in caplog.text
 
 
@@ -4436,10 +4348,7 @@ def test_verify_pr_passes_through_when_local_head_ahead_of_pr_head(
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with caplog.at_level("INFO"):
-        url = runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        url = runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
     assert url == FAKE_PR_URL
     assert "local_head_ahead_of_pr_head" in caplog.text
     assert "ed72915ed72915ed72915ed72915ed72915ed7291" in caplog.text
@@ -4456,10 +4365,7 @@ def test_verify_pr_rejects_pr_body_without_run_marker(monkeypatch, tmp_path, cap
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError, match="missing the stable run marker",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
     assert "pr_run_marker_missing" in caplog.text
 
 
@@ -4473,10 +4379,7 @@ def test_verify_pr_rejects_pr_body_missing_field(monkeypatch, tmp_path):
     with pytest.raises(
         RuntimeError, match="missing the stable run marker",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
 
 
 # ------------------------------------------- Fixes #N (Issue #53)
@@ -4493,10 +4396,7 @@ def test_verify_pr_accepts_pr_body_with_fixes_keyword(monkeypatch, tmp_path):
         return fake_verify_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path,
-    ) == FAKE_PR_URL
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path) == FAKE_PR_URL
 
 
 @pytest.mark.parametrize("reference", ["Fixes #4", "Fixes 4"])
@@ -4511,10 +4411,7 @@ def test_verify_pr_accepts_hash_and_hashless_fixes_reference(
         return fake_verify_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path,
-    ) == FAKE_PR_URL
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path) == FAKE_PR_URL
 
 
 def test_verify_pr_rejects_pr_body_without_fixes_keyword(
@@ -4533,10 +4430,7 @@ def test_verify_pr_rejects_pr_body_without_fixes_keyword(
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError, match=r"missing `Fixes #4`",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
     assert "pr_fixes_missing" in caplog.text
     assert "issue=4" in caplog.text
 
@@ -4560,10 +4454,7 @@ def test_verify_pr_rejects_pr_body_with_wrong_issue_number(
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError, match=r"missing `Fixes #4`",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
     assert "pr_fixes_missing" in caplog.text
 
 
@@ -4586,10 +4477,7 @@ def test_verify_pr_rejects_pr_body_with_longer_issue_number(
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError, match=r"missing `Fixes #4`",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
     assert "pr_fixes_missing" in caplog.text
 
 
@@ -4611,10 +4499,7 @@ def test_verify_pr_external_mode_skips_marker_and_fixes_checks(
         return fake_verify_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.verify_pr(
-        tmp_path, "fix/outer", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path, external_pr=True,
-    ) == FAKE_PR_URL
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch="fix/outer", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path, external_pr=True) == FAKE_PR_URL
 
 
 def test_verify_pr_normal_mode_still_requires_marker_and_fixes(
@@ -4629,10 +4514,7 @@ def test_verify_pr_normal_mode_still_requires_marker_and_fixes(
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(RuntimeError, match="run marker"):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path)
 
 
 def _fake_takeover_view(monkeypatch, payload):
@@ -4755,10 +4637,7 @@ def test_verify_pr_queries_base_head_and_accepts_matching_pr(
         return fake_verify_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path,
-    ) == "https://github.com/orbi-build/orbi/pull/4"
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path) == "https://github.com/orbi-build/orbi/pull/4"
     assert ["git", "rev-parse", "HEAD"] in calls
     # Issue #291: verify_pr issues the ONE shared PR query contract.
     assert [
@@ -4777,10 +4656,7 @@ def test_verify_pr_queries_base_head_and_accepts_matching_pr(
 
 def test_verify_pr_accepts_pr_in_expected_repo_and_url(monkeypatch, tmp_path):
     monkeypatch.setattr(seam, "run_command", fake_verify_run)
-    assert runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path, pr_repo=FAKE_PR_REPO, expected_url=FAKE_PR_URL,
-    ) == FAKE_PR_URL
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo=FAKE_PR_REPO, expected_url=FAKE_PR_URL) == FAKE_PR_URL
 
 
 def test_verify_pr_rejects_pr_head_in_another_repo(monkeypatch, tmp_path, caplog):
@@ -4797,10 +4673,7 @@ def test_verify_pr_rejects_pr_head_in_another_repo(monkeypatch, tmp_path, caplog
         RuntimeError, match="PR head repo is attacker/other, expected "
                             "orbi-build/orbi",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path, pr_repo=FAKE_PR_REPO,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo=FAKE_PR_REPO)
     assert "pr_repo_mismatch" in caplog.text
 
 
@@ -4817,10 +4690,7 @@ def test_verify_pr_rejects_pr_head_repo_missing_fields(monkeypatch, tmp_path):
         RuntimeError, match="PR head repo is <missing>, expected "
                             "orbi-build/orbi",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path, pr_repo=FAKE_PR_REPO,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo=FAKE_PR_REPO)
 
 
 def test_verify_pr_rejects_pr_head_repo_empty_fields(monkeypatch, tmp_path):
@@ -4836,10 +4706,7 @@ def test_verify_pr_rejects_pr_head_repo_empty_fields(monkeypatch, tmp_path):
         RuntimeError, match="PR head repo is <missing>, expected "
                             "orbi-build/orbi",
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path, pr_repo=FAKE_PR_REPO,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo=FAKE_PR_REPO)
 
 
 def test_verify_pr_skips_repo_check_when_pr_repo_not_given(monkeypatch,
@@ -4860,10 +4727,7 @@ def test_verify_pr_skips_repo_check_when_pr_repo_not_given(monkeypatch,
         return fake_verify_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path,
-    ) == FAKE_PR_URL
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path) == FAKE_PR_URL
 
 
 def test_verify_pr_rejects_url_different_from_expected(monkeypatch, tmp_path, caplog):
@@ -4882,10 +4746,7 @@ def test_verify_pr_rejects_url_different_from_expected(monkeypatch, tmp_path, ca
             "https://github.com/orbi-build/orbi/pull/4"
         ),
     ):
-        runner.verify_pr(
-            tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main",
-            FAKE_RUN_ID, issue=4, repo_dir=tmp_path, expected_url=FAKE_PR_URL,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path, expected_url=FAKE_PR_URL)
     assert "pr_url_mismatch" in caplog.text
 
 
@@ -4893,10 +4754,7 @@ def test_verify_pr_skips_url_check_when_expected_url_not_given(
     monkeypatch, tmp_path,
 ):
     monkeypatch.setattr(seam, "run_command", fake_verify_run)
-    assert runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path,
-    ) == FAKE_PR_URL
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path) == FAKE_PR_URL
 
 
 def test_verify_pr_skips_latest_base_check_when_not_required(
@@ -4912,10 +4770,7 @@ def test_verify_pr_skips_latest_base_check_when_not_required(
         return fake_verify_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.verify_pr(
-        tmp_path, f"orbi/issue-4-{FAKE_RUN_ID}", "main", FAKE_RUN_ID,
-        issue=4, repo_dir=tmp_path, require_latest_base=False,
-    ) == FAKE_PR_URL
+    assert runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=f"orbi/issue-4-{FAKE_RUN_ID}", worktree=tmp_path, source_repo="owner/repo"), "main", repo_dir=tmp_path, require_latest_base=False) == FAKE_PR_URL
     assert not any(c[:3] == ["git", "fetch", "origin"] for c in calls)
     assert not any(
         c[:3] == ["git", "merge-base", "--is-ancestor"] for c in calls
@@ -7027,11 +6882,7 @@ def test_stream_pi_logs_run_start_once_with_full_scene(tmp_path, caplog):
         stdout="final answer",
     )
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="orbi/xqliu-orbi-issue-24",
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="orbi/xqliu-orbi-issue-24", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert result == "final answer"
     # Without an explicit log_command the raw command is never logged.
     assert "command=<redacted>" in caplog.text
@@ -7071,11 +6922,7 @@ def test_stream_pi_run_start_never_follows_pre_existing_session_file(
     )
     command = make_fake_pi(tmp_path, session_records=[], stdout="ok")
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     starts = [line for line in caplog.text.splitlines()
               if " run_start " in line]
     assert len(starts) == 1
@@ -7091,11 +6938,7 @@ def test_stream_pi_logs_activity_and_heartbeat_lines(tmp_path, caplog):
         stdout="final answer", sleep=0.3,
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = caplog.text.splitlines()
     activities = [line for line in lines if " activity " in line]
     heartbeats = [line for line in lines if " heartbeat " in line]
@@ -7161,11 +7004,7 @@ def test_stream_pi_high_frequency_lines_carry_run_id_exactly_once(
         tmp_path, session_records=records, stdout="final answer",
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="a1b2c3d4", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="a1b2c3d4", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     kinds = (
         "activity", "heartbeat", "model_wait", "resumed",
         "pi_idle", "pi_resumed",
@@ -7211,12 +7050,7 @@ def test_stream_pi_idle_lines_carry_run_id_exactly_once(
         tmp_path, session_records=records, stdout="ok",
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.5,
-            run_id="a1b2c3d4", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="a1b2c3d4", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.5), cwd=tmp_path)
     idles = [m for m in caplog.messages if " pi_idle " in m]
     resumed = [m for m in caplog.messages if " pi_resumed " in m]
     assert len(idles) == 1
@@ -7242,11 +7076,7 @@ def test_stream_pi_scene_lines_keep_run_field_for_parse_scene(
     with caplog.at_level("INFO"), pytest.raises(
         subprocess.CalledProcessError,
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="a1b2c3d4", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="a1b2c3d4", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     starts = [m for m in caplog.messages if " run_start " in m]
     failures = [m for m in caplog.messages if " run_failed " in m]
     assert len(starts) == 1 and len(failures) == 1
@@ -7271,11 +7101,7 @@ def test_stream_pi_activity_keeps_action_after_tool_result(tmp_path, caplog):
         sleep=0.3,
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = caplog.text.splitlines()
     activities = [line for line in lines if " activity " in line]
     # Issue #176: one activity line for the startup sub-phase, one for
@@ -7296,11 +7122,7 @@ def test_stream_pi_heartbeat_interval_is_stable(tmp_path, caplog):
         tmp_path, session_records=[], sleep=1.0,
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = caplog.text.splitlines()
     heartbeats = [line for line in lines if " heartbeat " in line]
     activities = [line for line in lines if " activity " in line]
@@ -7321,11 +7143,7 @@ def test_stream_pi_success_logs_no_run_end(tmp_path, caplog):
         stdout="final answer",
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert " run_end " not in caplog.text
 
 
@@ -7335,11 +7153,7 @@ def test_stream_pi_logs_command_redacted_and_stderr(tmp_path, caplog):
         stdout="ok", stderr="warning line",
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b", log_command=["pi", "--print", "<redacted>"],
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path, log_command=["pi", "--print", "<redacted>"])
     assert "command=pi --print <redacted>" in caplog.text
     assert "stderr=warning line" in caplog.text
 
@@ -7354,11 +7168,7 @@ def test_stream_pi_logs_run_failed_with_full_scene_and_reraises(
     with caplog.at_level("ERROR"), pytest.raises(
         subprocess.CalledProcessError,
     ) as excinfo:
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert excinfo.value.returncode == 3
     assert "pi exploded" in (excinfo.value.stderr or "")
     # The exception must not carry the raw command (prompt / Issue body).
@@ -7388,11 +7198,7 @@ def test_stream_pi_heartbeats_when_session_is_idle(tmp_path, caplog):
         sleep=1.0,
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     heartbeats = [line for line in caplog.text.splitlines()
                   if " heartbeat " in line]
     assert len(heartbeats) >= 1
@@ -7406,11 +7212,7 @@ def test_stream_pi_heartbeats_when_no_session_file_appears(tmp_path, caplog):
     # yet) — the generic `starting` is gone from the live lines.
     command = make_fake_pi(tmp_path, session_records=[], sleep=1.0)
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     heartbeats = [line for line in caplog.text.splitlines()
                   if " heartbeat " in line]
     assert len(heartbeats) >= 1
@@ -7447,11 +7249,7 @@ def test_stream_pi_logs_process_spawned_after_popen(tmp_path, caplog):
         tmp_path, session_records=startup_records(), stdout="ok",
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = [line for line in caplog.text.splitlines()
              if " process_spawned " in line]
     assert len(lines) == 1
@@ -7476,11 +7274,7 @@ def test_stream_pi_logs_startup_milestones_in_order(tmp_path, caplog):
         tmp_path, session_records=startup_records(), stdout="ok",
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = caplog.text.splitlines()
     created = [line for line in lines if " session_created " in line]
     requested = [line for line in lines if " first_request_started " in line]
@@ -7530,11 +7324,7 @@ def test_stream_pi_activity_lines_show_startup_sub_phase(tmp_path, caplog):
         sleep=0.3,
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = caplog.text.splitlines()
     live = [line for line in lines
             if " activity " in line or " heartbeat " in line]
@@ -7553,11 +7343,7 @@ def test_stream_pi_startup_failed_without_session_file(tmp_path, caplog):
     )
     with caplog.at_level("INFO"):
         with pytest.raises(subprocess.CalledProcessError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = [line for line in caplog.text.splitlines()
              if " startup_failed " in line]
     assert len(lines) == 1
@@ -7587,11 +7373,7 @@ def test_stream_pi_startup_failed_without_first_request(tmp_path, caplog):
     )
     with caplog.at_level("INFO"):
         with pytest.raises(subprocess.CalledProcessError) as excinfo:
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert not isinstance(excinfo.value, runner.RecoverablePiProcessError)
     lines = [line for line in caplog.text.splitlines()
              if " startup_failed " in line]
@@ -7641,11 +7423,7 @@ def test_stream_pi_early_exit_uses_the_flushed_journal(
     monkeypatch.setattr(pi_process, "SessionWatcher", StaleWatcher)
     with caplog.at_level("INFO"):
         with pytest.raises(runner.RecoverablePiProcessError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     # The journal on disk proves the request went out (its response
     # arrived), so this is NOT a startup failure.
     assert " startup_failed " not in caplog.text
@@ -7683,11 +7461,7 @@ def test_stream_pi_startup_failed_early_exit_after_first_request(
     )
     with caplog.at_level("INFO"):
         with pytest.raises(subprocess.CalledProcessError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = [line for line in caplog.text.splitlines()
              if " startup_failed " in line]
     assert len(lines) == 1
@@ -7783,11 +7557,7 @@ def test_stream_pi_rate_limited_exit_retries_then_succeeds(
         stderr="Error: 429 RESOURCE_EXHAUSTED. Please retry in 36.5s",
     )
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.05,
-            run_id="deadbeef", issue=321, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=321, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     assert result == "final answer"
     # The backoff honored the response's hint.
     assert sleeps == [36.5]
@@ -7821,11 +7591,7 @@ def test_stream_pi_rate_limited_exhausted_takes_existing_failure_path(
     )
     with caplog.at_level("INFO"):
         with pytest.raises(pi_process.RateLimitExhaustedError) as exc_info:
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.05,
-                run_id="deadbeef", issue=321, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=321, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     # The stderr carries no retry hint: the default escalation, then the
     # cap. 5 retries = 6 sessions total.
     assert sleeps == [30.0, 60.0, 120.0, 240.0, 300.0]
@@ -7872,11 +7638,7 @@ def test_stream_pi_rate_limited_exhausted_mid_session_terminates(
     )
     with caplog.at_level("INFO"):
         with pytest.raises(pi_process.RateLimitExhaustedError) as exc_info:
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.05,
-                run_id="deadbeef", issue=321, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=321, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     assert sleeps == [2.0] * 5
     assert not isinstance(exc_info.value, runner.RecoverablePiFailure)
     assert "provider rate limit retries exhausted" in str(exc_info.value)
@@ -7920,11 +7682,7 @@ def test_stream_pi_429_attempts_persist_across_invocations(
     monkeypatch.setattr(pi_process.time, "sleep", guard(2))
     with caplog.at_level("INFO"):
         with pytest.raises(RuntimeError, match="termination guard"):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.05,
-                run_id="deadbeef", issue=698, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=698, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     assert json.loads(
         pi_process.pi_429_attempts_path(tmp_path).read_text()
     ) == {"run_id": "deadbeef", "attempts": 3}
@@ -7935,11 +7693,7 @@ def test_stream_pi_429_attempts_persist_across_invocations(
     caplog.clear()
     with caplog.at_level("INFO"):
         with pytest.raises(RuntimeError, match="termination guard"):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.05,
-                run_id="deadbeef", issue=698, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=698, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     retries = [line for line in caplog.text.splitlines()
                if " pi_retry_429 " in line]
     assert [field for line in retries for field in line.split()
@@ -7963,11 +7717,7 @@ def test_stream_pi_429_exhaustion_across_restarts_is_terminal(
     )
     with caplog.at_level("INFO"):
         with pytest.raises(pi_process.RateLimitExhaustedError) as exc_info:
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.05,
-                run_id="deadbeef", issue=698, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=698, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     # One backoff retry (the 5th cumulative), then the 6th 429 exit is
     # terminal — one session, not a fresh 5-retry cycle.
     assert sleeps == [2.0]
@@ -7997,11 +7747,7 @@ def test_stream_pi_429_terminal_resets_counter_for_human_retry(
     )
     with caplog.at_level("INFO"):
         with pytest.raises(pi_process.RateLimitExhaustedError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.05,
-                run_id="deadbeef", issue=698, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=698, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     # Terminal on the first 429 (the budget was already spent), and the
     # counter file is gone.
     assert sleeps == []
@@ -8010,11 +7756,7 @@ def test_stream_pi_429_terminal_resets_counter_for_human_retry(
     # budget again: five backoff retries before the next terminal.
     sleeps.clear()
     with pytest.raises(pi_process.RateLimitExhaustedError):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.05,
-            run_id="deadbeef", issue=698, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=698, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     assert sleeps == [2.0] * 5
 
 
@@ -8036,11 +7778,7 @@ def test_stream_pi_429_terminal_survives_a_failed_counter_clear(
     )
     with caplog.at_level("INFO"):
         with pytest.raises(pi_process.RateLimitExhaustedError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.05,
-                run_id="deadbeef", issue=698, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=698, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     assert "pi_429_attempts_clear_failed" in caplog.text
 
 
@@ -8083,11 +7821,7 @@ def test_stream_pi_non_rate_limited_exit_never_retries(tmp_path, caplog):
     )
     with caplog.at_level("INFO"):
         with pytest.raises(subprocess.CalledProcessError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.05,
-                run_id="deadbeef", issue=321, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=321, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path)
     assert "pi_retry_429" not in caplog.text
     assert len([line for line in caplog.text.splitlines()
                 if " run_start " in line]) == 1
@@ -8102,11 +7836,7 @@ def test_stream_pi_startup_failed_auth_failure(tmp_path, caplog):
     )
     with caplog.at_level("INFO"):
         with pytest.raises(subprocess.CalledProcessError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = [line for line in caplog.text.splitlines()
              if " startup_failed " in line]
     assert len(lines) == 1
@@ -8124,11 +7854,7 @@ def test_stream_pi_startup_failed_network_timeout(tmp_path, caplog):
     )
     with caplog.at_level("INFO"):
         with pytest.raises(subprocess.CalledProcessError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = [line for line in caplog.text.splitlines()
              if " startup_failed " in line]
     assert len(lines) == 1
@@ -8144,11 +7870,7 @@ def test_stream_pi_no_startup_failed_after_first_response(tmp_path, caplog):
     )
     with caplog.at_level("INFO"):
         with pytest.raises(subprocess.CalledProcessError):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert not any(" startup_failed " in line
                    for line in caplog.text.splitlines())
     # The existing run_failed scene line still carries the reason.
@@ -8182,11 +7904,7 @@ def test_stream_pi_model_wait_then_resumed_no_warning_spam(
         tmp_path, session_records=records, stdout="final answer",
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = caplog.text.splitlines()
     # One transition into model_wait, one transition back on resume.
     waits = [line for line in lines if " model_wait " in line]
@@ -8239,11 +7957,7 @@ def test_stream_pi_no_model_wait_after_assistant_text(tmp_path, caplog):
         sleep=0.5,
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert " model_wait " not in caplog.text
     assert " resumed " not in caplog.text
 
@@ -8263,12 +7977,7 @@ def test_stream_pi_logs_idle_warning_once_when_session_stalls(
     heartbeat."""
     command = make_fake_pi(tmp_path, session_records=[], sleep=1.2)
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.5,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.5), cwd=tmp_path)
     lines = caplog.text.splitlines()
     idles = [line for line in lines if " pi_idle " in line]
     assert len(idles) == 1, f"exactly one idle warning: {lines}"
@@ -8307,12 +8016,7 @@ def test_stream_pi_logs_pi_resumed_after_idle_warning(tmp_path, caplog):
         tmp_path, session_records=records, stdout="ok",
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.4,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.4), cwd=tmp_path)
     lines = caplog.text.splitlines()
     idles = [line for line in lines if " pi_idle " in line]
     resumed = [line for line in lines if " pi_resumed " in line]
@@ -8349,12 +8053,7 @@ def test_stream_pi_no_idle_warning_during_model_wait(tmp_path, caplog):
         tmp_path, session_records=records, sleep=1.2,
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.5,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.5), cwd=tmp_path)
     assert " pi_idle " not in caplog.text
     # The silence is visible as the model_wait state instead.
     waits = [line for line in caplog.text.splitlines()
@@ -8390,11 +8089,7 @@ def test_stream_pi_resumed_run_follows_new_session_file(tmp_path, caplog):
         stdout="fixed",
     )
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="run45", issue=45, source_repo="xqliu/orbi",
-            branch="orbi/xqliu-orbi-issue-45-run45",
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="run45", issue=45, branch="orbi/xqliu-orbi-issue-45-run45", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert result == "fixed"
     # The journal follows the NEW session created by this invocation: its
     # tool call is reported (the old session has no messages, so binding to
@@ -8441,11 +8136,7 @@ def test_stream_pi_drains_pipe_data_written_after_exit(
 
     monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            ["fake"], cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        result = runner.stream_pi(["fake"], ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert result == "late stdout data"
     assert "stderr=late stderr data" in caplog.text
 
@@ -8479,12 +8170,7 @@ def test_stream_pi_hung_model_request_killed_when_upstream_gone(
     with caplog.at_level("WARNING"), pytest.raises(
         RuntimeError, match="hung",
     ) as excinfo:
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=0.5,
-            run_id="deadbeef", issue=75, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=75, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5), cwd=tmp_path)
     # The failure message names the hung model request and the stale
     # time.
     assert "model_wait" in str(excinfo.value)
@@ -8550,11 +8236,7 @@ def test_stream_pi_frozen_model_wait_just_before_default_survives(
         sleep=0.3,
     )
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=228, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=228, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert result == "final answer"
     assert "model_wait_dead" not in caplog.text
     assert "model_wait_slow" not in caplog.text
@@ -8571,11 +8253,7 @@ def test_stream_pi_frozen_model_wait_at_default_kills_with_configured_threshold(
     with caplog.at_level("WARNING"), pytest.raises(
         RuntimeError, match="hung",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=228, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=228, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     lines = caplog.text.splitlines()
     dead = [line for line in lines if " model_wait_dead " in line]
     assert len(dead) == 1
@@ -8597,12 +8275,7 @@ def test_stream_pi_explicit_short_override_kills_before_default(
     with caplog.at_level("WARNING"), pytest.raises(
         RuntimeError, match="hung",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=1.0,
-            run_id="deadbeef", issue=228, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=228, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=1.0), cwd=tmp_path)
     lines = caplog.text.splitlines()
     dead = [line for line in lines if " model_wait_dead " in line]
     assert len(dead) == 1
@@ -8622,11 +8295,7 @@ def test_stream_pi_frozen_model_wait_at_ten_minutes_survives_default(
         sleep=0.3,
     )
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=228, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=228, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert result == "final answer"
     assert "model_wait_dead" not in caplog.text
 
@@ -8660,12 +8329,7 @@ def test_stream_pi_slow_model_still_generating_is_not_killed(
         sleep=0.8,
     )
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=0.4,
-            run_id="deadbeef", issue=75, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=75, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.4), cwd=tmp_path)
     assert result == "final answer"
     assert "model_wait_dead" not in caplog.text
 
@@ -8686,12 +8350,7 @@ def test_stream_pi_no_upstream_kill_before_model_wait(tmp_path, caplog):
     ]
     command = make_fake_pi(tmp_path, session_records=records, sleep=1.2)
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=0.5,
-            run_id="deadbeef", issue=75, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=75, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5), cwd=tmp_path)
     assert "model_wait_dead" not in caplog.text
 
 
@@ -8797,12 +8456,7 @@ def test_stream_pi_hung_model_request_killed_despite_live_upstream(
         with caplog.at_level("WARNING"), pytest.raises(
             RuntimeError, match="hung",
         ) as excinfo:
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                model_wait_dead_seconds=0.5,
-                run_id="deadbeef", issue=218, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=218, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5), cwd=tmp_path)
     finally:
         stop()
     assert "model_wait" in str(excinfo.value)
@@ -8841,12 +8495,7 @@ def test_stream_pi_model_wait_dead_line_fields(tmp_path, caplog):
     ]
     command = make_fake_pi(tmp_path, session_records=records, sleep=10.0)
     with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=0.5,
-            run_id="ab12cd34", issue=218, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="ab12cd34", issue=218, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5), cwd=tmp_path)
     lines = caplog.text.splitlines()
     dead = [line for line in lines if " model_wait_dead " in line]
     assert len(dead) == 1
@@ -8878,12 +8527,7 @@ def test_stream_pi_dropped_connection_model_wait_dead_upstream_false(
         with caplog.at_level("WARNING"), pytest.raises(
             RuntimeError, match="hung",
         ):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                model_wait_dead_seconds=0.5,
-                run_id="deadbeef", issue=169, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=169, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5), cwd=tmp_path)
     finally:
         stop()
     lines = caplog.text.splitlines()
@@ -8916,14 +8560,7 @@ def test_stream_pi_swallowed_model_request_killed_fast(tmp_path, caplog,
     with caplog.at_level("WARNING"), pytest.raises(
         RuntimeError, match="swallowed",
     ) as excinfo:
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=10.0,
-            model_wait_probe_url="http://127.0.0.1:18082/slots",
-            model_wait_probe_seconds=0.5,
-            run_id="deadbeef", issue=233, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=233, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=10.0, model_wait_probe_url="http://127.0.0.1:18082/slots", model_wait_probe_seconds=0.5), cwd=tmp_path)
     assert "model_wait" in str(excinfo.value)
     lines = caplog.text.splitlines()
     failures = [line for line in lines if " run_failed " in line]
@@ -8959,14 +8596,7 @@ def test_stream_pi_swallow_line_fields(tmp_path, caplog, monkeypatch):
     ]
     command = make_fake_pi(tmp_path, session_records=records, sleep=10.0)
     with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=10.0,
-            model_wait_probe_url="http://127.0.0.1:18082/slots",
-            model_wait_probe_seconds=1.0,
-            run_id="ab12cd34", issue=233, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="ab12cd34", issue=233, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=10.0, model_wait_probe_url="http://127.0.0.1:18082/slots", model_wait_probe_seconds=1.0), cwd=tmp_path)
     lines = caplog.text.splitlines()
     swallowed = [line for line in lines if " model_wait_swallowed " in line]
     assert len(swallowed) == 1
@@ -8994,14 +8624,7 @@ def test_stream_pi_swallow_not_fired_while_a_slot_is_processing(
     with caplog.at_level("WARNING"), pytest.raises(
         RuntimeError, match="hung",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=0.5,
-            model_wait_probe_url="http://127.0.0.1:18082/slots",
-            model_wait_probe_seconds=0.2,
-            run_id="deadbeef", issue=233, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=233, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5, model_wait_probe_url="http://127.0.0.1:18082/slots", model_wait_probe_seconds=0.2), cwd=tmp_path)
     lines = caplog.text.splitlines()
     # The dead-request bound fired, not the swallow probe.
     dead = [line for line in lines if " model_wait_dead " in line]
@@ -9042,14 +8665,7 @@ def test_stream_pi_swallow_window_restarts_when_events_arrive(
         (0.3, tool_result(5)),
     ]
     command = make_fake_pi(tmp_path, session_records=records, sleep=0.4)
-    runner.stream_pi(
-        command, cwd=tmp_path, poll_interval=0.1,
-        model_wait_dead_seconds=10.0,
-        model_wait_probe_url="http://127.0.0.1:18082/slots",
-        model_wait_probe_seconds=0.6,
-        run_id="deadbeef", issue=233, source_repo="xqliu/orbi",
-        branch="b",
-    )
+    runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=233, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=10.0, model_wait_probe_url="http://127.0.0.1:18082/slots", model_wait_probe_seconds=0.6), cwd=tmp_path)
     assert " model_wait_swallowed " not in caplog.text
     assert " run_failed " not in caplog.text
 
@@ -9067,14 +8683,7 @@ def test_stream_pi_swallow_probe_failure_is_inconclusive(
     with caplog.at_level("WARNING"), pytest.raises(
         RuntimeError, match="hung",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=0.5,
-            model_wait_probe_url="http://127.0.0.1:18082/slots",
-            model_wait_probe_seconds=0.2,
-            run_id="deadbeef", issue=233, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=233, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5, model_wait_probe_url="http://127.0.0.1:18082/slots", model_wait_probe_seconds=0.2), cwd=tmp_path)
     lines = caplog.text.splitlines()
     dead = [line for line in lines if " model_wait_dead " in line]
     assert len(dead) == 1
@@ -9094,12 +8703,7 @@ def test_stream_pi_unconfigured_probe_keeps_dead_bound(
     with caplog.at_level("WARNING"), pytest.raises(
         RuntimeError, match="hung",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=0.5,
-            run_id="deadbeef", issue=233, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=233, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5), cwd=tmp_path)
     # The probe was never called (no URL configured).
     probe.assert_not_called()
     lines = caplog.text.splitlines()
@@ -9263,12 +8867,7 @@ def test_stream_pi_timeout_tool_inside_deadline_not_killed(
             release.write_text("go", encoding="utf-8")
 
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.2,
-            idle_warn_seconds=1.0,
-            run_id="deadbeef", issue=105, source_repo="xqliu/orbi",
-            branch="b", progress=progress,
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=105, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.2, idle_warn_seconds=1.0), cwd=tmp_path, progress=progress)
     assert result == ""
     assert released, "the wait decision reached the progress callback"
     lines = caplog.text.splitlines()
@@ -9395,12 +8994,7 @@ def test_stream_pi_timeout_tool_deadline_grace_window_not_killed(
         seen.append(activity.get("recovery"))
 
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.3,
-            run_id="deadbeef", issue=105, source_repo="xqliu/orbi",
-            branch="b", progress=progress,
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=105, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path, progress=progress)
     # The tool was TERMed by the runner (the wrapper failed to end it:
     # still alive one full idle window after the deadline), the fake
     # Pi resumed when the tool died, and the run SUCCEEDED.
@@ -9453,12 +9047,7 @@ def test_stream_pi_timeout_tool_past_deadline_still_terminated(
     with caplog.at_level("INFO"), pytest.raises(
         RuntimeError, match="idle recovery",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.3,
-            run_id="deadbeef", issue=105, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=105, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path)
     lines = caplog.text.splitlines()
     # The first escalation window already saw a past deadline (the
     # wrapper failed to end the command): no wait decision at all.
@@ -9488,12 +9077,7 @@ def test_stream_pi_idle_recovery_state_wait_visible_in_progress_callback(
     def progress(activity):
         seen.append(activity.get("recovery"))
 
-    runner.stream_pi(
-        command, cwd=tmp_path, poll_interval=0.1,
-        idle_warn_seconds=0.3,
-        run_id="deadbeef", issue=105, source_repo="xqliu/orbi",
-        branch="b", progress=progress,
-    )
+    runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=105, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path, progress=progress)
     assert "wait" in seen
     assert "term" not in seen
     assert seen[-1] is None
@@ -9519,12 +9103,7 @@ def test_stream_pi_wait_state_cleared_when_waited_tool_exits(
     with caplog.at_level("INFO"), pytest.raises(
         RuntimeError, match="idle recovery",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.3,
-            run_id="deadbeef", issue=105, source_repo="xqliu/orbi",
-            branch="b", progress=progress,
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=105, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path, progress=progress)
     lines = caplog.text.splitlines()
     waits = [line for line in lines if " pi_idle_wait " in line]
     assert len(waits) == 1, lines
@@ -9916,12 +9495,7 @@ def test_stream_pi_idle_recovery_terms_hung_descendant_and_resumes(
     failure signal reached the model)."""
     command = make_hung_pi(tmp_path)
     with caplog.at_level("INFO"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.3,
-            run_id="deadbeef", issue=94, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=94, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path)
     assert result == ""
     lines = caplog.text.splitlines()
     idles = [line for line in lines if " pi_idle " in line]
@@ -9960,12 +9534,7 @@ def test_stream_pi_idle_recovery_kills_descendant_that_ignores_term(
         tmp_path, ignore_sigterm=True, react_on_child_death=True,
     )
     with caplog.at_level("INFO"):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.3,
-            run_id="deadbeef", issue=94, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=94, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path)
     lines = caplog.text.splitlines()
     terms = [line for line in lines if " pi_idle_term " in line]
     kills = [line for line in lines if " pi_idle_kill " in line]
@@ -9998,12 +9567,7 @@ def test_stream_pi_idle_recovery_kills_pi_session_after_three_idle_cycles(
     with caplog.at_level("INFO"), pytest.raises(
         RuntimeError, match="idle recovery",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.3,
-            run_id="deadbeef", issue=94, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=94, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path)
     lines = caplog.text.splitlines()
     terms = [line for line in lines if " pi_idle_term " in line]
     kills = [line for line in lines if " pi_idle_kill " in line]
@@ -10041,12 +9605,7 @@ def test_stream_pi_idle_recovery_without_descendants_still_terminates(
     with caplog.at_level("INFO"), pytest.raises(
         RuntimeError, match="idle recovery",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            idle_warn_seconds=0.3,
-            run_id="deadbeef", issue=94, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=94, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path)
     lines = caplog.text.splitlines()
     terms = [line for line in lines if " pi_idle_term " in line]
     assert len(terms) == 1
@@ -10071,12 +9630,7 @@ def test_stream_pi_idle_recovery_never_signals_non_descendants(
     try:
         command = make_hung_pi(tmp_path)
         with caplog.at_level("INFO"):
-            runner.stream_pi(
-                command, cwd=tmp_path, poll_interval=0.1,
-                idle_warn_seconds=0.3,
-                run_id="deadbeef", issue=94, source_repo="xqliu/orbi",
-                branch="b",
-            )
+            runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=94, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path)
         # The bystander is untouched: still running, and its pid never
         # appears on a recovery line.
         assert bystander.poll() is None
@@ -10100,12 +9654,7 @@ def test_stream_pi_idle_recovery_never_fires_during_model_wait(
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError, match="hung",
     ):
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            model_wait_dead_seconds=0.5,
-            run_id="deadbeef", issue=94, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=94, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, model_wait_dead_seconds=0.5), cwd=tmp_path)
     assert " pi_idle_term " not in caplog.text
     assert " pi_idle_kill " not in caplog.text
     failures = [line for line in caplog.text.splitlines()
@@ -10127,12 +9676,7 @@ def test_stream_pi_idle_recovery_state_visible_in_progress_callback(
     def progress(activity):
         seen.append(activity.get("recovery"))
 
-    runner.stream_pi(
-        command, cwd=tmp_path, poll_interval=0.1,
-        idle_warn_seconds=0.3,
-        run_id="deadbeef", issue=94, source_repo="xqliu/orbi",
-        branch="b", progress=progress,
-    )
+    runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=94, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1, idle_warn_seconds=0.3), cwd=tmp_path, progress=progress)
     assert "term" in seen
     # Before the stall and after the resume the state is None again.
     assert seen[0] is None
@@ -10145,11 +9689,7 @@ def test_stream_pi_times_out_and_kills_process(tmp_path, caplog):
     with caplog.at_level("ERROR"), pytest.raises(
         subprocess.TimeoutExpired,
     ) as excinfo:
-        runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1, timeout=0.5,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b",
-        )
+        runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path, timeout=0.5)
     assert excinfo.value.timeout == 0.5
     # The exception must not carry the raw command (prompt / Issue body).
     assert "sleep" not in str(excinfo.value)
@@ -10184,11 +9724,7 @@ def test_stream_pi_invokes_progress_callback_while_child_is_running(
             "result": activity["result"],
         })
 
-    result = runner.stream_pi(
-        command, cwd=tmp_path, poll_interval=0.1,
-        run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-        branch="b", progress=progress,
-    )
+    result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path, progress=progress)
     assert result == "final answer"
     # The callback fired many times during the run (polls at 0.1 s while
     # the child sleeps 1.2 s after the last session record)...
@@ -10239,11 +9775,7 @@ def test_stream_pi_progress_first_frame_may_be_session_pending(tmp_path):
             "result": activity["result"],
         })
 
-    result = runner.stream_pi(
-        command, cwd=tmp_path, poll_interval=0.05,
-        run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-        branch="b", progress=progress,
-    )
+    result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.05), cwd=tmp_path, progress=progress)
     assert result == "final answer"
     # The forced #741 scene: the first frame predates the session file,
     # so it is the `session_pending` startup sub-phase — never a reason
@@ -10279,17 +9811,8 @@ def test_stream_pi_live_progress_patches_github_before_child_exits(
             patches.append(body)
 
     publisher = FakePublisher()
-    throttle = runner.LiveProgressThrottle(
-        publisher, issue=24, title="Live progress", run_id="deadbeef",
-        role="implement", branch="b", worktree=tmp_path,
-        started=time.monotonic(), pr_url=None, review_round=0,
-        priority="normal",
-    )
-    result = runner.stream_pi(
-        command, cwd=tmp_path, poll_interval=0.1,
-        run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-        branch="b", progress=throttle,
-    )
+    throttle = runner.LiveProgressThrottle(RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="owner/repo"), publisher, title="Live progress", role="implement", started=time.monotonic(), pr_url=None, review_round=0, priority="normal")
+    result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path, progress=throttle)
     assert result == "done"
     # At least one PATCH happened while the child was still running
     # (all of them did: the callback only exists inside the poll loop).
@@ -10317,11 +9840,7 @@ def test_stream_pi_progress_callback_error_never_interrupts_run(
         raise RuntimeError("gh api failed")
 
     with caplog.at_level("ERROR"):
-        result = runner.stream_pi(
-            command, cwd=tmp_path, poll_interval=0.1,
-            run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-            branch="b", progress=boom,
-        )
+        result = runner.stream_pi(command, ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path, progress=boom)
     assert result == "final answer"
     assert "progress_publish_failed" in caplog.text
     assert "run=deadbeef" in caplog.text
@@ -10340,12 +9859,7 @@ def test_live_progress_throttle_patches_on_change_and_cadence():
             calls.append(body)
 
     publisher = FakePublisher()
-    throttle = runner.LiveProgressThrottle(
-        publisher, issue=1, title="Throttle task", run_id="deadbeef",
-        role="implement", branch="b", worktree=Path("/w"),
-        started=time.monotonic(), pr_url=None, review_round=0,
-        priority="normal",
-    )
+    throttle = runner.LiveProgressThrottle(RunContext(run_id="deadbeef", issue=1, branch="b", worktree=Path("/w"), source_repo="owner/repo"), publisher, title="Throttle task", role="implement", started=time.monotonic(), pr_url=None, review_round=0, priority="normal")
     first = {
         "phase": "starting", "action": None, "result": None,
         "model_wait": False, "session_id": None,
@@ -10387,12 +9901,7 @@ def test_live_progress_throttle_patches_on_recovery_change():
             calls.append(body)
 
     publisher = FakePublisher()
-    throttle = runner.LiveProgressThrottle(
-        publisher, issue=94, title="Idle recovery", run_id="deadbeef",
-        role="implement", branch="b", worktree=Path("/w"),
-        started=time.monotonic(), pr_url=None, review_round=0,
-        priority="normal",
-    )
+    throttle = runner.LiveProgressThrottle(RunContext(run_id="deadbeef", issue=94, branch="b", worktree=Path("/w"), source_repo="owner/repo"), publisher, title="Idle recovery", role="implement", started=time.monotonic(), pr_url=None, review_round=0, priority="normal")
     first = {
         "phase": "test", "action": "bash pytest tests/", "result": None,
         "model_wait": False, "session_id": None,
@@ -10428,15 +9937,10 @@ def test_run_pi_passes_progress_callback_to_stream_pi(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "render_prompt", lambda template, values: "sp")
     (tmp_path / "prompt.md").write_text("p", encoding="utf-8")
     callback = lambda activity: None  # noqa: E731
-    runner.run_pi(
-        {"number": 4, "title": "Fix", "body": "b"}, tmp_path,
-        runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=()),
-        "owner/repo", branch="b",
-        progress=callback,
-    )
+    runner.run_pi({"number": 4, "title": "Fix", "body": "b"}, RunContext(run_id=runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=()).run_id, issue={"number": 4, "title": "Fix", "body": "b"}["number"], branch="b", worktree=tmp_path, source_repo="owner/repo"), runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=()), progress=callback)
     assert seen["progress"] is callback
-    assert seen["run_id"] == "a1b2c3d4"
-    assert seen["branch"] == "b"
+    assert seen["ctx"].run_id == "a1b2c3d4"
+    assert seen["ctx"].branch == "b"
 
 
 def test_run_review_passes_progress_callback_to_stream_pi(
@@ -10452,13 +9956,8 @@ def test_run_review_passes_progress_callback_to_stream_pi(
     monkeypatch.setattr(runner, "render_prompt", lambda template, values: "sp")
     (tmp_path / "prompt_review.md").write_text("p", encoding="utf-8")
     callback = lambda activity: None  # noqa: E731
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        runner.RunnerConfig(prompt_review=tmp_path / "prompt_review.md", repo_dir=tmp_path, source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()),
-        "owner/repo", 4, "branch", 1, progress=callback,
-    )
+    runner.run_review(RunContext(run_id=runner.RunnerConfig(prompt_review=tmp_path / "prompt_review.md", repo_dir=tmp_path, source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()).run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, runner.RunnerConfig(prompt_review=tmp_path / "prompt_review.md", repo_dir=tmp_path, source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()), 1, progress=callback)
     assert seen["progress"] is callback
     assert seen["role"] == "review"
 
@@ -10479,13 +9978,10 @@ def test_run_pi_passes_configured_model_wait_dead_seconds(
     monkeypatch.setattr(runner, "stream_pi", fake_stream)
     monkeypatch.setattr(runner, "render_prompt", lambda template, values: "sp")
     (tmp_path / "prompt.md").write_text("p", encoding="utf-8")
-    runner.run_pi(
-        {"number": 4, "title": "Fix", "body": "b"}, tmp_path,
-        runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=(), model_wait_dead_seconds=1234.5),
-        "owner/repo", branch="b",
-    )
-    assert seen["model_wait_dead_seconds"] == 1234.5
-    assert seen["model_wait_dead_seconds"] != runner.PI_MODEL_WAIT_DEAD_SECONDS
+    runner.run_pi({"number": 4, "title": "Fix", "body": "b"}, RunContext(run_id=runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=(), model_wait_dead_seconds=1234.5).run_id, issue={"number": 4, "title": "Fix", "body": "b"}["number"], branch="b", worktree=tmp_path, source_repo="owner/repo"), runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=(), model_wait_dead_seconds=1234.5))
+    assert seen["watch"].model_wait_dead_seconds == 1234.5
+    assert seen["watch"].model_wait_dead_seconds != (
+        runner.PI_MODEL_WAIT_DEAD_SECONDS)
 
 
 def test_run_review_passes_configured_model_wait_dead_seconds(
@@ -10502,15 +9998,11 @@ def test_run_review_passes_configured_model_wait_dead_seconds(
     monkeypatch.setattr(runner, "stream_pi", fake_stream)
     monkeypatch.setattr(runner, "render_prompt", lambda template, values: "sp")
     (tmp_path / "prompt_review.md").write_text("p", encoding="utf-8")
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        runner.RunnerConfig(prompt_review=tmp_path / "prompt_review.md", repo_dir=tmp_path, source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=(), model_wait_dead_seconds=1234.5),
-        "owner/repo", 4, "branch", 1,
-    )
-    assert seen["model_wait_dead_seconds"] == 1234.5
-    assert seen["model_wait_dead_seconds"] != runner.PI_MODEL_WAIT_DEAD_SECONDS
+    runner.run_review(RunContext(run_id=runner.RunnerConfig(prompt_review=tmp_path / "prompt_review.md", repo_dir=tmp_path, source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=(), model_wait_dead_seconds=1234.5).run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, runner.RunnerConfig(prompt_review=tmp_path / "prompt_review.md", repo_dir=tmp_path, source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=(), model_wait_dead_seconds=1234.5), 1)
+    assert seen["watch"].model_wait_dead_seconds == 1234.5
+    assert seen["watch"].model_wait_dead_seconds != (
+        runner.PI_MODEL_WAIT_DEAD_SECONDS)
 
 
 def test_run_pi_keeps_module_default_without_config_key(
@@ -10528,12 +10020,9 @@ def test_run_pi_keeps_module_default_without_config_key(
     monkeypatch.setattr(runner, "stream_pi", fake_stream)
     monkeypatch.setattr(runner, "render_prompt", lambda template, values: "sp")
     (tmp_path / "prompt.md").write_text("p", encoding="utf-8")
-    runner.run_pi(
-        {"number": 4, "title": "Fix", "body": "b"}, tmp_path,
-        runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=()),
-        "owner/repo", branch="b",
-    )
-    assert seen["model_wait_dead_seconds"] == runner.PI_MODEL_WAIT_DEAD_SECONDS
+    runner.run_pi({"number": 4, "title": "Fix", "body": "b"}, RunContext(run_id=runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=()).run_id, issue={"number": 4, "title": "Fix", "body": "b"}["number"], branch="b", worktree=tmp_path, source_repo="owner/repo"), runner.RunnerConfig(prompt=tmp_path / "prompt.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, base_branch="main", base_sha="abc123", run_id="a1b2c3d4", skills=(), context_files=()))
+    assert seen["watch"].model_wait_dead_seconds == (
+        runner.PI_MODEL_WAIT_DEAD_SECONDS)
 
 
 # --- role-specific --skill lists (Issue #83) ---------------------------------
@@ -10573,10 +10062,7 @@ def test_run_pi_keeps_tdd_dev_and_code_review_drops_review_fix_loop(
     config = _skill_config(
         tmp_path, "tdd-dev", "code-review", "review-fix-loop",
     )
-    runner.run_pi(
-        {"number": 4, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-4",
-    )
+    runner.run_pi({"number": 4, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 4, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     skills = _command_skills(calls[0])
     assert any("tdd-dev" in skill for skill in skills)
     assert any("code-review" in skill for skill in skills)
@@ -10597,12 +10083,8 @@ def test_run_review_keeps_only_code_review(monkeypatch, tmp_path):
     config = _skill_config(
         tmp_path, "tdd-dev", "code-review", "review-fix-loop",
     )
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        config, "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=config.run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, config, 1)
     skills = _command_skills(calls[0])
     assert not any("tdd-dev" in skill for skill in skills)
     assert not any("review-fix-loop" in skill for skill in skills)
@@ -10622,16 +10104,9 @@ def test_run_pi_and_run_review_skill_lists_differ(monkeypatch, tmp_path):
     config = _skill_config(
         tmp_path, "tdd-dev", "code-review", "review-fix-loop",
     )
-    runner.run_pi(
-        {"number": 4, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-4",
-    )
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        config, "owner/repo", 4, "branch", 1,
-    )
+    runner.run_pi({"number": 4, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 4, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
+    runner.run_review(RunContext(run_id=config.run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, config, 1)
     implement_skills = _command_skills(calls[0])
     review_skills = _command_skills(calls[1])
     assert implement_skills != review_skills
@@ -10659,12 +10134,8 @@ def test_run_review_keeps_non_delivery_skill_names(monkeypatch, tmp_path):
         lambda command, **kwargs: calls.append(command) or "ok",
     )
     config = _skill_config(tmp_path, "code-review", "platform-qa")
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        config, "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=config.run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, config, 1)
     skills = _command_skills(calls[0])
     assert any("code-review" in skill for skill in skills)
     assert any("platform-qa" in skill for skill in skills)
@@ -13117,10 +12588,7 @@ def test_run_pi_passes_configured_model_args(monkeypatch, tmp_path):
         tmp_path, pi_provider="openai", pi_model="gpt-5.6-sol",
         pi_thinking="medium",
     )
-    runner.run_pi(
-        {"number": 4, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-4",
-    )
+    runner.run_pi({"number": 4, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 4, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     command, kwargs = calls[0]
     assert _command_model_args(command) == [
         ("--provider", "openai"),
@@ -13146,10 +12614,7 @@ def test_run_pi_passes_partial_model_args(monkeypatch, tmp_path):
         lambda command, **kwargs: calls.append((command, kwargs)) or "done",
     )
     config = _model_config(tmp_path, pi_provider="openai")
-    runner.run_pi(
-        {"number": 4, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-4",
-    )
+    runner.run_pi({"number": 4, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 4, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     command, kwargs = calls[0]
     assert _command_model_args(command) == [("--provider", "openai")]
     assert "--model" not in command
@@ -13167,10 +12632,7 @@ def test_run_pi_omits_model_args_when_not_configured(monkeypatch, tmp_path):
         lambda command, **kwargs: calls.append((command, kwargs)) or "done",
     )
     config = _model_config(tmp_path)
-    runner.run_pi(
-        {"number": 4, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-4",
-    )
+    runner.run_pi({"number": 4, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 4, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     command, kwargs = calls[0]
     assert "--provider" not in command
     assert "--model" not in command
@@ -13193,12 +12655,8 @@ def test_run_review_passes_configured_model_args(monkeypatch, tmp_path):
         tmp_path, pi_provider="openai", pi_model="gpt-5.6-sol",
         pi_thinking="medium",
     )
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        config, "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=config.run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, config, 1)
     command, kwargs = calls[0]
     assert _command_model_args(command) == [
         ("--provider", "openai"),
@@ -13224,12 +12682,8 @@ def test_run_review_omits_model_args_when_not_configured(monkeypatch, tmp_path):
         lambda command, **kwargs: calls.append((command, kwargs)) or "ok",
     )
     config = _model_config(tmp_path)
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        config, "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=config.run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, config, 1)
     command, kwargs = calls[0]
     assert "--provider" not in command
     assert "--model" not in command
@@ -14087,12 +13541,7 @@ def test_stream_pi_sets_pi_env_on_the_process(tmp_path):
         "import os, sys\n"
         "sys.stdout.write(os.environ.get('PI_CODING_AGENT_DIR', ''))\n"
     )
-    result = runner.stream_pi(
-        [sys.executable, "-c", script],
-        cwd=tmp_path, poll_interval=0.1,
-        run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-        branch="b", pi_env={"PI_CODING_AGENT_DIR": "/agent-dir"},
-    )
+    result = runner.stream_pi([sys.executable, "-c", script], ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path, pi_env={"PI_CODING_AGENT_DIR": "/agent-dir"})
     assert result == "/agent-dir"
 
 
@@ -14104,12 +13553,7 @@ def test_stream_pi_without_pi_env_keeps_inherited_env(tmp_path, monkeypatch):
         "import os, sys\n"
         "sys.stdout.write(os.environ.get('ORBI_TEST_ENV_MARKER', ''))\n"
     )
-    result = runner.stream_pi(
-        [sys.executable, "-c", script],
-        cwd=tmp_path, poll_interval=0.1,
-        run_id="deadbeef", issue=24, source_repo="xqliu/orbi",
-        branch="b",
-    )
+    result = runner.stream_pi([sys.executable, "-c", script], ctx=RunContext(run_id="deadbeef", issue=24, branch="b", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     assert result == "inherited"
 
 
@@ -14128,10 +13572,7 @@ def test_run_pi_materializes_provider_dir_and_env(monkeypatch, tmp_path):
         tmp_path, pi_provider="groq", pi_model="qwen/qwen3.8-27b",
         pi_providers_data=GROQ_PROVIDERS,
     )
-    runner.run_pi(
-        {"number": 4, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-4",
-    )
+    runner.run_pi({"number": 4, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 4, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     kwargs = calls[0]
     agent_dir = tmp_path / ".orbi" / "pi-agent"
     assert kwargs["pi_env"] == {"PI_CODING_AGENT_DIR": str(agent_dir)}
@@ -14152,10 +13593,7 @@ def test_run_pi_without_providers_keeps_pre_157_env(monkeypatch, tmp_path):
         lambda command, **kwargs: calls.append(kwargs) or "done",
     )
     config = _model_config(tmp_path)
-    runner.run_pi(
-        {"number": 4, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-4",
-    )
+    runner.run_pi({"number": 4, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 4, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     kwargs = calls[0]
     assert "pi_env" not in kwargs
     assert not (tmp_path / ".orbi" / "pi-agent").exists()
@@ -14176,12 +13614,8 @@ def test_run_review_materializes_provider_dir_and_env(monkeypatch, tmp_path):
         tmp_path, pi_provider="groq", pi_model="qwen/qwen3.8-27b",
         pi_providers_data=GROQ_PROVIDERS,
     )
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        config, "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=config.run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, config, 1)
     kwargs = calls[0]
     agent_dir = tmp_path / ".orbi" / "pi-agent"
     assert kwargs["pi_env"] == {"PI_CODING_AGENT_DIR": str(agent_dir)}
@@ -14470,10 +13904,7 @@ def test_e2e_provider_endpoint_reaches_pi_process(monkeypatch, tmp_path):
         tmp_path, pi_provider="groq", pi_model="qwen/qwen3.8-27b",
         pi_providers_data=GROQ_PROVIDERS,
     )
-    result = runner.run_pi(
-        {"number": 4, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch="orbi/owner-repo-issue-4",
-    )
+    result = runner.run_pi({"number": 4, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 4, "title": "t", "body": "b"}["number"], branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), config)
     assert result == "https://api.groq.com/openai/v1"
 
 
@@ -14559,10 +13990,7 @@ def test_stop_handler_active_run_logs_stopping_then_stopped_and_exits(
     worktree.mkdir()
     monkeypatch.setattr(journal, "_ACTIVE_RUN", None)
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
-    runner.set_active_run(
-        48, "Log the stop scene", "orbi/owner-repo-issue-48",
-        str(worktree),
-    )
+    runner.set_active_run(RunContext(run_id="a1b2c3d4", issue=48, branch="orbi/owner-repo-issue-48", worktree=str(worktree), source_repo="owner/repo"), "Log the stop scene")
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
     )
@@ -14608,7 +14036,7 @@ def test_stop_handler_active_run_uses_activity_snapshot_for_scene(
     _write_session_file(worktree, session_id="sess-48")
     monkeypatch.setattr(journal, "_ACTIVE_RUN", None)
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
-    runner.set_active_run(48, "t", "b", str(worktree))
+    runner.set_active_run(RunContext(run_id="a1b2c3d4", issue=48, branch="b", worktree=str(worktree), source_repo="owner/repo"), "t")
     died = {}
     monkeypatch.setattr(
         runner, "_die_from_signal",
@@ -14632,7 +14060,7 @@ def test_stop_handler_active_run_without_live_child_still_stops(
     worktree.mkdir()
     monkeypatch.setattr(journal, "_ACTIVE_RUN", None)
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
-    runner.set_active_run(48, "t", "b", str(worktree))
+    runner.set_active_run(RunContext(run_id="a1b2c3d4", issue=48, branch="b", worktree=str(worktree), source_repo="owner/repo"), "t")
     died = {}
     monkeypatch.setattr(
         runner, "_die_from_signal",
@@ -14702,7 +14130,7 @@ def test_stop_handler_reinstalls_default_disposition_and_raises_signal(
 
 def test_set_active_run_binds_scene_and_pi_tracking(monkeypatch):
     monkeypatch.setattr(journal, "_ACTIVE_RUN", None)
-    runner.set_active_run(7, "t", "b", "/w")
+    runner.set_active_run(RunContext(run_id="a1b2c3d4", issue=7, branch="b", worktree="/w", source_repo="owner/repo"), "t")
     assert journal._ACTIVE_RUN == {
         "issue": 7, "title": "t", "branch": "b", "worktree": "/w",
         "pi": None,
@@ -14763,15 +14191,13 @@ import time
 
 sys.path.insert(0, {repo!r} + "/src")
 import orbi.runner as runner
+from orbi.delivery_scene import RunContext
 
 logging.basicConfig(level=logging.INFO, format=runner.log_format())
 # Exactly what main() does (Issue #48): install the stop handler first.
 signal.signal(signal.SIGTERM, runner._handle_stop)
 runner.set_run_id("a1b2c3d4")
-runner.set_active_run(
-    48, "Log the stop scene",
-    "orbi/owner-repo-issue-48", {worktree!r},
-)
+runner.set_active_run(RunContext(run_id="a1b2c3d4", issue=48, branch="orbi/owner-repo-issue-48", worktree={worktree!r}, source_repo="owner/repo"), "Log the stop scene")
 # The real Pi-like child: a real long-running process (what stream_pi
 # tracks via set_active_pi). It lingers briefly on SIGTERM before
 # exiting (a slow shutdown), so the stop handler's child.wait() has a
@@ -15305,7 +14731,7 @@ def test_run_ticket_agent_uses_a_temporary_session_without_git(monkeypatch, tmp_
     assert "git/gh tools" in command[command.index("--system-prompt") + 1]
     assert kwargs["cwd"] != tmp_path
     assert kwargs["cwd"].name.startswith("orbi-ticket-")
-    assert kwargs["branch"] == "-"
+    assert kwargs["ctx"].branch == "-"
     assert kwargs["role"] == runner.ROLE_TICKET
     assert str(tmp_path) not in command[command.index("--session-dir") + 1]
     assert Path(command[command.index("--session-dir") + 1]).parent == kwargs["cwd"]
@@ -15336,23 +14762,13 @@ def test_progress_state_passes_startup_sub_phase_to_comment(tmp_path):
     startup sub-phase (session_pending / request_pending) instead of
     the generic `starting` while the first response is outstanding."""
     for sub_phase in ("session_pending", "request_pending"):
-        state = runner._progress_state(
-            issue=176, title="t", run_id="a1b2c3d4", role="implement",
-            branch="b", worktree=tmp_path, started=time.monotonic(),
-            pr_url=None, review_round=0, priority="normal",
-            activity={"phase": sub_phase, "last_activity": None,
-                      "action": None, "session_id": None},
-        )
+        state = runner._progress_state(RunContext(run_id="a1b2c3d4", issue=176, branch="b", worktree=tmp_path, source_repo="owner/repo"), title="t", role="implement", started=time.monotonic(), pr_url=None, review_round=0, priority="normal", activity={"phase": sub_phase, "last_activity": None,
+                      "action": None, "session_id": None})
         assert state["phase"] == sub_phase
     # The tool-based phase passes through unchanged once the first
     # response arrived.
-    state = runner._progress_state(
-        issue=176, title="t", run_id="a1b2c3d4", role="implement",
-        branch="b", worktree=tmp_path, started=time.monotonic(),
-        pr_url=None, review_round=0, priority="normal",
-        activity={"phase": "test", "last_activity": None,
-                  "action": "bash pytest tests/", "session_id": "s1"},
-    )
+    state = runner._progress_state(RunContext(run_id="a1b2c3d4", issue=176, branch="b", worktree=tmp_path, source_repo="owner/repo"), title="t", role="implement", started=time.monotonic(), pr_url=None, review_round=0, priority="normal", activity={"phase": "test", "last_activity": None,
+                  "action": "bash pytest tests/", "session_id": "s1"})
     assert state["phase"] == "test"
 
 
@@ -15513,7 +14929,7 @@ def _ops_issue_mocks(monkeypatch, tmp_path, *, head_sha: str, dirty: str):
     monkeypatch.setattr(seam, "_safe_publish", lambda **k: None)
     monkeypatch.setattr(
         runner, "run_pi",
-        lambda issue_arg, wt, config, repo, **k: configs.append(config),
+        lambda issue_arg, ctx, config, **k: configs.append(config),
     )
     monkeypatch.setattr(runner.runner_health, "record_run_attempt", Mock())
     monkeypatch.setattr(runner.runner_health, "record_pickup", Mock())
@@ -20224,10 +19640,7 @@ def test_deliver_pr_rejects_wrong_branch(monkeypatch, tmp_path):
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(RuntimeError, match="Pi changed branch"):
-        runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", FAKE_HEAD_SHA, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        )
+        runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", FAKE_HEAD_SHA, issue_title="t", repo_dir=tmp_path)
 
 
 def test_deliver_pr_rejects_uncommitted_changes(monkeypatch, tmp_path):
@@ -20238,10 +19651,7 @@ def test_deliver_pr_rejects_uncommitted_changes(monkeypatch, tmp_path):
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(RuntimeError, match="uncommitted changes"):
-        runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        )
+        runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path)
 
 
 def test_deliver_pr_rejects_delivery_without_a_commit(monkeypatch, tmp_path):
@@ -20255,10 +19665,7 @@ def test_deliver_pr_rejects_delivery_without_a_commit(monkeypatch, tmp_path):
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(RuntimeError, match="no commit"):
-        runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", base_sha, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        )
+        runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", base_sha, issue_title="t", repo_dir=tmp_path)
 
 
 def test_deliver_pr_completes_the_closeout(monkeypatch, tmp_path):
@@ -20271,10 +19678,7 @@ def test_deliver_pr_completes_the_closeout(monkeypatch, tmp_path):
         return fake_deliver_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.deliver_pr(
-        tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-        issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-    ) == FAKE_PR_URL
+    assert runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path) == FAKE_PR_URL
     # The closeout order: commit boundary, locked base fetch, ancestry,
     # plain push, remote-head verification, PR list.
     assert ["git", "status", "--porcelain"] in calls
@@ -20320,10 +19724,7 @@ def test_deliver_pr_rolls_back_a_conflicting_base_absorb(
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with caplog.at_level("INFO"):
-        assert runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        ) == FAKE_PR_URL
+        assert runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path) == FAKE_PR_URL
     assert ["git", "merge", "origin/main"] in calls
     assert ["git", "merge", "--abort"] in calls
     # The abort happens before the push: the pushed head is the
@@ -20349,10 +19750,7 @@ def test_deliver_pr_absorbs_an_advanced_base(monkeypatch, tmp_path, caplog):
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with caplog.at_level("INFO"):
-        assert runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        ) == FAKE_PR_URL
+        assert runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path) == FAKE_PR_URL
     assert calls.index(["git", "merge", "origin/main"]) < calls.index(
         ["git", "push", "origin", f"HEAD:{DELIVER_BRANCH}"],
     )
@@ -20387,10 +19785,7 @@ def test_deliver_pr_creates_the_pr_when_absent(monkeypatch, tmp_path):
         return fake_deliver_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    assert runner.deliver_pr(
-        tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-        issue=4, issue_title="Closeout title", repo_dir=tmp_path, source_repo="o/r",
-    ) == FAKE_PR_URL
+    assert runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="Closeout title", repo_dir=tmp_path) == FAKE_PR_URL
     create = [
         command for command in calls
         if command[:3] == ["gh", "pr", "create"]
@@ -20417,10 +19812,7 @@ def test_deliver_pr_fails_fast_when_pr_create_fails(monkeypatch, tmp_path):
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(subprocess.CalledProcessError):
-        runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        )
+        runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path)
 
 
 def test_deliver_pr_rejects_remote_head_mismatch_after_push(
@@ -20433,10 +19825,7 @@ def test_deliver_pr_rejects_remote_head_mismatch_after_push(
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(RuntimeError, match="remote head"):
-        runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        )
+        runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path)
 
 
 def test_deliver_pr_verifies_the_pr_with_the_latest_base_check_skipped(
@@ -20458,10 +19847,7 @@ def test_deliver_pr_verifies_the_pr_with_the_latest_base_check_skipped(
         return fake_deliver_run(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    runner.deliver_pr(
-        tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-        issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-    )
+    runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path)
     fetches = [
         index for index, command in enumerate(calls)
         if command[:3] == ["git", "fetch", "origin"]
@@ -20498,10 +19884,7 @@ def test_deliver_pr_reports_a_closed_issue_and_skips_the_pr(
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("verify_pr must not run for a closed Issue")),
     )
-    assert runner.deliver_pr(
-        tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-        issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-    ) is None
+    assert runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path) is None
     # The Issue state is read AFTER the push: the work stays on origin.
     assert calls.index(
         ["gh", "issue", "view", "4", "--repo", "o/r", "--json", "state"],
@@ -20666,8 +20049,12 @@ def test_run_pi_applies_runner_runtime_excludes_before_pi(monkeypatch, tmp_path)
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kwargs: "done")
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id="run1")
     runner.run_pi(
-        {"number": 5, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo",
+        {"number": 5, "title": "t", "body": "b"},
+        runner.RunContext(
+            run_id=config.run_id, issue=5, branch="orbi/owner-repo-issue-5",
+            worktree=tmp_path, source_repo="owner/repo",
+        ),
+        config,
     )
     assert applied == [tmp_path]
     # Issue #302: the run artifact dir exists before the session — the
@@ -20686,13 +20073,8 @@ def test_run_review_applies_runner_runtime_excludes_before_pi(
         lambda worktree: applied.append(worktree),
     )
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kwargs: "ok")
-    runner.run_review(
-        tmp_path,
-        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
-         "head_oid": "h1", "head_ref": "h"},
-        runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()),
-        "owner/repo", 4, "branch", 1,
-    )
+    runner.run_review(RunContext(run_id=runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()).run_id, issue=4, branch="branch", worktree=tmp_path, source_repo="owner/repo"), {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, runner.RunnerConfig(prompt_review=prompt_path, repo_dir=tmp_path / "checkout", source_repos=("owner/repo",), base_branch="main", run_id="a1b2c3d4", skills=()), 1)
     assert applied == [tmp_path]
     # Issue #302: the review session reads/writes the same .orbi/ run
     # artifacts — the run dir exists here too.
@@ -20718,10 +20100,7 @@ def test_deliver_pr_repairs_runner_runtime_leftovers(monkeypatch, tmp_path,
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with caplog.at_level(logging.INFO, logger="orbi.bootstrap"):
-        url = runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        )
+        url = runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path)
     assert url == FAKE_PR_URL
     assert "runner_runtime_exclude_repaired" in caplog.text
     assert "delivery_uncommitted_changes" not in caplog.text
@@ -20742,10 +20121,7 @@ def test_deliver_pr_repairs_the_renamed_state_dir_too(monkeypatch, tmp_path,
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with caplog.at_level(logging.INFO, logger="orbi.bootstrap"):
-        url = runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        )
+        url = runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path)
     assert url == FAKE_PR_URL
     assert "runner_runtime_exclude_repaired" in caplog.text
 
@@ -20763,17 +20139,14 @@ def test_deliver_pr_still_fails_on_agent_leftovers_alongside_runner_state(
 
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(RuntimeError, match="uncommitted changes"):
-        runner.deliver_pr(
-            tmp_path, DELIVER_BRANCH, "main", "9" * 40, FAKE_RUN_ID,
-            issue=4, issue_title="t", repo_dir=tmp_path, source_repo="o/r",
-        )
+        runner.deliver_pr(RunContext(run_id=FAKE_RUN_ID, issue=4, branch=DELIVER_BRANCH, worktree=tmp_path, source_repo="o/r"), "main", "9" * 40, issue_title="t", repo_dir=tmp_path)
 
 
 def test_cleanup_task_worktree_removes_the_scene_and_prunes(tmp_path):
     repo, wt = _make_linked_worktree(tmp_path)
     (wt / ".orbi").mkdir(parents=True)
     (wt / ".pi-session").mkdir(parents=True)
-    runner.cleanup_task_worktree(wt, repo, run_id="abc12345", issue=4)
+    runner.cleanup_task_worktree(RunContext(run_id="abc12345", issue=4, branch="orbi/issue", worktree=wt, source_repo="owner/repo"), repo)
     assert not wt.exists()
     listing = subprocess.run(
         ["git", "-C", str(repo), "worktree", "list"],
@@ -20793,7 +20166,7 @@ def test_cleanup_task_worktree_logs_failure_and_keeps_the_scene(
 
     monkeypatch.setattr(runner.shutil, "rmtree", boom)
     with caplog.at_level(logging.ERROR, logger="orbi.bootstrap"):
-        runner.cleanup_task_worktree(wt, tmp_path, run_id="abc12345", issue=4)
+        runner.cleanup_task_worktree(RunContext(run_id="abc12345", issue=4, branch="orbi/issue", worktree=wt, source_repo="owner/repo"), tmp_path)
     assert "worktree_cleanup_failed" in caplog.text
     assert wt.exists(), "a failed cleanup must never claim the scene is gone"
 
@@ -20848,7 +20221,7 @@ def test_cleanup_task_worktree_prunes_without_a_scene(tmp_path):
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     missing = tmp_path / "already-gone"
-    runner.cleanup_task_worktree(missing, repo, run_id="abc12345", issue=4)
+    runner.cleanup_task_worktree(RunContext(run_id="abc12345", issue=4, branch="orbi/issue", worktree=missing, source_repo="owner/repo"), repo)
     assert not missing.exists()
 
 
@@ -21424,12 +20797,7 @@ def test_stream_pi_journals_drain_abandonment_when_grandchild_holds_pipe(
     )
     try:
         with caplog.at_level("WARNING"):
-            result = runner.stream_pi(
-                [sys.executable, "-c", wrapper], cwd=tmp_path,
-                poll_interval=0.1, run_id="deadbeef", issue=24,
-                source_repo="xqliu/orbi",
-                branch="orbi/xqliu-orbi-issue-24",
-            )
+            result = runner.stream_pi([sys.executable, "-c", wrapper], ctx=RunContext(run_id="deadbeef", issue=24, branch="orbi/xqliu-orbi-issue-24", worktree=tmp_path, source_repo="xqliu/orbi"), watch=PiWatchOptions(poll_interval=0.1), cwd=tmp_path)
     finally:
         subprocess.run(["pkill", "-f", "orbi709-holder-two"], check=False)
     assert result == "final answer"

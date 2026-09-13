@@ -17,6 +17,7 @@ import pytest
 import orbi.repo_config as repo_config
 import orbi.runner as runner
 from seam import seam
+from orbi.delivery_scene import RunContext
 
 
 def _b64(text: str) -> str:
@@ -595,10 +596,12 @@ def test_started_pi_comment_body_renders_repo_config_fields():
     from orbi.progress import field_block
 
     body = runner.started_pi_comment_body(
-        "a1b2c3d4",
+        RunContext(
+            run_id="a1b2c3d4", issue=18, branch="branch",
+            worktree=Path("/tmp/wt"), source_repo="owner/repo",
+        ),
         "base_branch=beta base_sha=abc run_id=a1b2c3d4 priority=normal "
         "repo_config=" + "a" * 40,
-        "branch", Path("/tmp/wt"),
         extra_fields={
             "repo_config_changed": "old..new",
             "repo_config_diff": "base_branch=main->beta",
@@ -636,7 +639,7 @@ def test_process_issue_applies_repo_base_branch_and_records_sha(
     monkeypatch.setattr(runner, "apply_runner_runtime_excludes", lambda *a: None)
     monkeypatch.setattr(
         runner, "run_pi",
-        lambda issue, worktree, config, repo, **kwargs: "done",
+        lambda issue, ctx, config, **kwargs: "done",
     )
     monkeypatch.setattr(
         runner, "deliver_pr",
@@ -855,7 +858,12 @@ def test_run_pi_injects_repo_context_files(monkeypatch, tmp_path):
         repo_context_files=("AGENTS.md",),
     )
     assert runner.run_pi(
-        {"number": 4, "title": "T", "body": "b"}, tmp_path, config, "owner/repo",
+        {"number": 4, "title": "T", "body": "b"},
+        runner.RunContext(
+            run_id=config.run_id, issue=4, branch="orbi/owner-repo-issue-4",
+            worktree=tmp_path, source_repo="owner/repo",
+        ),
+        config,
     ) == "done"
     system_prompt = calls[0][calls[0].index("--system-prompt") + 1]
     assert str(tmp_path / "AGENTS.md") in system_prompt

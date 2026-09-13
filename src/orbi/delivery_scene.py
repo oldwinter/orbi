@@ -173,12 +173,13 @@ def classify(
 
 
 @dataclasses.dataclass(frozen=True)
-class DeliveryContext:
+class RunContext:
     """The run-identity bundle of one delivery attempt.
 
-    `run_id`, `issue`, `branch`, `worktree` and `pr` travel together
-    through the dispatch path; one frozen value object replaces the
-    loose tuple, so a new identity field is one constructor change, not
+    `run_id`, `issue`, `branch`, `worktree` and `source_repo` always
+    appear together and change together; one frozen value object
+    travels through the delivery chain instead of the loose
+    parameters, so a new identity field is one constructor change, not
     a sweep of call sites. `pr` is None until the delivery's PR exists.
     """
 
@@ -186,6 +187,7 @@ class DeliveryContext:
     issue: int
     branch: str
     worktree: Path
+    source_repo: str
     pr: str | None = None
 
 

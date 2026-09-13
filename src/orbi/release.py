@@ -25,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from orbi.delivery_scene import RunContext
 from orbi.delivery_labels import (
     EPIC_LABEL,
     EVENT_BLOCKED,
@@ -1804,10 +1805,14 @@ def process_release(issue: dict, config: RunnerConfig,
         source_repo=source_repo, role=ROLE_RELEASE,
     )
 
+    ctx = RunContext(
+        run_id=run_id, issue=number, branch=branch, worktree=worktree,
+        source_repo=source_repo,
+    )
+
     def progress() -> dict:
         return _progress_state(
-            issue=number, title=title, run_id=run_id, role=ROLE_RELEASE,
-            branch=branch, worktree=worktree, started=started,
+            ctx, title=title, role=ROLE_RELEASE, started=started,
             pr_url=None, review_round=0, priority=priority,
             activity={},
         )
@@ -1848,9 +1853,7 @@ def process_release(issue: dict, config: RunnerConfig,
                 "labels", []) if isinstance(label, dict)
                 and isinstance(label.get("name"), str)},
         )
-        set_active_run(
-            number, title, branch, str(worktree),
-        )
+        set_active_run(ctx, title)
         publish(
             action=lambda: publisher.ensure(progress_body(progress())),
         )
