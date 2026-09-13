@@ -1537,6 +1537,11 @@ def test_review_and_merge_posts_merged_milestone_and_final_summary(
     ]
     assert any("Orbi: merged" in body for body in milestones)
     assert any("- merge_commit: m1" in body for body in milestones)
+    # The merged-as-is fields ride the same milestone (Issue #833);
+    # this fixture records no engine push, so the honest value is
+    # `unknown` — the 0/K evidence lives in test_review_merge.
+    assert any("- external_commits: unknown" in body for body in milestones)
+    assert any("- commits: 1" in body for body in milestones)
     final_patches = [
         command for command in calls
         if command[:2] == ["gh", "api"]
@@ -1579,6 +1584,19 @@ def _run_review_and_merge(monkeypatch, tmp_path, *, verdict,
             raise subprocess.CalledProcessError(
                 1, command, stderr="gh: Not Found (HTTP 404)",
             )
+        if command[0] == "git" and command[1] == "rev-list" \
+                and command[2] == "--count":
+            # The merge record's commit counts (Issue #833); this
+            # fixture is about progress traffic, the counts' real-git
+            # evidence lives in test_review_merge.
+            return "1"
+        if command[0] == "git" and command[1] == "rev-parse" \
+                and command[2] == "HEAD":
+            # The round-start head adoption (Issue #833) compares the
+            # frozen PR head with the worktree head; this fixture has
+            # no recorded push and a non-git worktree, so no adoption
+            # runs — its real-git evidence lives in test_review_merge.
+            return "local-head"
         if command[:2] == ["gh", "api"]:
             if "--method" not in command:
                 return json.dumps([])

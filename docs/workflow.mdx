@@ -148,6 +148,46 @@ Rules of the chain:
   and the pre-start check: [Operations](/operations); the credentials:
   [Security](/security).
 
+## The merge record: `external_commits` and `commits`
+
+When the Runner merges a delivery PR, the `Orbi merged PR:` Issue
+comment and the `Orbi: merged` milestone line carry the merged-as-is
+fact (Issue #833) in the same `key=value` format as the other fields:
+
+```
+Orbi merged PR: <url> (merge_commit=… review_rounds=N external_commits=K commits=M base_branch=… run_id=…)
+```
+
+- `commits` — all commits of the PR branch relative to the base at
+  merge time (the denominator of the ratio).
+- `external_commits` — commits NOT in the engine's own push history
+  (the head the PR opened with plus every review/fix head the Runner
+  itself pushed; git authorship is never inspected). `0` = merged
+  as-is: no human changed a line on the delivery branch before the
+  merge. The count is read after the merge through the merge commit's
+  parent chain (`M^1` the base tip, `M^2` the PR head) minus the
+  engine's recorded push line: the last engine-pushed head, and — for
+  an external takeover (Issue #608) — excluding the taken-over
+  contributor head the line starts from, so the contributor's commits
+  stay external.
+- `external_commits=unknown` — the push history is unverifiable (a
+  recreated worktree lost the run-state record, a fix push's round
+  ended before its record and the history is incomplete, or a recorded
+  head or base is not an ancestor of the merged head). An uncountable
+  history is never written as `0`.
+
+The engine's pushed heads are recorded in the task worktree's run state
+(`pushed_head`, Issue #219 file) at three points — the delivery push,
+a verdict-covered review/fix push, and the round-start adoption of a
+head a previous session pushed but whose round ended before the
+re-freeze record — so resumes of the same worktree keep the history; a
+fresh worktree starts without it and degrades to `unknown`. An
+external takeover additionally records the taken-over head once at
+claim time (`pushed_base`), and its round-start adoption never runs:
+the worktree legitimately starts on the contributor's head. Recording
+is bypass-safe: a missing or corrupt state file logs
+`pushed_head_unrecorded` and the delivery continues.
+
 ## Delivery labels
 
 GitHub labels are the external state machine. They are not created by

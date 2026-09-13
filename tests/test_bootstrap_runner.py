@@ -2504,6 +2504,78 @@ def test_read_run_state_fails_fast_on_unreadable_or_malformed_state(tmp_path):
         runner.read_run_state(worktree)
 
 
+def test_write_run_state_preserves_the_push_history(tmp_path):
+    """The push-history fields (Issue #833) survive a resume's state
+    refresh — the same delivery line keeps its recorded heads."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    runner.write_run_state(
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
+    )
+    runner.record_pushed_head(worktree, "h1")
+    runner.record_pushed_base(worktree, "b1")
+    runner.write_run_state(
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
+    )
+    assert runner.read_pushed_head(worktree) == "h1"
+    assert runner.read_pushed_base(worktree) == "b1"
+
+
+def test_record_pushed_base_is_set_once_per_run(tmp_path):
+    """A re-claim of the same run re-derives a moved HEAD, which is
+    not the push line's origin — the first recorded base wins."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    runner.write_run_state(
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
+    )
+    runner.record_pushed_base(worktree, "b1")
+    runner.record_pushed_base(worktree, "b2")
+    assert runner.read_pushed_base(worktree) == "b1"
+
+
+def test_record_pushed_head_degrades_without_the_state_file(
+        tmp_path, caplog):
+    """Recording is bypass-safe (Issue #73): a recreated worktree lost
+    `.orbi/` — the record logs `pushed_head_unrecorded` and continues;
+    the merge record degrades to `unknown`, the delivery does not
+    fail."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    caplog.set_level("WARNING")
+    runner.record_pushed_head(worktree, "h1")
+    runner.record_pushed_base(worktree, "b1")
+    assert runner.read_pushed_head(worktree) is None
+    assert runner.read_pushed_base(worktree) is None
+    assert "pushed_head_unrecorded" in caplog.text
+
+
+def test_record_pushed_head_degrades_on_a_corrupt_state_file(
+        tmp_path, caplog):
+    """The same bypass safety for a corrupt record: the resume readers
+    fail fast on it before any record point, and the recorder itself
+    only logs and degrades the merge record to `unknown`."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    path = runner.run_state_path(worktree)
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json", encoding="utf-8")
+    caplog.set_level("WARNING")
+    runner.record_pushed_head(worktree, "h1")
+    runner.record_pushed_base(worktree, "b1")
+    assert runner.read_pushed_head(worktree) is None
+    assert "pushed_head_unrecorded" in caplog.text
+
+
 def make_session_jsonl(worktree: Path, session_id: str = "sess-1") -> Path:
     """A minimal previous session file (Issue #219 resume context)."""
     session_dir = worktree / ".pi-session"
@@ -19766,6 +19838,23 @@ def test_fake_deliver_run_rejects_unexpected_command():
         fake_deliver_run(["gh", "release", "list"])
 
 
+def _seed_deliver_run_state(worktree, **extra):
+    """The claim-time run state file every real delivery carries before
+    `deliver_pr` runs (the engine push history records into it, #833)."""
+    state = {
+        "run_id": FAKE_RUN_ID,
+        "issue": 4,
+        "repo": "o/r",
+        "branch": DELIVER_BRANCH,
+        "worktree": str(worktree),
+    }
+    state.update(extra)
+    (worktree / ".orbi").mkdir(parents=True, exist_ok=True)
+    (worktree / ".orbi" / "run-state.json").write_text(
+        json.dumps(state) + "\n", encoding="utf-8",
+    )
+
+
 def test_deliver_pr_rejects_wrong_branch(monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
         assert command[:3] == ["git", "branch", "--show-current"], command
@@ -19805,6 +19894,7 @@ def test_deliver_pr_completes_the_closeout(monkeypatch, tmp_path):
     """The happy path: clean commit boundary, base not advanced, plain
     push, the PR of the branch is verified, the URL is returned."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -19819,6 +19909,9 @@ def test_deliver_pr_completes_the_closeout(monkeypatch, tmp_path):
     assert ["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"] in calls
     assert ["git", "push", "origin", f"HEAD:{DELIVER_BRANCH}"] in calls
     assert ["git", "rev-parse", f"origin/{DELIVER_BRANCH}"] in calls
+    # The pushed head is the delivery's first recorded engine-pushed
+    # head (Issue #833): the merge record subtracts exactly these.
+    assert runner.read_pushed_head(tmp_path) == FAKE_HEAD_SHA
     assert any(
         command[:2] == ["gh", "pr"] and command[2] == "list"
         for command in calls
@@ -19843,6 +19936,7 @@ def test_deliver_pr_rolls_back_a_conflicting_base_absorb(
     on the agent's head and the existing review loop absorbs the base
     in-session (the state machine is unchanged)."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -19873,6 +19967,7 @@ def test_deliver_pr_absorbs_an_advanced_base(monkeypatch, tmp_path, caplog):
     pushed with the delivery (`base_absorbed`), so the PR head contains
     the latest remote base."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -19895,6 +19990,7 @@ def test_deliver_pr_creates_the_pr_when_absent(monkeypatch, tmp_path):
     marker and `Fixes #<issue>` in the body (the PR body contract is
     the Runner's obligation now, Issue #186)."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     created = []
 
@@ -19934,6 +20030,8 @@ def test_deliver_pr_creates_the_pr_when_absent(monkeypatch, tmp_path):
 
 
 def test_deliver_pr_fails_fast_when_pr_create_fails(monkeypatch, tmp_path):
+    _seed_deliver_run_state(tmp_path)
+
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and command[2] == "list":
             return "[]"
@@ -19969,6 +20067,7 @@ def test_deliver_pr_verifies_the_pr_with_the_latest_base_check_skipped(
     no second `git fetch` after the push, and a delivery that is behind
     the base (the conflict-rollback scene) still passes verification."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -20000,6 +20099,7 @@ def test_deliver_pr_reports_a_closed_issue_and_skips_the_pr(
     behind a closed Issue)."""
     caplog.set_level("INFO")
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -20222,6 +20322,7 @@ def test_deliver_pr_repairs_runner_runtime_leftovers(monkeypatch, tmp_path,
     `runner_runtime_exclude_repaired`, and continues — no
     `delivery_uncommitted_changes`."""
     status_calls = {"n": 0}
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         if command[:3] == ["git", "status", "--porcelain"]:
@@ -20245,6 +20346,7 @@ def test_deliver_pr_repairs_the_renamed_state_dir_too(monkeypatch, tmp_path,
     """Migration window: the renamed state dir `.orbi/` is Runner-owned
     as well and must be repaired, not failed."""
     status_calls = {"n": 0}
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         if command[:3] == ["git", "status", "--porcelain"]:

@@ -21,6 +21,7 @@ import dataclasses
 import orbi.runner as runner
 from orbi import progress
 from tests.test_progress_wiring import make_fake_gh
+from tests.test_git_merge_smoke import git
 from seam import seam
 import orbi.journal as journal
 from orbi.delivery_scene import RunContext
@@ -1487,6 +1488,23 @@ def _review_merge_config(tmp_path):
     return runner.RunnerConfig(repo_dir=tmp_path, base_branch="main", base_sha="b1", run_id="a1b2c3d4")
 
 
+def _seed_run_state(worktree: Path, **extra) -> None:
+    """A valid run state file (the claim-time write every real
+    delivery carries before the review loop runs)."""
+    state = {
+        "run_id": "a1b2c3d4",
+        "issue": 4,
+        "repo": "owner/repo",
+        "branch": "branch",
+        "worktree": str(worktree),
+    }
+    state.update(extra)
+    (worktree / ".orbi").mkdir(parents=True, exist_ok=True)
+    (worktree / ".orbi" / "run-state.json").write_text(
+        json.dumps(state) + "\n", encoding="utf-8",
+    )
+
+
 def _scene(**overrides):
     """The recovered resume scene the round budget reads (Issue #788).
 
@@ -1556,6 +1574,10 @@ def test_review_and_merge_clean_verdict_merges_and_labels_merged(
     assert "Orbi merged PR: u" in comment
     assert "merge_commit=m1" in comment
     assert "review_rounds=1" in comment
+    # Issue #833: the merge record carries the merged-as-is fact — the
+    # external commit count and the PR's total commit count.
+    assert "external_commits=" in comment
+    assert "commits=" in comment
     assert "<!-- orbi:run=a1b2c3d4 -->" in comment
     # Delivery labels land before the local checkout sync: a sync
     # failure must not rewrite a landed merge as ai-blocked.
@@ -1653,6 +1675,7 @@ def test_review_and_merge_refreezes_head_after_in_session_fix(
     frozen = _pr()
     fixed = {**_pr(), "head_oid": "h2"}
     heads = iter([frozen, fixed])
+    _seed_run_state(tmp_path)
 
     def fake_freeze(*a, **k):
         return next(heads)
@@ -1696,6 +1719,9 @@ def test_review_and_merge_refreezes_head_after_in_session_fix(
     assert "review_head_advanced" in caplog.text
     assert "frozen=h1" in caplog.text
     assert "reviewed=h2" in caplog.text
+    # The verdict-covered fix head is the engine's own push (Issue
+    # #833): it is recorded as such for the merge record.
+    assert runner.read_pushed_head(tmp_path) == "h2"
 
 
 def test_review_and_merge_verdict_head_mismatch_fails_before_merge(
@@ -2177,3 +2203,435 @@ def test_review_and_merge_exhausted_rounds_raises(monkeypatch, tmp_path, caplog)
             scene=_scene(review_round=runner.MAX_REVIEW_ROUNDS),
         )
     assert "review_rounds_exhausted" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Issue #833: the merge record's external_commits / commits fields —
+# three contrast groups on a REAL local git repo (bare origin + clone;
+# `gh` is faked at the seam and the review session at `stream_pi`, so
+# the real freeze_pr, review loop, merge gate, confirm and metric all
+# run — no real GitHub).
+# ---------------------------------------------------------------------------
+
+TASK_BRANCH = "orbi/owner-repo-issue-4"
+PR_URL = "https://github.com/owner/repo/pull/4"
+
+
+@pytest.fixture()
+def merge_clone(tmp_path: Path) -> Path:
+    """Bare origin plus a clone whose main carries one commit."""
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", str(origin), str(clone)],
+        capture_output=True, text=True, check=True,
+    )
+    git(clone, "config", "user.email", "pilot@test.local")
+    git(clone, "config", "user.name", "Pilot")
+    (clone / "a.txt").write_text("a", encoding="utf-8")
+    git(clone, "add", "a.txt")
+    git(clone, "commit", "-m", "first")
+    git(clone, "push", "origin", "main")
+    return clone
+
+
+def _delivery_commit(clone: Path, name: str, message: str) -> str:
+    """One commit on the task branch (created from origin/main), pushed."""
+    git(clone, "checkout", "-b", TASK_BRANCH, "origin/main")
+    (clone / name).write_text(message, encoding="utf-8")
+    git(clone, "add", name)
+    git(clone, "commit", "-m", message)
+    git(clone, "push", "origin", TASK_BRANCH)
+    return git(clone, "rev-parse", "HEAD")
+
+
+def _install_merge_record_gh(monkeypatch, clone: Path) -> dict:
+    """Stateful `gh` fake: `gh pr list` answers the ONE open PR of the
+    task branch with the CURRENT remote head (the real freeze_pr reads
+    it); `gh pr view` answers per stage (merge gate vs confirm);
+    `gh pr merge` performs a REAL local merge pushed to origin, so the
+    merge commit is a genuine git object on origin/main; `gh api`
+    (progress comment, label writes) is answered minimally. Real git
+    runs for everything else."""
+    real_run = runner.run_command
+    commands: list = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if command[0] == "gh" and command[1] == "pr" \
+                and command[2] == "list":
+            return json.dumps([{
+                "number": 4, "url": PR_URL,
+                "baseRefName": "main",
+                "baseRefOid": git(clone, "rev-parse", "origin/main"),
+                "headRefName": TASK_BRANCH,
+                "headRefOid": git(clone, "rev-parse",
+                                  f"origin/{TASK_BRANCH}"),
+            }])
+        if command[0] == "gh" and command[1] == "pr" \
+                and command[2] == "view":
+            if "mergeable" in command[-1]:
+                return json.dumps({
+                    "number": 4, "state": "OPEN",
+                    "mergeable": "MERGEABLE",
+                    "headRefOid": git(clone, "rev-parse",
+                                      f"origin/{TASK_BRANCH}"),
+                    "statusCheckRollup": [],
+                })
+            return json.dumps({
+                "number": 4, "state": "MERGED", "mergedAt": "now",
+                "mergeCommit": {"oid": git(clone, "rev-parse",
+                                           "origin/main")},
+            })
+        if command[0] == "gh" and command[1] == "pr" \
+                and command[2] == "merge":
+            head = command[command.index("--match-head-commit") + 1]
+            git(clone, "checkout", "main")
+            git(clone, "merge", "--no-ff", head)
+            git(clone, "push", "origin", "main")
+            git(clone, "checkout", TASK_BRANCH)
+            return ""
+        if command[0] == "gh" and command[1] == "api":
+            if "--method" not in command:
+                return json.dumps([])
+            if command[command.index("--method") + 1] == "POST":
+                body = command[command.index("--field") + 1]
+                return json.dumps({"id": 77, "body": body[len("body="):],
+                                   "url": "https://x/77"})
+            return ""
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+
+
+def _remote_head(clone: Path) -> str:
+    return git(clone, "rev-parse", f"origin/{TASK_BRANCH}")
+
+
+def _run_merge_round(monkeypatch, clone: Path, *, session=None,
+                     scene_review_round: int = 0, external: bool = False):
+    """One review/merge call against the real git clone; returns the
+    `Orbi merged PR:` comment body (None when the round does not
+    merge). The review session ends at the `stream_pi` seam: `session`
+    is the session's stand-in — it may perform the session's own work
+    (the fix push, exactly between the round-start freeze and the
+    re-freeze) and returns the REVIEW_VERDICT text; the default reviews
+    the current remote head as-is. `external` runs the round as an
+    external-takeover resume (the scene's `external` field)."""
+    if session is None:
+        session = lambda: _pass_verdict_text(head=_remote_head(clone))
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(seam, "stream_pi",
+                        lambda command, **kwargs: session())
+    monkeypatch.setattr(seam, "comment_issue", lambda *a, **k: None)
+    monkeypatch.setattr(seam, "comment_pr", lambda *a, **k: None)
+    monkeypatch.setattr(seam, "edit_issue", lambda *a, **k: None)
+    _install_merge_record_gh(monkeypatch, clone)
+    comments: list = []
+
+    def fake_comment(number, *, repo, body):
+        comments.append(body)
+
+    monkeypatch.setattr(seam, "comment_issue", fake_comment)
+    prompt_file = clone.parent / "prompt_review.md"
+    prompt_file.write_text("Review the delivery.", encoding="utf-8")
+    # repo_dir IS the clone (a real checkout): the gate's locked base
+    # fetch runs for real; the post-merge checkout sync hits the task
+    # branch's fast-forward guard and degrades to a logged, non-fatal
+    # failure — the merged record is already published by then.
+    config = dataclasses.replace(
+        _review_merge_config(clone),
+        prompt_review=prompt_file,
+    )
+    merged = runner.review_and_merge_if_clean(
+        clone, TASK_BRANCH, "main", config,
+        "owner/repo", 4, title="Review task", priority="normal",
+        scene=_scene(review_round=scene_review_round,
+                     external="true" if external else ""),
+    )
+    if not merged:
+        return None
+    return [body for body in comments if "Orbi merged PR:" in body][0]
+
+
+def test_merge_record_zero_external_for_a_clean_engine_delivery(
+        merge_clone, monkeypatch):
+    """Contrast group 1 (Issue #833): the engine opens the PR and merges
+    its own delivery — merged as-is: external_commits=0 commits=1."""
+    delivery = _delivery_commit(merge_clone, "fix.txt", "delivery")
+    runner.write_run_state(RunContext(
+        run_id="a1b2c3d4", issue=4, branch=TASK_BRANCH,
+        worktree=merge_clone, source_repo="owner/repo",
+    ))
+    runner.record_pushed_head(merge_clone, delivery)
+    body = _run_merge_round(monkeypatch, merge_clone)
+    assert "external_commits=0" in body
+    assert "commits=1" in body
+
+
+def test_merge_record_counts_an_external_push_before_the_merge(
+        merge_clone, monkeypatch, tmp_path):
+    """Contrast group 2 (Issue #833): an external commit lands on the
+    delivery branch, the engine re-reviews it as-is and merges —
+    external_commits=1; the recorded engine head stays the delivery."""
+    delivery = _delivery_commit(merge_clone, "fix.txt", "delivery")
+    runner.write_run_state(RunContext(
+        run_id="a1b2c3d4", issue=4, branch=TASK_BRANCH,
+        worktree=merge_clone, source_repo="owner/repo",
+    ))
+    runner.record_pushed_head(merge_clone, delivery)
+    # A second clone plays the external pusher.
+    other = tmp_path / "external"
+    subprocess.run(
+        ["git", "clone", str(merge_clone.parent / "origin.git"), str(other)],
+        capture_output=True, text=True, check=True,
+    )
+    git(other, "config", "user.email", "human@test.local")
+    git(other, "config", "user.name", "Human")
+    git(other, "checkout", TASK_BRANCH)
+    (other / "external.txt").write_text("human line", encoding="utf-8")
+    git(other, "add", "external.txt")
+    git(other, "commit", "-m", "external commit")
+    git(other, "push", "origin", TASK_BRANCH)
+    # The engine's worktree learns the external head (the review session
+    # fetches the branch it reviews) and freezes it as-is.
+    git(merge_clone, "fetch", "origin", TASK_BRANCH)
+    body = _run_merge_round(monkeypatch, merge_clone)
+    assert "external_commits=1" in body
+    assert "commits=2" in body
+
+
+def test_merge_record_two_engine_fix_rounds_stay_external_zero(
+        merge_clone, monkeypatch):
+    """Contrast group 3 (Issue #833): both fix pushes are the engine's
+    own (round 1 findings, round 2 fixes in-session and merges) —
+    external_commits=0 with review_rounds=2."""
+    delivery = _delivery_commit(merge_clone, "fix.txt", "delivery")
+    runner.write_run_state(RunContext(
+        run_id="a1b2c3d4", issue=4, branch=TASK_BRANCH,
+        worktree=merge_clone, source_repo="owner/repo",
+    ))
+    runner.record_pushed_head(merge_clone, delivery)
+    # Round 1: findings the session could not verify — ai-fix-needed.
+    def findings_session():
+        return _findings_verdict_text()
+
+    assert _run_merge_round(
+        monkeypatch, merge_clone, session=findings_session,
+    ) is None
+
+    # Round 2 (next tick, same worktree): the session pushes its fix
+    # DURING the round (between the two freezes), the verdict covers
+    # the pushed head, the merge lands.
+    def fix_session():
+        git(merge_clone, "checkout", TASK_BRANCH)
+        (merge_clone / "fix2.txt").write_text("engine fix",
+                                              encoding="utf-8")
+        # Only the fix file: the run artifacts under .orbi/ are
+        # excluded state, never part of a delivery commit (the runner
+        # pins the local exclude in production).
+        git(merge_clone, "add", "fix2.txt")
+        git(merge_clone, "commit", "-m", "engine fix")
+        git(merge_clone, "push", "origin", TASK_BRANCH)
+        return _pass_verdict_text(head=_remote_head(merge_clone))
+
+    body = _run_merge_round(
+        monkeypatch, merge_clone, session=fix_session,
+        scene_review_round=1,
+    )
+    assert body is not None
+    assert "external_commits=0" in body
+    assert "commits=2" in body
+    assert "review_rounds=2" in body
+
+
+def test_merge_record_survives_a_run_state_refresh_to_a_new_run_id(
+        merge_clone, monkeypatch):
+    """Resume (Issue #833): the interrupted run's push history survives
+    the claim-time refresh — here under a NEW run id on the same
+    worktree — so the contrast group's result is unchanged."""
+    delivery = _delivery_commit(merge_clone, "fix.txt", "delivery")
+    runner.write_run_state(RunContext(
+        run_id="a1b2c3d4", issue=4, branch=TASK_BRANCH,
+        worktree=merge_clone, source_repo="owner/repo",
+    ))
+    runner.record_pushed_head(merge_clone, delivery)
+    runner.write_run_state(RunContext(
+        run_id="99fe00db", issue=4, branch=TASK_BRANCH,
+        worktree=merge_clone, source_repo="owner/repo",
+    ))
+    assert runner.read_pushed_head(merge_clone) == delivery
+    body = _run_merge_round(monkeypatch, merge_clone)
+    assert "external_commits=0" in body
+
+
+def test_merge_record_writes_unknown_when_the_push_history_is_lost(
+        merge_clone, monkeypatch):
+    """A recreated worktree (or any lost record) must degrade the
+    metric to `unknown` — never a fabricated 0 (Issue #833)."""
+    delivery = _delivery_commit(merge_clone, "fix.txt", "delivery")
+    body = _run_merge_round(monkeypatch, merge_clone)
+    assert "external_commits=unknown" in body
+    assert "external_commits=0" not in body
+    # The denominator is still computable from the merge commit alone.
+    assert "commits=1" in body
+
+
+def test_merge_commit_metrics_degrades_on_a_corrupt_or_foreign_record(
+        merge_clone):
+    """Unit contract of the metric: a corrupt state file and a recorded
+    head that is not an ancestor of the merged head both read
+    `unknown`; the merged delivery is never re-failed by its record."""
+    delivery = _delivery_commit(merge_clone, "fix.txt", "delivery")
+    git(merge_clone, "checkout", "main")
+    (merge_clone / "b.txt").write_text("b", encoding="utf-8")
+    git(merge_clone, "add", "b.txt")
+    git(merge_clone, "commit", "-m", "second")
+    base_tip = git(merge_clone, "rev-parse", "main")
+    git(merge_clone, "merge", "--no-ff", delivery, "-m", "merge")
+    merge_commit = git(merge_clone, "rev-parse", "HEAD")
+    # Corrupt record.
+    (merge_clone / ".orbi").mkdir(parents=True, exist_ok=True)
+    (merge_clone / ".orbi" / "run-state.json").write_text(
+        "{not json", encoding="utf-8")
+    assert runner.merge_commit_metrics(
+        merge_clone, merge_commit, runner.read_pushed_head(merge_clone),
+        runner.read_pushed_base(merge_clone),
+    ) == ("unknown", "1")
+    # A foreign head (the base tip is not a commit of the PR branch).
+    assert runner.merge_commit_metrics(
+        merge_clone, merge_commit, base_tip, None,
+    ) == ("unknown", "1")
+    # A foreign base (a takeover record whose base the merged head does
+    # not contain) degrades the same way.
+    assert runner.merge_commit_metrics(
+        merge_clone, merge_commit, delivery, base_tip,
+    ) == ("unknown", "1")
+    # The honest record subtracts exactly the delivery commit.
+    _seed_run_state(merge_clone)
+    runner.record_pushed_head(merge_clone, delivery)
+    assert runner.merge_commit_metrics(
+        merge_clone, merge_commit, runner.read_pushed_head(merge_clone),
+        runner.read_pushed_base(merge_clone),
+    ) == ("0", "1")
+
+
+def test_merge_record_takeover_counts_contributor_commits(
+        merge_clone, monkeypatch):
+    """An external takeover (Issue #608) starts the engine's push line
+    on the contributor's own head: the claim records that head as the
+    push-line base, so one engine fix push on top of it reports the
+    contributor's commit as external (Issue #833) — never a fabricated
+    merged-as-is 0."""
+    contributor = _delivery_commit(
+        merge_clone, "contrib.txt", "contributor work")
+    _seed_run_state(merge_clone)
+    runner.record_pushed_base(merge_clone, contributor)
+
+    # The takeover review session fixes on top of the contributor's
+    # head and pushes; the verdict covers the pushed head.
+    def takeover_fix():
+        git(merge_clone, "checkout", TASK_BRANCH)
+        (merge_clone / "reviewer-fix.txt").write_text(
+            "x", encoding="utf-8")
+        git(merge_clone, "add", "reviewer-fix.txt")
+        git(merge_clone, "commit", "-m", "reviewer fix")
+        git(merge_clone, "push", "origin", TASK_BRANCH)
+        return _pass_verdict_text(head=_remote_head(merge_clone))
+
+    body = _run_merge_round(
+        monkeypatch, merge_clone, session=takeover_fix, external=True,
+    )
+    assert body is not None
+    assert "external_commits=1" in body
+    assert "commits=2" in body
+
+
+def test_merge_record_takeover_fix_push_across_rounds_degrades_to_unknown(
+        merge_clone, monkeypatch):
+    """The round-start adoption is internal-only: an external takeover
+    whose fix-push round ends in findings loses that round's head (the
+    re-freeze record never runs), and the honest record is `unknown` —
+    never a fabricated count (Issue #833)."""
+    contributor = _delivery_commit(
+        merge_clone, "contrib.txt", "contributor work")
+    _seed_run_state(merge_clone)
+    runner.record_pushed_base(merge_clone, contributor)
+
+    # Round 1: the takeover session pushes its fix and still emits
+    # findings — the round ends before the re-freeze record.
+    def takeover_push_and_findings():
+        git(merge_clone, "checkout", TASK_BRANCH)
+        (merge_clone / "reviewer-fix.txt").write_text(
+            "x", encoding="utf-8")
+        git(merge_clone, "add", "reviewer-fix.txt")
+        git(merge_clone, "commit", "-m", "reviewer fix")
+        git(merge_clone, "push", "origin", TASK_BRANCH)
+        return _findings_verdict_text(head=_remote_head(merge_clone))
+
+    assert _run_merge_round(
+        monkeypatch, merge_clone, session=takeover_push_and_findings,
+        external=True,
+    ) is None
+
+    # Round 2 (next tick): clean pass over the same pushed head, no new
+    # push — the fix head is engine work, but with the round-1 record
+    # lost the honest value is `unknown` (never a fabricated 0: the
+    # contributor's commit is still not the engine's).
+    body = _run_merge_round(
+        monkeypatch, merge_clone, scene_review_round=1, external=True,
+    )
+    assert body is not None
+    assert "external_commits=unknown" in body
+    assert "commits=2" in body
+
+
+def test_merge_record_engine_fix_push_across_rounds_stays_external_zero(
+        merge_clone, monkeypatch):
+    """A fix push whose round ended without the re-freeze record (the
+    session pushed its fix and still emitted findings, prompt_review's
+    fix-then-findings path) is still the engine's own work: the next
+    round adopts the frozen head — identical to the worktree's
+    checked-out head — into the push history (Issue #833)."""
+    delivery = _delivery_commit(merge_clone, "fix.txt", "delivery")
+    _seed_run_state(merge_clone)
+    runner.record_pushed_head(merge_clone, delivery)
+
+    def push_and_findings():
+        git(merge_clone, "checkout", TASK_BRANCH)
+        (merge_clone / "fix2.txt").write_text(
+            "engine fix round1", encoding="utf-8")
+        git(merge_clone, "add", "fix2.txt")
+        git(merge_clone, "commit", "-m", "engine fix round1")
+        git(merge_clone, "push", "origin", TASK_BRANCH)
+        return _findings_verdict_text(head=_remote_head(merge_clone))
+
+    assert _run_merge_round(
+        monkeypatch, merge_clone, session=push_and_findings,
+    ) is None
+
+    # Round 2 (next tick): clean pass over the SAME pushed head — both
+    # commits are the engine's own.
+    body = _run_merge_round(
+        monkeypatch, merge_clone, scene_review_round=1,
+    )
+    assert body is not None
+    assert "external_commits=0" in body
+    assert "commits=2" in body
+
+
+def test_record_pushed_head_degrades_without_the_run_state(
+        tmp_path, caplog):
+    """Recording is bypass-safe (Issue #73): the fields only feed the
+    merge record, so a recreated worktree's missing state file logs
+    `pushed_head_unrecorded` and continues — the merge record degrades
+    to `unknown` and the delivery is never re-failed by its own
+    observability input (Issue #833)."""
+    caplog.set_level("WARNING")
+    runner.record_pushed_head(tmp_path, "a" * 40)
+    runner.record_pushed_base(tmp_path, "b" * 40)
+    assert runner.read_pushed_head(tmp_path) is None
+    assert runner.read_pushed_base(tmp_path) is None
+    assert "pushed_head_unrecorded" in caplog.text

@@ -522,6 +522,8 @@ journalctl --user -u orbi@1.service -u orbi@2.service | grep e07383c2
 | `review` | 独立评审 session 结束（裁决） |
 | `delivery_ci_pending` | PR head 的 CI 仍在 pending；交付顺延到下一 tick |
 | `review_head_advanced` | 评审 session 推送了修复后的 head |
+| `pushed_head_recorded` | 回合开始的采纳记录了一个引擎推送 head（Issue #833） |
+| `pushed_head_unrecorded` | 引擎推送历史无法记录；合并账本退化为 unknown（Issue #833） |
 | `review_budget_recovered` | 过期的评审轮次预算已恢复 |
 | `review_rounds_exhausted` | 评审轮次预算耗尽（fail fast） |
 | `review_rounds_exhausted_expected_terminal` | 预算耗尽的终止状态已被记录 |
