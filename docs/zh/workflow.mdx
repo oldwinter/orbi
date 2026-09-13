@@ -52,7 +52,7 @@ ai-ready                任务被派发（orbi add，或人工加标签）
   -> ai-fix-needed      会话内未能修复 finding，PR 落后最新 base / 有
                         merge conflict，或已有 run/PR 的**可恢复失败**
                         （Issue #50：Pi 执行失败、验证失败、未推送本地
-                        commit、worktree 缺失）：失败 comment 写入 Issue
+                        commit）：失败 comment 写入 Issue
                         和 PR，带完整现场（run_id、PR、branch、worktree、
                         session、phase、last activity、具体错误）；下一
                         个 tick 在同一 run_id、branch、worktree、PR 上
@@ -66,11 +66,14 @@ ai-ready                任务被派发（orbi add，或人工加标签）
 ```
 
 已有 run/PR 的失败被分类（Issue #50）：**可恢复失败**（Pi 执行失败、
-验证失败、未推送本地 commit、worktree 缺失、会话内未能修复的 finding）
+验证失败、未推送本地 commit、会话内未能修复的 finding）
 留在自动修复循环——Issue 标记 `ai-fix-needed`，失败 comment 写入 Issue
 和 PR（带完整现场），下一个 tick 在同一 run、branch、worktree、PR 上
-继续（不重新创建 PR、不重复领取）。只有 **AI 无法安全判断或修复的外部
-前置条件**（无可恢复现场、base 分支变更、审查超轮、PR 未合并被关闭）
+继续（不重新创建 PR、不重复领取）。worktree 缺失根本不是失败：resume
+会从远端交付分支重建它并继续推进（Issue #807——worktree 只是远端状态
+的本地缓存，branch 和 PR 都在 GitHub 上）。只有 **AI 无法安全判断或修复的外部
+前置条件**（无可恢复现场、base 分支变更、审查超轮、PR 未合并被关闭、
+交付分支已从远端删除——没有任何东西可以用来重建 worktree）
 才 fail fast：Issue 被标记 `ai-blocked` 并写明为什么不能自动恢复，自动
 循环从此不再碰它——人工决定下一步。
 
@@ -312,7 +315,11 @@ PR 验收时校验该关键词，缺失即 fail fast。
       模糊匹配、绝不关别的 Milestone）：0 个 open Issue 时关闭；已关闭
       是幂等成功（不重开）；Milestone 缺失或仍有 open Issue 则 fail
       fast，带上 version、Milestone 编号/链接和 open issue 列表（绝不
-      静默跳过）。任何失败：单独进入 `ai-blocked`（release 是人工决策
+      静默跳过）。release 票自己永不算未完成工作（Issue #808）：它正被
+      本次发版关闭，issue 索引落后关票几秒（Issue #754）造成的
+      「只剩 release 票自己」的陈旧读既不阻止也不拖延关闭；其余任何
+      open Issue 仍然拒绝关闭。
+      任何失败：单独进入 `ai-blocked`（release 是人工决策
       点——不自动重试），失败评论带 run marker 和具体原因，异常向上传
       播让 tick fail fast。
 

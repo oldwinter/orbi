@@ -256,6 +256,7 @@ JOURNAL_EVENTS: dict[str, str] = {
     "base_checkout_not_fast_forwardable": "the base checkout diverged from the remote base",
     "worktree_cleaned": "a task worktree was cleaned up",
     "worktree_cleanup_failed": "a task worktree cleanup failed",
+    "worktree_recreated": "a resumed delivery's missing worktree was rebuilt from the remote branch",
     "worktree_reclaimed": "released task worktrees were reclaimed in bulk",
     "worktree_reclaim_failed": "a worktree reclamation step failed (bypass; the pass continues)",
     "worktrees_exclude_added": "a worktrees path was added to the local git exclude",
