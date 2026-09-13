@@ -19718,6 +19718,23 @@ def test_fake_deliver_run_rejects_unexpected_command():
         fake_deliver_run(["gh", "release", "list"])
 
 
+def _seed_deliver_run_state(worktree, **extra):
+    """The claim-time run state file every real delivery carries before
+    `deliver_pr` runs (the engine push history records into it, #833)."""
+    state = {
+        "run_id": FAKE_RUN_ID,
+        "issue": 4,
+        "repo": "o/r",
+        "branch": DELIVER_BRANCH,
+        "worktree": str(worktree),
+    }
+    state.update(extra)
+    (worktree / ".orbi").mkdir(parents=True, exist_ok=True)
+    (worktree / ".orbi" / "run-state.json").write_text(
+        json.dumps(state) + "\n", encoding="utf-8",
+    )
+
+
 def test_deliver_pr_rejects_wrong_branch(monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
         assert command[:3] == ["git", "branch", "--show-current"], command
@@ -19757,6 +19774,7 @@ def test_deliver_pr_completes_the_closeout(monkeypatch, tmp_path):
     """The happy path: clean commit boundary, base not advanced, plain
     push, the PR of the branch is verified, the URL is returned."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -19771,6 +19789,9 @@ def test_deliver_pr_completes_the_closeout(monkeypatch, tmp_path):
     assert ["git", "merge-base", "--is-ancestor", "origin/main", "HEAD"] in calls
     assert ["git", "push", "origin", f"HEAD:{DELIVER_BRANCH}"] in calls
     assert ["git", "rev-parse", f"origin/{DELIVER_BRANCH}"] in calls
+    # The pushed head is the delivery's first recorded engine-pushed
+    # head (Issue #833): the merge record subtracts exactly these.
+    assert runner.read_pushed_head(tmp_path) == FAKE_HEAD_SHA
     assert any(
         command[:2] == ["gh", "pr"] and command[2] == "list"
         for command in calls
@@ -19795,6 +19816,7 @@ def test_deliver_pr_rolls_back_a_conflicting_base_absorb(
     on the agent's head and the existing review loop absorbs the base
     in-session (the state machine is unchanged)."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -19825,6 +19847,7 @@ def test_deliver_pr_absorbs_an_advanced_base(monkeypatch, tmp_path, caplog):
     pushed with the delivery (`base_absorbed`), so the PR head contains
     the latest remote base."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -19847,6 +19870,7 @@ def test_deliver_pr_creates_the_pr_when_absent(monkeypatch, tmp_path):
     marker and `Fixes #<issue>` in the body (the PR body contract is
     the Runner's obligation now, Issue #186)."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     created = []
 
@@ -19886,6 +19910,8 @@ def test_deliver_pr_creates_the_pr_when_absent(monkeypatch, tmp_path):
 
 
 def test_deliver_pr_fails_fast_when_pr_create_fails(monkeypatch, tmp_path):
+    _seed_deliver_run_state(tmp_path)
+
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and command[2] == "list":
             return "[]"
@@ -19921,6 +19947,7 @@ def test_deliver_pr_verifies_the_pr_with_the_latest_base_check_skipped(
     no second `git fetch` after the push, and a delivery that is behind
     the base (the conflict-rollback scene) still passes verification."""
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -19952,6 +19979,7 @@ def test_deliver_pr_reports_a_closed_issue_and_skips_the_pr(
     behind a closed Issue)."""
     caplog.set_level("INFO")
     calls = []
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -20174,6 +20202,7 @@ def test_deliver_pr_repairs_runner_runtime_leftovers(monkeypatch, tmp_path,
     `runner_runtime_exclude_repaired`, and continues — no
     `delivery_uncommitted_changes`."""
     status_calls = {"n": 0}
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         if command[:3] == ["git", "status", "--porcelain"]:
@@ -20197,6 +20226,7 @@ def test_deliver_pr_repairs_the_renamed_state_dir_too(monkeypatch, tmp_path,
     """Migration window: the renamed state dir `.orbi/` is Runner-owned
     as well and must be repaired, not failed."""
     status_calls = {"n": 0}
+    _seed_deliver_run_state(tmp_path)
 
     def fake_run(command, **kwargs):
         if command[:3] == ["git", "status", "--porcelain"]:

@@ -3158,8 +3158,13 @@ def write_run_state(ctx: RunContext) -> None:
     and the repo — the identity the next tick matches on. A resumed
     run refreshes the SAME file (same run id): the file is per-run,
     never per-session.
+
+    An existing `pushed_head` (Issue #833: the last engine-pushed
+    head — the merge record's `external_commits` input) survives the
+    refresh: the resume continues the same delivery line, so its push
+    history is not the refresh's business to drop.
     """
-    state = {
+    state: dict = {
         "run_id": ctx.run_id,
         "issue": ctx.issue,
         "repo": ctx.source_repo,
@@ -3168,8 +3173,57 @@ def write_run_state(ctx: RunContext) -> None:
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     path = run_state_path(ctx.worktree)
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = None
+    if isinstance(existing, dict) and isinstance(
+            existing.get("pushed_head"), str) and existing["pushed_head"]:
+        state["pushed_head"] = existing["pushed_head"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def record_pushed_head(worktree: Path, head: str) -> None:
+    """Record `head` as the last engine-pushed head of this delivery.
+
+    The two write points are the Runner's own branch pushes: the
+    delivery push in `deliver_pr` (the PR-open head) and the review
+    session's fix push (the re-frozen advanced head). An external push
+    never passes through either, which is exactly the distinction the
+    merge record's `external_commits` needs. The state file always
+    exists by the time a push can happen (written at claim time): a
+    missing file is a broken invariant and fails fast, like every
+    other same-run state violation.
+    """
+    state = read_run_state(worktree)
+    if state is None:
+        raise RuntimeError(
+            f"run state file {run_state_path(worktree)} is missing; the "
+            "engine push history cannot be recorded without the same-run "
+            "state"
+        )
+    state["pushed_head"] = head
+    path = run_state_path(worktree)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def read_pushed_head(worktree: Path) -> str | None:
+    """The recorded last engine-pushed head, or None when unusable.
+
+    The merge record reads this AFTER the merge landed: a missing or
+    corrupt record must degrade the metric to `unknown`, never fail a
+    landed delivery and never fabricate a count.
+    """
+    try:
+        state = read_run_state(worktree)
+    except ValueError:
+        return None
+    if not state:
+        return None
+    head = state.get("pushed_head")
+    return head if isinstance(head, str) and head else None
 
 
 def read_run_state(worktree: Path) -> dict | None:
@@ -4390,6 +4444,10 @@ def deliver_pr(ctx: RunContext, base_branch: str, base_sha: str, *,
             f"remote head {remote_head} does not match the local head "
             f"{local_head} after push origin {branch}"
         )
+    # This delivery's first engine-pushed head (Issue #833): the merge
+    # record's external_commits subtracts exactly the heads the Runner
+    # pushed, and this is the first of them.
+    record_pushed_head(worktree, local_head)
     # The closed-Issue guard runs AFTER the push (the work
     # stays on the branch for the human) and BEFORE the PR creation.
     # `gh issue view` is a direct, strongly consistent read — the same
@@ -5135,6 +5193,48 @@ def confirm_merged(worktree: Path, pr: dict, base_branch: str,
     return {"state": "MERGED", "merge_commit": merge_commit}
 
 
+def merge_commit_metrics(worktree: Path, merge_commit: str,
+                         pushed_head: str | None) -> tuple[str, str]:
+    """The merge record's `(external_commits, commits)` field values.
+
+    Issue #833: `commits` is the PR branch's total commit count
+    relative to the base — `git rev-list base..head` at merge time,
+    read after the merge through the merge commit's parent chain
+    (`M^1` is the base tip the PR merged into, `M^2` the PR head), so
+    the merged PR head's objects never need to exist locally.
+    `external_commits` subtracts the engine's own push history: the
+    recorded last engine-pushed head (`pushed_head`; GitHub rejects
+    non-fast-forward pushes, so the engine's heads form an ancestry
+    chain and the per-interval union collapses to the last one).
+    `0` means merged as-is.
+
+    Both values are the literal string `"unknown"` whenever the count
+    cannot be proven — a missing/corrupt push record, a `pushed_head`
+    that is not an ancestor of the merged head, a missing object, any
+    git failure. A degraded metric must never fail a landed merge and
+    never fabricate a `0`.
+    """
+    try:
+        commits = int(run_command(
+            ["git", "rev-list", "--count", f"{merge_commit}^1..{merge_commit}^2"],
+            cwd=worktree,
+        ))
+        if pushed_head is None:
+            return "unknown", str(commits)
+        if not _is_ancestor(pushed_head, f"{merge_commit}^2", cwd=worktree):
+            return "unknown", str(commits)
+        engine = int(run_command(
+            ["git", "rev-list", "--count", f"{merge_commit}^1..{pushed_head}"],
+            cwd=worktree,
+        ))
+    except (subprocess.CalledProcessError, ValueError):
+        return "unknown", "unknown"
+    # `pushed_head` is an ancestor of M^2 (checked above), so
+    # (M^1..pushed_head) is a subset of (M^1..M^2) and the subtraction
+    # cannot go negative.
+    return str(commits - engine), str(commits)
+
+
 def review_rounds_so_far(
     comments: list[dict], *, after: str | None = None,
     run_id: str | None = None, pr_number: int | None = None,
@@ -5802,6 +5902,12 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             f"PR head {refrozen['head_oid']}; the merge gate only merges "
             "the head the verdict covers"
         )
+    if refrozen["head_oid"] != pr["head_oid"]:
+        # The advanced head is verdict-covered (checked above), so it
+        # is this round's own review/fix output — an engine-pushed
+        # head (Issue #833): the merge record's external_commits must
+        # not count the session's own fixes as external commits.
+        record_pushed_head(worktree, refrozen["head_oid"])
     def handle_gate_failure(message: str, *, ci_failure: bool) -> None:
         body = (
             f"{marker}\n"
@@ -5865,6 +5971,12 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
     confirmed = confirm_merged(
         worktree, merged, base_branch, repo_dir=config.repo_dir,
     )
+    # The merged-as-is fact (Issue #833): every count failure degrades
+    # to `unknown` inside merge_commit_metrics — a landed merge is
+    # never re-failed by its own record.
+    external_commits, pr_commits = merge_commit_metrics(
+        worktree, confirmed["merge_commit"], read_pushed_head(worktree),
+    )
     # The merged publishing is bypass — the GitHub merge
     # already landed; a 404 here must not stop the `ai-merged`
     # transition and the merged PR scene comment below.
@@ -5872,7 +5984,9 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         action=lambda: publisher.milestone(
             f"merged: {merged['url']} "
             f"(merge_commit={confirmed['merge_commit']} "
-            f"review_rounds={round})"
+            f"review_rounds={round} "
+            f"external_commits={external_commits} "
+            f"commits={pr_commits})"
         ),
     )
     publish(
@@ -5906,6 +6020,8 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             f"Orbi merged PR: {merged['url']} "
             f"(merge_commit={confirmed['merge_commit']} "
             f"review_rounds={round} "
+            f"external_commits={external_commits} "
+            f"commits={pr_commits} "
             f"base_branch={base_branch} run_id={config.run_id})"
         ),
     )
