@@ -695,9 +695,12 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
         or not isinstance(max_concurrency, int)
         or not 1 <= max_concurrency <= MAX_RUNNER_INSTANCES
     ):
+        # Issue #829: the error names the CURRENT value too — the
+        # operator must see what the config wrote, not just the range.
         raise ValueError(
             "max_concurrency must be a positive integer no greater than "
-            f"{MAX_RUNNER_INSTANCES} (MAX_RUNNER_INSTANCES)"
+            f"{MAX_RUNNER_INSTANCES} (MAX_RUNNER_INSTANCES); "
+            f"got {max_concurrency!r}"
         )
     # Optional Pi model selection: each key is absent -> None
     # (the Pi flag is not passed, Pi keeps its own default) or a non-empty

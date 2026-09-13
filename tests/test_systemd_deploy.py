@@ -150,17 +150,19 @@ def test_install_units_downscale_disables_the_surplus_timer(tmp_path):
 def test_install_units_rejects_capacity_beyond_max_runner_instances(tmp_path):
     """Issue #827: beyond the declaration cap the install fails fast with
     the REAL cap and reason — never the old "matching Runner timer
-    instance" wording — before any systemctl command."""
+    instance" wording — before any systemctl command. Issue #829: the
+    error also names the CURRENT configured value, so the operator sees
+    what the config wrote without opening orbi.toml."""
     repo = make_repo(tmp_path)
     calls: list[list[str]] = []
     with pytest.raises(
-        ValueError,
-        match=r"no greater than 5 \(MAX_RUNNER_INSTANCES\)",
-    ):
+        ValueError, match=r"got 6",
+    ) as excinfo:
         systemd_deploy.install_units(
             repo, tmp_path / "install", max_concurrency=6,
             run_command=lambda command, **kwargs: calls.append(command) or "",
         )
+    assert "no greater than 5 (MAX_RUNNER_INSTANCES)" in str(excinfo.value)
     assert calls == []
 
 

@@ -431,9 +431,12 @@ def install_units(repo_dir: Path, installed_dir: Path | None = None,
     the installed units' hashes.
     """
     if not 1 <= max_concurrency <= MAX_RUNNER_INSTANCES:
+        # Issue #829: the error names the CURRENT value too — the
+        # operator must see what the config wrote, not just the range.
         raise ValueError(
             "max_concurrency must be a positive integer no greater than "
-            f"{MAX_RUNNER_INSTANCES} (MAX_RUNNER_INSTANCES)"
+            f"{MAX_RUNNER_INSTANCES} (MAX_RUNNER_INSTANCES); "
+            f"got {max_concurrency!r}"
         )
     repo_dir = Path(repo_dir)
     if installed_dir is None:
