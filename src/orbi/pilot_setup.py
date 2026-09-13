@@ -407,7 +407,7 @@ def user_bus_probe(unit_name: str | None) -> list[str]:
     """
     return [
         "systemctl", "--user", "show", "-p", "LoadState", "--value",
-        systemd_deploy.timer_instances(unit_name)[0],
+        systemd_deploy.timer_instances(unit_name, 1)[0],
     ]
 
 
@@ -678,15 +678,16 @@ def unit_is_enabled(run_command, instance: str) -> bool:
 
 
 def install_units_step(repo_dir: Path, installed_dir: Path | None,
-                       *, max_concurrency: int = len(systemd_deploy.TIMER_INSTANCES),
+                       *, max_concurrency: int,
                        unit_name: str | None = None, run_command) -> dict:
     """Install the repo's user units and report their live state.
 
     Reuses the idempotent ``systemd_deploy.install_units`` (copy the
     repo templates, migrate the pre-#149 non-templated units away,
     ``daemon-reload``, sync timer instances through ``max_concurrency`` — never
-    start/stop/restart the service), then reports EACH timer
-    instance's enabled state (``systemctl --user is-enabled``),
+    start/stop/restart the service), then reports EACH configured timer
+    instance (@1..@max_concurrency, Issue #827)'s enabled state
+    (``systemctl --user is-enabled``),
     active state (``show -p ActiveState``) and next trigger time
     (``list-timers``).
     """
@@ -703,7 +704,7 @@ def install_units_step(repo_dir: Path, installed_dir: Path | None,
         "systemctl", "--user", "list-timers", "--no-pager",
     ])
     instances = {}
-    for instance in systemd_deploy.timer_instances(unit_name):
+    for instance in systemd_deploy.timer_instances(unit_name, max_concurrency):
         try:
             enabled = unit_is_enabled(run_command, instance)
         except subprocess.CalledProcessError as exc:
@@ -1214,8 +1215,7 @@ def format_setup(result: dict) -> list[str]:
         f"sha256={service['sha256']}"
     )
     timer = result["timer"]
-    for instance in systemd_deploy.timer_instances(result.get("unit_name")):
-        entry = timer["instances"][instance]
+    for instance, entry in timer["instances"].items():
         lines.append(
             f"timer={instance} "
             f"{'enabled' if entry['enabled'] else 'disabled'} "

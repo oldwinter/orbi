@@ -36,15 +36,12 @@ from orbi.journal import event
 SERVICE_UNIT = "orbi@.service"
 TIMER_UNIT = "orbi@.timer"
 UNIT_NAMES = (SERVICE_UNIT, TIMER_UNIT)
-# The two enabled timer instances. Each instance triggers
-# its own service instance (orbi@1.timer ->
-# orbi@1.service, ...@2 -> ...@2), so two independent Runner
-# instances can run concurrently; the capacity is still the flock
-# slots in the Runner (max_concurrency), never the instance count.
-TIMER_INSTANCES = ("orbi@1.timer", "orbi@2.timer")
-SERVICE_INSTANCES = (
-    "orbi@1.service", "orbi@2.service",
-)
+# The config declaration cap (Issue #827): a deployment may declare up to
+# MAX_RUNNER_INSTANCES concurrent Runner instances. It is NOT a machine-
+# capacity assertion and NOT derived from any unit-name list — the names
+# are generated per count below, and the real concurrency boundary stays
+# the flock slots in the Runner (max_concurrency).
+MAX_RUNNER_INSTANCES = 5
 # The pre-#149 non-templated units: install_units migrates them away
 # once (a template change is a deployment change, no human step).
 LEGACY_TIMER_UNIT = "orbi.timer"
@@ -84,14 +81,16 @@ def unit_names(unit_name: str | None = None) -> tuple[str, str]:
     return f"{prefix}@.service", f"{prefix}@.timer"
 
 
-def timer_instances(unit_name: str | None = None) -> tuple[str, str]:
+def timer_instances(unit_name: str | None = None,
+                    count: int = 1) -> tuple[str, ...]:
     prefix = "orbi" if unit_name is None else f"orbi-{unit_name}"
-    return f"{prefix}@1.timer", f"{prefix}@2.timer"
+    return tuple(f"{prefix}@{index}.timer" for index in range(1, count + 1))
 
 
-def service_instances(unit_name: str | None = None) -> tuple[str, str]:
+def service_instances(unit_name: str | None = None,
+                      count: int = 1) -> tuple[str, ...]:
     prefix = "orbi" if unit_name is None else f"orbi-{unit_name}"
-    return f"{prefix}@1.service", f"{prefix}@2.service"
+    return tuple(f"{prefix}@{index}.service" for index in range(1, count + 1))
 
 
 def installed_config(unit_path: Path) -> Path | None:
@@ -325,7 +324,7 @@ def check_unit_drift(repo_dir: Path,
 
 def sync_drifted_units(repo_dir: Path,
                        installed_dir: Path | None = None,
-                       *, max_concurrency: int = len(TIMER_INSTANCES),
+                       *, max_concurrency: int,
                        unit_name: str | None = None, run_command) -> list[dict]:
     """Pre-start self-heal for drifted units.
 
@@ -411,7 +410,7 @@ def migrate_legacy_units(installed_dir: Path, *, run_command) -> bool:
 
 
 def install_units(repo_dir: Path, installed_dir: Path | None = None,
-                  *, max_concurrency: int = len(TIMER_INSTANCES),
+                  *, max_concurrency: int,
                   unit_name: str | None = None, run_command) -> dict:
     """Idempotently install the repo templates as the user units.
 
@@ -421,24 +420,27 @@ def install_units(repo_dir: Path, installed_dir: Path | None = None,
     migration or write. Migrates the pre-#149
     non-templated units away once (see ``migrate_legacy_units``), runs
     ``systemctl --user daemon-reload``, enables instances through
-    ``max_concurrency`` and disables surplus timers. These operations
+    ``max_concurrency`` and disables the surplus timers up to
+    ``MAX_RUNNER_INSTANCES`` (Issue #827: the whole 1..MAX universe
+    converges onto the configured capacity, so a downscale disables the
+    surplus instance). These operations
     activate or stop only timers, never services. The services are NEVER started,
     stopped or restarted: a currently running Runner keeps running,
     and the new config takes effect at the next service start.
     Returns the deployed commit (the deployment checkout's HEAD) and
     the installed units' hashes.
     """
-    if not 1 <= max_concurrency <= len(TIMER_INSTANCES):
+    if not 1 <= max_concurrency <= MAX_RUNNER_INSTANCES:
         raise ValueError(
-            "max_concurrency must have a matching Runner timer instance "
-            f"(1..{len(TIMER_INSTANCES)})"
+            "max_concurrency must be a positive integer no greater than "
+            f"{MAX_RUNNER_INSTANCES} (MAX_RUNNER_INSTANCES)"
         )
     repo_dir = Path(repo_dir)
     if installed_dir is None:
         installed_dir = installed_unit_dir()
     installed_dir = Path(installed_dir)
     names = unit_names(unit_name)
-    instances = timer_instances(unit_name)
+    instances = timer_instances(unit_name, MAX_RUNNER_INSTANCES)
     reject_different_deployment(repo_dir, installed_dir, unit_name)
     for name in UNIT_NAMES:
         template = repo_unit_dir(repo_dir) / name

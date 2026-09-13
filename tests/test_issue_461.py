@@ -23,7 +23,10 @@ def test_named_units_are_distinct_and_install_without_touching_default(tmp_path)
         calls.append(command)
         return "deadbeef" if command[:3] == ["git", "rev-parse", "HEAD"] else ""
 
-    systemd_deploy.install_units(repo, installed, unit_name="website", run_command=run)
+    systemd_deploy.install_units(
+        repo, installed, max_concurrency=1, unit_name="website",
+        run_command=run,
+    )
     assert (installed / "orbi-website@.service").is_file()
     assert (installed / "orbi-website@.timer").is_file()
     assert not (installed / "orbi@.service").exists()
@@ -41,7 +44,7 @@ def test_named_setup_unit_step_passes_instance_name(tmp_path):
     (systemd / "orbi@.service").write_text("[Service]\n")
     (systemd / "orbi@.timer").write_text("[Timer]\n")
     result = pilot_setup.install_units_step(
-        repo, tmp_path / "units", unit_name="web",
+        repo, tmp_path / "units", max_concurrency=1, unit_name="web",
         run_command=lambda command, **kwargs: "active" if command[:3] == ["systemctl", "--user", "show"] else "",
     )
     assert "orbi-web@1.timer" in result["timer"]["instances"]

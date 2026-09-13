@@ -133,7 +133,7 @@ from orbi.progress import (
 )
 from orbi import runner_health
 from orbi.systemd_deploy import (
-    TIMER_INSTANCES,
+    MAX_RUNNER_INSTANCES,
     UnitDriftError,
     check_unit_drift,
     sync_drifted_units,
@@ -686,16 +686,18 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     )
     # Concurrency cap: the local machine can only serve a
     # limited number of concurrent tasks, so the default is 1. Any other
-    # value must be a positive integer; fail fast on anything else.
+    # value must be a positive integer within the MAX_RUNNER_INSTANCES
+    # declaration cap (Issue #827 — the cap is a constant, never derived
+    # from a unit-name list); fail fast on anything else.
     max_concurrency = data.get("max_concurrency", 1)
     if (
         isinstance(max_concurrency, bool)
         or not isinstance(max_concurrency, int)
-        or not 1 <= max_concurrency <= len(TIMER_INSTANCES)
+        or not 1 <= max_concurrency <= MAX_RUNNER_INSTANCES
     ):
         raise ValueError(
-            "max_concurrency must be a positive integer with a matching "
-            f"Runner timer instance (1..{len(TIMER_INSTANCES)})"
+            "max_concurrency must be a positive integer no greater than "
+            f"{MAX_RUNNER_INSTANCES} (MAX_RUNNER_INSTANCES)"
         )
     # Optional Pi model selection: each key is absent -> None
     # (the Pi flag is not passed, Pi keeps its own default) or a non-empty

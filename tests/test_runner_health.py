@@ -74,7 +74,7 @@ ORBI_REPO = "orbi-build/orbi"
 
 def make_config(tmp_path: Path, *, health_alert_repo=None,
                 unit_name: str | None = None) -> dict:
-    return runner.RunnerConfig(repo_dir=tmp_path, source_repos=(REPO,), deploy_home=tmp_path, health_alert_repo=health_alert_repo, unit_name=unit_name)
+    return runner.RunnerConfig(repo_dir=tmp_path, source_repos=(REPO,), deploy_home=tmp_path, health_alert_repo=health_alert_repo, unit_name=unit_name, max_concurrency=2)
 
 
 def origin_route(url: str = f"git@github.com:{ORBI_REPO}.git") -> dict:
@@ -377,7 +377,7 @@ def test_count_crashes_counts_real_systemd_exit_lines():
     })
     # Two distinct crashes (11:41:02 and 11:43:10); the result line of
     # the first is a pair half, not a third event.
-    assert runner_health.count_crashes(fake) == 2
+    assert runner_health.count_crashes(fake, max_concurrency=1) == 2
 
 
 def test_count_crashes_ignores_clean_exits_and_term_stops():
@@ -396,7 +396,7 @@ def test_count_crashes_ignores_clean_exits_and_term_stops():
     })
     # status=0 is a healthy tick exit; status=15/TERM is a systemd/human
     # stop. Neither is a crash.
-    assert runner_health.count_crashes(fake) == 0
+    assert runner_health.count_crashes(fake, max_concurrency=1) == 0
 
 
 def test_count_crashes_counts_oom_kills():
@@ -414,7 +414,7 @@ def test_count_crashes_counts_oom_kills():
         "journalctl --user -u orbi@1.service": f"{oom_kill}\n{oom_result}\n",
         "journalctl --user -u orbi@2.service": "",
     })
-    assert runner_health.count_crashes(fake) == 1
+    assert runner_health.count_crashes(fake, max_concurrency=1) == 1
 
 
 def test_count_crashes_counts_exec_start_pre_failures():
@@ -436,7 +436,7 @@ def test_count_crashes_counts_exec_start_pre_failures():
     })
     # Counts once per unit: the dedupe key is unit+clock, so two units
     # failing in the same second are two events.
-    assert runner_health.count_crashes(fake) == 2
+    assert runner_health.count_crashes(fake, max_concurrency=2) == 2
 
 
 def test_count_crashes_dedupes_a_second_boundary_straddle():
@@ -451,7 +451,7 @@ def test_count_crashes_dedupes_a_second_boundary_straddle():
     })
     # The exit line at 11:41:02 and the result line at 11:41:03 are the
     # same crash (CRASH_PAIR_WINDOW_SECONDS covers the straddle).
-    assert runner_health.count_crashes(fake) == 1
+    assert runner_health.count_crashes(fake, max_concurrency=1) == 1
 
 
 def test_count_crashes_counts_each_crash_once():
@@ -462,7 +462,7 @@ def test_count_crashes_counts_each_crash_once():
     })
     # One real crash emits BOTH the exit line and the Failed-with-result
     # line; the count must stay 1 so the threshold keeps its meaning.
-    assert runner_health.count_crashes(fake) == 1
+    assert runner_health.count_crashes(fake, max_concurrency=1) == 1
 
 
 def test_count_crashes_counts_core_dumps():
@@ -474,7 +474,7 @@ def test_count_crashes_counts_core_dumps():
         "journalctl --user -u orbi@1.service": f"{dumped}\n",
         "journalctl --user -u orbi@2.service": "",
     })
-    assert runner_health.count_crashes(fake) == 1
+    assert runner_health.count_crashes(fake, max_concurrency=1) == 1
 
 
 def test_count_crashes_ignores_non_crash_lines():
@@ -488,7 +488,7 @@ def test_count_crashes_ignores_non_crash_lines():
         "journalctl --user -u orbi@1.service": noise,
         "journalctl --user -u orbi@2.service": "",
     })
-    assert runner_health.count_crashes(fake) == 0
+    assert runner_health.count_crashes(fake, max_concurrency=1) == 0
 
 
 def test_count_crashes_uses_a_bounded_window():
@@ -496,7 +496,7 @@ def test_count_crashes_uses_a_bounded_window():
         "journalctl --user -u orbi@1.service": "",
         "journalctl --user -u orbi@2.service": "",
     })
-    runner_health.count_crashes(fake)
+    runner_health.count_crashes(fake, max_concurrency=1)
     for call in fake.calls:
         assert call[0] == "timeout"
         assert "--since" in call
@@ -518,13 +518,24 @@ def test_count_crashes_queries_the_configured_unit_name():
         "journalctl --user -u orbi-x@1.service": "",
         "journalctl --user -u orbi-x@2.service": "",
     })
-    runner_health.count_crashes(fake, unit_name="x")
+    runner_health.count_crashes(fake, unit_name="x", max_concurrency=2)
     assert journal_units(fake) == ["orbi-x@1.service", "orbi-x@2.service"]
+
+
+def test_count_crashes_follows_the_configured_capacity():
+    """Issue #827: the crash scan queries one journal per service
+    instance @1..@N for the CONFIGURED capacity (3 = the incident
+    config) — the capacity, never a hardcoded instance count."""
+    fake = FakeRunCommand()
+    runner_health.count_crashes(fake, max_concurrency=3)
+    assert journal_units(fake) == [
+        "orbi@1.service", "orbi@2.service", "orbi@3.service",
+    ]
 
 
 def test_count_crashes_default_unit_name_unchanged():
     fake = FakeRunCommand()
-    runner_health.count_crashes(fake)
+    runner_health.count_crashes(fake, max_concurrency=2)
     assert journal_units(fake) == ["orbi@1.service", "orbi@2.service"]
 
 
@@ -1222,7 +1233,7 @@ def test_count_crashes_counts_unparseable_clock_lines_conservatively():
         "journalctl --user -u orbi@1.service": f"{no_clock}\n{no_unit}\n",
         "journalctl --user -u orbi@2.service": "",
     })
-    assert runner_health.count_crashes(fake) == 2
+    assert runner_health.count_crashes(fake, max_concurrency=1) == 2
 
 
 def test_save_health_state_tmp_is_pid_scoped(tmp_path, monkeypatch):

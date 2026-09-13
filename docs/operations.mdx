@@ -8,13 +8,14 @@ verification, troubleshooting and recovery.
 
 ## The timers
 
-The timer template `systemd/orbi@.timer` is deployed as TWO
-instances, `orbi@1.timer` and `orbi@2.timer`. Each fires
+The timer template `systemd/orbi@.timer` is deployed as N
+instances, `orbi@1.timer` through `orbi@N.timer` (N =
+`max_concurrency`, at most `MAX_RUNNER_INSTANCES = 5` — Issue #827). Each fires
 every 5 minutes, 24 hours a day (`OnCalendar=*-*-* *:00/5`,
 `AccuracySec=30s`, `Persistent=false` — a missed tick is dropped, never
 queued) and starts its OWN service instance
 (`orbi@1.timer` → `orbi@1.service`,
-`orbi@2.timer` → `orbi@2.service`), so two independent
+`orbi@2.timer` → `orbi@2.service`, ...), so N independent
 Runner instances can run concurrently. Each tick's service instance:
 
 1. **Syncs the engine source first** (`ExecStartPre`, outside the Runner
@@ -241,7 +242,7 @@ instance that setup may have enabled:
 
 ```bash
 systemctl --user disable --now orbi@1.timer
-# Run this too when max_concurrency = 2:
+# Repeat for every enabled instance @2..@N (N = max_concurrency):
 systemctl --user disable --now orbi@2.timer
 ```
 
@@ -273,7 +274,8 @@ installed units in place and enable the required timer again (or run
    orbi setup --config orbi.toml
    ```
 
-   `max_concurrency = 1` enables `orbi@1.timer`; `max_concurrency = 2` also
+   `max_concurrency = N` enables `orbi@1.timer` through `orbi@N.timer`
+   (at most `MAX_RUNNER_INSTANCES = 5`); e.g. `max_concurrency = 2` also
    enables `orbi@2.timer`. Verify the result with
    `systemctl --user list-timers 'orbi@*.timer'`.
 4. If the new deployment uses the same `unit_name` as the old one, setup has
@@ -295,7 +297,7 @@ templates only after both possible timers have been disabled:
 
 ```bash
 systemctl --user disable --now orbi@1.timer
-# Also run when max_concurrency = 2:
+# Also repeat for every enabled instance @2..@N (N = max_concurrency):
 systemctl --user disable --now orbi@2.timer
 rm ~/.config/systemd/user/orbi@.service ~/.config/systemd/user/orbi@.timer
 systemctl --user daemon-reload
@@ -791,7 +793,8 @@ can migrate deliberately:
   `pi_model`, `pi_thinking`, and `pi_providers`), plus the gitignored
   `.orbi/env` file loaded by the systemd `EnvironmentFile`.
 - **Deployment:** the `systemd/orbi@.service` and `systemd/orbi@.timer`
-  templates and their `orbi@1`/`orbi@2` instances.
+  templates and their `orbi@1..N` instances (N = `max_concurrency`,
+  at most `MAX_RUNNER_INSTANCES = 5`).
 - **Labels and lifecycle:** `labels.toml` together with
   `src/orbi/delivery_labels.py`, and the `ai-ready`, `ai-in-progress`,
   `ai-pr-opened`, `ai-fix-needed`, `ai-merged`, and `ai-blocked` state machine.
