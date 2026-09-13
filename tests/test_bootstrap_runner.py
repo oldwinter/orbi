@@ -2201,7 +2201,7 @@ def test_create_worktree_reuses_existing_remote_branch(monkeypatch, tmp_path):
     assert calls == [
         (["git", "fetch", "origin", "orbi/owner-repo-issue-3"], {"cwd": tmp_path, "timeout": journal.GIT_NETWORK_TIMEOUT_SECONDS}),
         (["git", "branch", "--list", "orbi/owner-repo-issue-3"], {"cwd": tmp_path}),
-        (["git", "worktree", "add", "-b", "orbi/owner-repo-issue-3", str(path), "origin/orbi/owner-repo-issue-3"], {"cwd": tmp_path}),
+        (["git", "worktree", "add", "--force", "-b", "orbi/owner-repo-issue-3", str(path), "origin/orbi/owner-repo-issue-3"], {"cwd": tmp_path}),
     ]
 
 
@@ -2254,7 +2254,7 @@ def test_create_worktree_branch_override_checks_out_the_external_head(
     assert calls == [
         (["git", "fetch", "origin", "fix/outer"], {"cwd": tmp_path, "timeout": journal.GIT_NETWORK_TIMEOUT_SECONDS}),
         (["git", "branch", "--list", "fix/outer"], {"cwd": tmp_path}),
-        (["git", "worktree", "add", "-b", "fix/outer", str(path), "origin/fix/outer"], {"cwd": tmp_path}),
+        (["git", "worktree", "add", "--force", "-b", "fix/outer", str(path), "origin/fix/outer"], {"cwd": tmp_path}),
     ]
 
 

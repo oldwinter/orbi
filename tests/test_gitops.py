@@ -147,11 +147,13 @@ def test_create_worktree_fetches_an_existing_remote_branch(
         tmp_path, "o/r", 4, "a1b2c3d4", "base123",
         existing_branch=True,
     )
+    # Issue #807: `--force` lets the rebuild clear a stale
+    # missing-but-registered entry a deleted worktree leaves behind.
     assert commands == [
         ["git", "fetch", "origin", "orbi/o-r-issue-4"],
         ["git", "branch", "--list", "orbi/o-r-issue-4"],
-        ["git", "worktree", "add", "-b", "orbi/o-r-issue-4", str(path),
-         "origin/orbi/o-r-issue-4"],
+        ["git", "worktree", "add", "--force", "-b", "orbi/o-r-issue-4",
+         str(path), "origin/orbi/o-r-issue-4"],
     ]
 
 
