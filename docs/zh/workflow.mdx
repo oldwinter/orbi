@@ -312,7 +312,11 @@ PR 验收时校验该关键词，缺失即 fail fast。
       模糊匹配、绝不关别的 Milestone）：0 个 open Issue 时关闭；已关闭
       是幂等成功（不重开）；Milestone 缺失或仍有 open Issue 则 fail
       fast，带上 version、Milestone 编号/链接和 open issue 列表（绝不
-      静默跳过）。任何失败：单独进入 `ai-blocked`（release 是人工决策
+      静默跳过）。release 票自己永不算未完成工作（Issue #808）：它正被
+      本次发版关闭，issue 索引落后关票几秒（Issue #754）造成的
+      「只剩 release 票自己」的陈旧读既不阻止也不拖延关闭；其余任何
+      open Issue 仍然拒绝关闭。
+      任何失败：单独进入 `ai-blocked`（release 是人工决策
       点——不自动重试），失败评论带 run marker 和具体原因，异常向上传
       播让 tick fail fast。
 
