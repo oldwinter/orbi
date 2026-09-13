@@ -899,3 +899,45 @@ def test_progress_state_survives_an_activity_snapshot_failure(monkeypatch, tmp_p
     assert state["phase"] == "starting"
     assert state["last_activity"] is None
     assert state["session"] is None
+
+
+def test_failure_marker_renders_and_validates_the_fingerprint():
+    """Issue #825: the hidden failure-fingerprint marker renders from a
+    16-hex fingerprint and rejects anything else."""
+    marker = progress.failure_marker("01e1f4a35a2fe1e5")
+    assert marker == "<!-- orbi:fail=01e1f4a35a2fe1e5 -->"
+    with pytest.raises(ValueError, match="invalid failure fingerprint"):
+        progress.failure_marker("nothex")
+    with pytest.raises(ValueError, match="invalid failure fingerprint"):
+        progress.failure_marker("0" * 17)
+
+
+def test_failure_repeat_count_and_bump_round_trip():
+    """Issue #825: the optional `:<count>` suffix is the deduped
+    failure's occurrence count — a count-less marker counts 1, the bump
+    raises it in place, a body without the marker counts 0 and refuses
+    to bump."""
+    body = (
+        "<!-- orbi:run=01e1f4a3 -->\n<!-- orbi:fail=01e1f4a35a2fe1e5 -->\n"
+        "Orbi needs a fix: boom"
+    )
+    assert progress.failure_repeat_count(body) == 1
+    once = progress.bump_failure_repeat(body, "01e1f4a35a2fe1e5")
+    assert once == body.replace(
+        "<!-- orbi:fail=01e1f4a35a2fe1e5 -->",
+        "<!-- orbi:fail=01e1f4a35a2fe1e5:2 -->",
+    )
+    assert progress.failure_repeat_count(once) == 2
+    twice = progress.bump_failure_repeat(once, "01e1f4a35a2fe1e5")
+    assert "<!-- orbi:fail=01e1f4a35a2fe1e5:3 -->" in twice
+    assert progress.failure_repeat_count(
+        "<!-- orbi:fail=ffffffffffffffff -->\nx") == 1
+    assert progress.failure_repeat_count("no marker") == 0
+    assert progress.failure_repeat_count(None) == 0
+    with pytest.raises(ValueError, match="does not carry the failure marker"):
+        progress.bump_failure_repeat("no marker", "01e1f4a35a2fe1e5")
+    with pytest.raises(ValueError, match="does not carry the failure marker"):
+        progress.bump_failure_repeat(
+            body, "ffffffffffffffff")
+    with pytest.raises(ValueError, match="must be a string"):
+        progress.bump_failure_repeat(None, "01e1f4a35a2fe1e5")

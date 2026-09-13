@@ -113,11 +113,15 @@ from orbi.repo_config import (
 )
 from orbi.progress import (
     RUN_MARKER_PATTERN,
+    FAILURE_MARKER_PATTERN,
     ProgressPublisher,
     _progress_body,
     _progress_state,
     _run_info_fields,
     _safe_publish,
+    bump_failure_repeat,
+    failure_marker,
+    failure_repeat_count,
     field_block,
     format_status_comment,
     format_elapsed,
@@ -180,6 +184,7 @@ from orbi.github import (
     issue_priority,
     issue_view,
     latest_run_marker,
+    line_run_markers,
     list_issues,
     list_milestones,
     milestone_issues,
@@ -187,6 +192,7 @@ from orbi.github import (
     milestone_open_issues,
     open_blocker_numbers,
     open_pr_for_branch,
+    update_issue_comment,
     parse_issue_array,
     parse_issue_list,
     parse_paginated_issue_array,
@@ -3871,7 +3877,12 @@ def verify_pr(ctx: RunContext, base_branch: str, *,
     `pr_repo` is given (resume path), the PR's head repo must be that
     repo; when `expected_url` is given, the verified PR URL must exactly
     equal the recovered original PR URL (the resume must keep the
-    same PR number).
+    same PR number). Issue #825: on the resume path the marker check
+    accepts ANY run marker of the delivery line — the marker set is
+    read from the Issue's trusted comments when the current attempt's
+    marker misses, because the PR body is written once by the creating
+    run while a resume may bind a new run id; the deliver path keeps
+    the strict current-attempt marker.
     """
     worktree = ctx.worktree
     branch: str = ctx.branch
@@ -4045,14 +4056,32 @@ def verify_pr(ctx: RunContext, base_branch: str, *,
     if not external_pr and (
         not isinstance(body, str) or marker not in body
     ):
-        event(
-            "pr_run_marker_missing", level=logging.ERROR,
-            expected=marker, branch=branch,
+        # Issue #825: the resume may run under a NEW run id of the SAME
+        # delivery line (one recoverable failure is enough to rebind it),
+        # while the PR body is written once by the creating run. On the
+        # resume path the check therefore accepts ANY marker the Issue's
+        # TRUSTED comment history knows; the deliver path (no
+        # expected_url) keeps the strict current-attempt marker. The
+        # trusted-only source keeps the #45/#89 posture — a copied
+        # marker in a public comment widens nothing — and the branch,
+        # base, head and exact-URL checks above still pin the PR.
+        line_markers = (
+            line_run_markers(issue_comments(issue, repo=pr_repo))
+            if isinstance(body, str) and expected_url is not None
+            and pr_repo else frozenset()
         )
-        raise RuntimeError(
-            f"PR body is missing the stable run marker {marker}; the PR "
-            "must carry the machine-readable run id of this attempt"
-        )
+        if not isinstance(body, str) or not any(
+            candidate in body for candidate in line_markers
+        ):
+            event(
+                "pr_run_marker_missing", level=logging.ERROR,
+                expected=marker, branch=branch,
+            )
+            raise RuntimeError(
+                f"PR body is missing the stable run marker {marker}; the PR "
+                "must carry the run marker of this delivery line (the "
+                "creating run or any later run of this Issue)"
+            )
     fixes = f"Fixes #{issue}"
     # Accept GitHub-style `Fixes #N` and the common `Fixes N` variant.
     # The number must match exactly, not as a digit prefix: `Fixes #41`
@@ -7245,6 +7274,70 @@ _FIX_NEEDED_PHRASE = (
 # GitHub comment limit; the cut is noted with the full session log path.
 FAILURE_COMMENT_MAX_CHARS = 20000
 
+# The dead-loop limit (Issue #825): the same (run_id, failure
+# fingerprint) recurring to this many CONSECUTIVE failures escalates the
+# recoverable classification to `ai-blocked` — the premises never
+# changed, so the next tick would only repeat the same failure (the
+# orbi-cloud#360 scene: 82 identical failures, one slot pinned all day).
+FAILURE_STREAK_LIMIT = 3
+
+
+def _is_line_failure_comment(body: str, run_id: str,
+                             fingerprint: str) -> bool:
+    """True when one comment is the failure record of this exact
+    (run_id, fingerprint) pair — the hidden `orbi:fail` marker plus the
+    run marker (Issue #825)."""
+    fail = FAILURE_MARKER_PATTERN.search(body)
+    return (
+        fail is not None
+        and fail.group(1) == fingerprint
+        and run_id in set(RUN_MARKER_PATTERN.findall(body))
+    )
+
+
+def _reported_failure_comment(comments: list, run_id: str,
+                              fingerprint: str) -> dict | None:
+    """The trusted comment already reporting this exact
+    (run_id, fingerprint) failure, or None — the #825 dedup key. A pure
+    scan over the already-fetched comment list."""
+    for comment in comments:
+        if not _comment_is_trusted(comment):
+            continue
+        body = comment.get("body")
+        if isinstance(body, str) and _is_line_failure_comment(
+                body, run_id, fingerprint):
+            return comment
+    return None
+
+
+def _failure_streak(comments: list, run_id: str,
+                    fingerprint: str) -> int:
+    """The number of CONSECUTIVE identical failures at the tail of the
+    trusted comment history (Issue #825). A pure scan over the
+    already-fetched comment list.
+
+    A matching failure comment adds its repeat count — the dedup keeps
+    ONE comment per (run_id, fingerprint) and bumps its counter in
+    place, so the counter IS the occurrence count. A DIFFERENT failure
+    ends the streak; a scene block (an opened PR, a completed review
+    round) ends it too — the delivery line advanced, the premises
+    changed. Publisher milestones and human chatter in between are
+    skipped: they change no premise."""
+    streak = 0
+    for comment in reversed(comments):
+        if not _comment_is_trusted(comment):
+            continue
+        body = comment.get("body")
+        if not isinstance(body, str):
+            continue
+        if _is_line_failure_comment(body, run_id, fingerprint):
+            streak += failure_repeat_count(body)
+            continue
+        if FAILURE_MARKER_PATTERN.search(body) or scene.carries_scene_block(
+                body):
+            break
+    return streak
+
 
 def report_delivery_failure(
     exc: BaseException, *, issue: dict, source_repo: str,
@@ -7295,11 +7388,59 @@ def report_delivery_failure(
     the callers keep their reporting-error semantics (the review loop
     fails fast; the other two log `failure reporting failed` and
     continue to their terminal return / re-raise).
+
+    The #825 dead-loop guard (classified recoverable failures only):
+    the same (run_id, failure fingerprint) recurring to
+    `FAILURE_STREAK_LIMIT` consecutive failures escalates to the
+    terminal `ai-blocked` outcome with the count and the
+    unchanged-precondition verdict in the comment, and an identical
+    failure that was already reported bumps the hidden repeat counter
+    of its existing comment in place (the streak scan reads that
+    counter as the occurrence count) instead of posting a second
+    comment; the journal records the repeat. The history read fails
+    open — a read failure degrades to the plain classified report,
+    never a second failure of the reporting path.
     """
     number = int(issue["number"])
     title = issue["title"]
     priority = issue_priority(issue)
     blocked = not classify or is_unrecoverable_failure(exc)
+    # The #825 dead-loop guard, recoverable failures only (blocked is
+    # already terminal; `classify=False` is the implement handler's
+    # terminal template): the same (run_id, failure fingerprint)
+    # recurring to `FAILURE_STREAK_LIMIT` consecutive failures is a
+    # dead loop, not a transient error — the escalation turns it
+    # `ai-blocked`, the human decision point. The history read fails
+    # open: the guard must never break the failure report itself.
+    fingerprint = runner_health.failure_fingerprint(exc)
+    reported_failure: dict | None = None
+    if classify and not blocked and run_id:
+        try:
+            history = issue_comments(number, repo=source_repo)
+        except Exception:
+            LOGGER.exception("issue=%s failure history read failed", number)
+            event(
+                "failure_history_read_failed", issue=number,
+                run_id=run_id,
+            )
+        else:
+            reported_failure = _reported_failure_comment(
+                history, run_id, fingerprint,
+            )
+            streak = _failure_streak(history, run_id, fingerprint)
+            if streak + 1 >= FAILURE_STREAK_LIMIT:
+                blocked = True
+                cause = (
+                    f"{cause}; the same failure has now occurred "
+                    f"{streak + 1} consecutive times for run_id={run_id} "
+                    f"(fingerprint {fingerprint}) with unchanged "
+                    "preconditions — a dead loop, not a transient error"
+                )
+                event(
+                    "failure_streak_escalated", level=logging.ERROR,
+                    issue=number, run_id=run_id, streak=streak + 1,
+                    fingerprint=fingerprint,
+                )
 
     def scene_line() -> str | None:
         """The run scene for the body, or None when omitted.
@@ -7375,13 +7516,46 @@ def report_delivery_failure(
             f"{session_file or '<unavailable>'}]_"
         )
     if run_id:
-        body = f"{run_marker(run_id)}\n{body}"
-    comment_issue(number, repo=source_repo, body=body)
-    if pr_url and not blocked:
-        # The recoverable scene is written to the PR too:
-        # the next review session and any human watcher see it where
-        # the delivery lives. A blocked Issue is terminal — Issue only.
-        comment_pr(_pr_number(pr_url), repo=source_repo, body=body)
+        # The hidden fingerprint marker rides under the run marker on
+        # the recoverable path only: a blocked Issue is terminal, so
+        # its comment never joins a future streak scan (a human's
+        # blocked -> ai-fix-needed recovery starts a fresh streak).
+        fail_marker_line = "" if blocked else (
+            f"{failure_marker(fingerprint)}\n"
+        )
+        body = f"{run_marker(run_id)}\n{fail_marker_line}{body}"
+    if run_id and reported_failure is not None and not blocked:
+        # The #825 dedup: the identical failure already has its Issue
+        # comment — the repeat counter is bumped in that comment IN
+        # PLACE (the dead-loop streak scan reads it as the occurrence
+        # count), no second comment is posted, and the journal records
+        # the repeat. The PR copy stays as first posted; the Issue
+        # comment is the delivery line's failure record. The patch is
+        # the repeat's report and fails like one (the label patch above
+        # and the tracked progress publish below keep their semantics).
+        comment_id = reported_failure.get("id")
+        if not isinstance(comment_id, int):
+            raise ValueError(
+                f"issue={number} failure comment id must be an integer "
+                f"to bump the repeat counter, got {comment_id!r}"
+            )
+        update_issue_comment(
+            comment_id, repo=source_repo,
+            body=bump_failure_repeat(
+                reported_failure["body"], fingerprint,
+            ),
+        )
+        event(
+            "failure_comment_deduplicated", issue=number,
+            run_id=run_id, fingerprint=fingerprint,
+        )
+    else:
+        comment_issue(number, repo=source_repo, body=body)
+        if pr_url and not blocked:
+            # The recoverable scene is written to the PR too:
+            # the next review session and any human watcher see it where
+            # the delivery lives. A blocked Issue is terminal — Issue only.
+            comment_pr(_pr_number(pr_url), repo=source_repo, body=body)
     if run_id:
         # One publisher for the milestone and the terminal scene: the
         # run's LIVE publisher when the caller holds one (its `finish`

@@ -93,6 +93,22 @@ the Issue is marked `ai-blocked` with the explicit reason why automatic
 recovery is impossible, and the automatic loop never touches it again — a
 human decides the next step.
 
+Dead-loop guard and comment dedup (Issue #825): a resume may bind a NEW
+run id (one recoverable failure is enough), while the PR body is written
+once at creation, so the resume verification accepts ANY run marker the
+delivery line has used — the marker set is read from the Issue's TRUSTED
+comments (the same trust filter as the resume scene; a copied marker in a
+public comment widens nothing, and the branch, base, head and exact-URL
+checks stay intact, keeping the #45/#89 anti-PR-swap posture). A failure
+comment of one `(run_id, failure fingerprint)` pair is posted ONCE (the
+hidden `<!-- orbi:fail=... -->` marker is the key); every identical
+repeat bumps that comment's hidden `:<count>` suffix in place (the
+journal records the repeat). The same pair recurring to 3 CONSECUTIVE
+failures (a scene block — a newly opened PR, a completed review round —
+means the line advanced and resets the streak) is classified as a dead
+loop, not a transient error: it escalates to `ai-blocked` with the count
+and the unchanged-precondition verdict in the comment.
+
 Rules of the chain:
 
 - One task = one run = one feature branch = one worktree = one PR. The PR
