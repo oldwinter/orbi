@@ -1,4 +1,4 @@
-"""Systemd deployment consistency for Orbi (Issue #103, #149).
+"""Systemd deployment consistency for Orbi.
 
 The repo templates ``systemd/orbi@.service`` and
 ``systemd/orbi@.timer`` are the single source of truth for the
@@ -36,7 +36,7 @@ from orbi.journal import event
 SERVICE_UNIT = "orbi@.service"
 TIMER_UNIT = "orbi@.timer"
 UNIT_NAMES = (SERVICE_UNIT, TIMER_UNIT)
-# Issue #149: the two enabled timer instances. Each instance triggers
+# The two enabled timer instances. Each instance triggers
 # its own service instance (orbi@1.timer ->
 # orbi@1.service, ...@2 -> ...@2), so two independent Runner
 # instances can run concurrently; the capacity is still the flock
@@ -50,7 +50,7 @@ SERVICE_INSTANCES = (
 LEGACY_TIMER_UNIT = "orbi.timer"
 LEGACY_UNIT_NAMES = ("orbi.service", "orbi.timer")
 
-# Issue #262: the unit templates are machine-independent. The single
+# The unit templates are machine-independent. The single
 # machine-specific value (the deployment checkout path) is carried as
 # this placeholder and substituted at install time with the checkout's
 # resolved absolute path — the templates no longer hardcode
@@ -58,12 +58,12 @@ LEGACY_UNIT_NAMES = ("orbi.service", "orbi.timer")
 REPO_DIR_PLACEHOLDER = "{{ORBI_REPO_DIR}}"
 
 # The idempotent install command that repairs any drift (carried on
-# every unit_drift line as the fix command). Issue #140: the official
+# every unit_drift line as the fix command). The official
 # entry is the installed `orbi` CLI (the uv-tool console
 # script), not a hand-written Python file entry.
 FIX_COMMAND = "orbi install-units"
 
-# Issue #747: the repair path for a hand-written orbi unit — every
+# The repair path for a hand-written orbi unit — every
 # deployment declares its own unit_name and installs its own managed
 # set; a hand-written unit file is never migrated automatically.
 UNMANAGED_FIX = (
@@ -120,8 +120,8 @@ def unmanaged_units(installed_dir: Path) -> list[dict]:
     ``check_unit_drift`` compares exactly those names. A hand-written
     orbi unit WITHOUT the ``@`` template form (``orbi-core.service``,
     the pre-#149 ``orbi.timer``, ...) is invisible to every
-    ``unit_names()`` set — it never drift-checks and never self-heals
-    (Issue #747). One entry per such file, sorted by name: the unit
+    ``unit_names()`` set — it never drift-checks and never self-heals.
+    One entry per such file, sorted by name: the unit
     name and the ``ORBI_CONFIG`` the unit points at (``None`` when the
     file carries none — timers never do). A missing unit dir has
     nothing to scan (the missing managed units are ``unit_drift``'s
@@ -225,7 +225,7 @@ def unit_status(repo_dir: Path, installed_dir: Path,
         repo_path = repo_unit_dir(repo_dir) / template_name
         installed_path = installed_dir / name
         if repo_path.is_file():
-            # Issue #262: the installed unit is the RENDERED template
+            # The installed unit is the RENDERED template
             # (the checkout path substituted), so the drift check must
             # compare against the rendered form — otherwise a clean
             # install would always look drifted.
@@ -261,10 +261,10 @@ def drift_lines(status: list[dict]) -> list[str]:
 
     Builds the lines carried by the ``UnitDriftError`` message: the
     repo path, the installed path, both hashes and the idempotent fix
-    command (Issue #103). Values containing spaces are quoted (the
+    command. Values containing spaces are quoted (the
     progress.quote_value convention) so the line stays parseable.
     This helper never logs — the journal emission goes through
-    ``event()`` (`_log_drifted_units`, Issue #791).
+    ``event()`` (`_log_drifted_units`).
     """
     lines: list[str] = []
     for entry in status:
@@ -284,7 +284,7 @@ def drift_lines(status: list[dict]) -> list[str]:
 
 def _log_drifted_units(status: list[dict]) -> None:
     """Emit one structured ``unit_drift`` failure line per drifted unit
-    through the single journal emission point (Issue #791): same fields
+    through the single journal emission point: same fields
     as ``drift_lines``, minus the report-only message role."""
     for entry in status:
         if not entry["drifted"]:
@@ -301,7 +301,7 @@ def _log_drifted_units(status: list[dict]) -> None:
 def check_unit_drift(repo_dir: Path,
                      installed_dir: Path | None = None,
                      unit_name: str | None = None) -> None:
-    """Pre-start deployment check (Issue #103).
+    """Pre-start deployment check.
 
     Compares BOTH installed units against the repo templates. Clean:
     logs ``unit_drift clean`` and returns. Drift: logs one structured
@@ -327,7 +327,7 @@ def sync_drifted_units(repo_dir: Path,
                        installed_dir: Path | None = None,
                        *, max_concurrency: int = len(TIMER_INSTANCES),
                        unit_name: str | None = None, run_command) -> list[dict]:
-    """Pre-start self-heal for drifted units (Issue #142).
+    """Pre-start self-heal for drifted units.
 
     The normal scene: a template change merged to main, the
     ExecStartPre-synced checkout carries the new templates, and the
@@ -451,7 +451,7 @@ def install_units(repo_dir: Path, installed_dir: Path | None = None,
     if unit_name is None:
         migrate_legacy_units(installed_dir, run_command=run_command)
     for template_name, name in zip(UNIT_NAMES, names):
-        # Issue #262: render the template (substitute the deployment
+        # Render the template (substitute the deployment
         # checkout path for the {{ORBI_REPO_DIR}} placeholder) so the
         # installed unit points at THIS checkout regardless of where it
         # lives. A template without the placeholder is written unchanged.

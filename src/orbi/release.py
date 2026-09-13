@@ -1,11 +1,11 @@
-"""Orbi release delivery subsystem (Issue #286, moved from `orbi.runner`).
+"""Orbi release delivery subsystem.
 
 The deterministic release state machine the Runner executes for an
 `ai-release` Issue: declaration parsing, scope verification, gates,
 version preparation, tag, GitHub Release publish, docs sync, Milestone
 close, and the `process_release` orchestration. Its GitHub and git data
 access goes through the `orbi.github` / `orbi.gitops` leaves and the
-`orbi.journal` seam (Issue #785); the runner-side entry is the dispatch
+`orbi.journal` seam; the runner-side entry is the dispatch
 in `orbi.runner.process_issue`, and `runner` imports this module at
 module level for the release constants.
 """
@@ -95,26 +95,26 @@ from orbi.progress import (
 
 if TYPE_CHECKING:
     # Annotation-only: this module imports `orbi.runner` never — the
-    # runner imports this module at runtime (Issue #785) — while
+    # runner imports this module at runtime — while
     # `process_release` annotates the frozen host config of #790.
     from orbi.runner import RunnerConfig
 
 
 # --- release-domain constants, scene and gates (moved from
-# --- `orbi.runner`, Issue #785: the release contract lives here) --------
+# --- `orbi.runner`: the release contract lives here) --------
 
 # The machine-readable section a release Issue body must carry (Issue
 # #98): `- version:`, `- base_branch:` and `- scope:` (or
 # `- scope_from_milestone:`). Parsed strictly — a missing or malformed
 # declaration fails fast, never guessed. The declaration carries NO
-# local test contract (Issue #569): test acceptance is the GitHub
+# local test contract: test acceptance is the GitHub
 # Actions CI result on the release commit (the #268 CI-wait gate).
-# The Pi role of a release run (Issue #41/#82): the delivery state
+# The Pi role of a release run: the delivery state
 # machine executes it, never a Pi session.
 ROLE_RELEASE = "release"
 
 RELEASE_SECTION = "## Release"
-# Release CI wait (Issue #268): the release commit is born from the last
+# Release CI wait: the release commit is born from the last
 # delivery PR merge, so its CI is almost always still running when the
 # gate checks it — a pending check (queued/in_progress) is an
 # intermediate state, not a failure. The gate waits for completion up to
@@ -122,7 +122,7 @@ RELEASE_SECTION = "## Release"
 # own failure reason, never reported as a CI failure. The TOML field
 # `release_ci_wait_seconds` overrides the default (the #228 pattern).
 RELEASE_CI_WAIT_SECONDS = 1800
-# Release delivery wait (Issue #381): an early release ticket yields the
+# Release delivery wait: an early release ticket yields the
 # slot while other deliveries finish. The limit applies to one gate attempt;
 # the next tick retries the same ready release ticket.
 RELEASE_DELIVERIES_WAIT_SECONDS = 1800
@@ -146,7 +146,7 @@ def parse_release_declaration(body: str) -> dict:
     """Strictly parse the `## Release` section of a release Issue body.
 
     The declaration is the machine-readable contract of a Release task
-    (Issue #98) — the only state a release run reads from the Issue
+     — the only state a release run reads from the Issue
     body (checkboxes are never parsed):
 
     ```markdown
@@ -160,7 +160,7 @@ def parse_release_declaration(body: str) -> dict:
     ```
 
     or, instead of the hand-listed `scope`, the scope derived from the
-    Milestone whose title is the release version (Issue #253):
+    Milestone whose title is the release version:
 
     ```markdown
     - scope_from_milestone: v0.3.0
@@ -168,13 +168,13 @@ def parse_release_declaration(body: str) -> dict:
 
     `version` is the exact tag name (no spaces) and `base_branch` the
     branch the release commit is frozen from. The declaration carries
-    NO test contract (Issue #569): test acceptance is the GitHub
+    NO test contract: test acceptance is the GitHub
     Actions CI result on the release commit (the #268 CI-wait gate).
     `scope` lists the Issue/PR numbers verified one by one.
     Optional `version_file` selects a supported ecosystem metadata file
     (the default is `pyproject.toml`) or `none` to skip version metadata
     changes; its existence in the frozen release tree is verified at
-    claim time by `verify_release_version_file` (Issue #740).
+    claim time by `verify_release_version_file`.
     Exactly one of `scope` / `scope_from_milestone` must be present:
     both (conflict) or neither fails fast. `scope_from_milestone` is
     the Milestone TITLE (no spaces); its scope is derived later by
@@ -324,7 +324,7 @@ def parse_release_declaration(body: str) -> dict:
 
 def verify_release_version_file(repo_dir: Path, release_commit: str,
                                 version_file: str) -> None:
-    """Prove the declared `version_file` exists in the frozen base (Issue #740).
+    """Prove the declared `version_file` exists in the frozen base.
 
     `version_file` is an optional declaration field that silently defaults
     to the Python ecosystem's `pyproject.toml`; a repository without that
@@ -363,7 +363,7 @@ def verify_release_version_file(repo_dir: Path, release_commit: str,
 
 def verify_release_scope(repo: str, scope: list[int], repo_dir: Path,
                          release_commit: str) -> list[str]:
-    """Verify every release scope item ONE BY ONE (Issue #98).
+    """Verify every release scope item ONE BY ONE.
 
     The scope is verified against GitHub, never by parsing Issue-body
     checkboxes: each number is probed as a PR first (`gh pr view` —
@@ -372,7 +372,7 @@ def verify_release_scope(repo: str, scope: list[int], repo_dir: Path,
     and, failing that, as an Issue (`gh issue view`). A PR must be
     `MERGED` and its merge commit must be an ancestor of the frozen
     release commit; an Issue must be `CLOSED` with `stateReason`
-    `COMPLETED` (Issue #707): a `NOT_PLANNED` closure (duplicate /
+    `COMPLETED`: a `NOT_PLANNED` closure (duplicate /
     won't fix) is not a delivery — its evidence line visibly annotates
     the exclusion instead of silently counting the ticket into the
     release. This ancestor check proves
@@ -429,7 +429,7 @@ def verify_release_scope(repo: str, scope: list[int], repo_dir: Path,
                 f"(state={state})"
             )
         if issue.get("stateReason") == "NOT_PLANNED":
-            # Issue #707: a NOT_PLANNED closure (duplicate / won't fix)
+            # A NOT_PLANNED closure (duplicate / won't fix)
             # is not released work — annotate the exclusion visibly
             # instead of silently counting the ticket into the release.
             evidence.append(
@@ -442,7 +442,7 @@ def verify_release_scope(repo: str, scope: list[int], repo_dir: Path,
 
 def derive_release_scope_from_milestone(repo: str,
                                         milestone_title: str) -> tuple[list[int], list[str]]:
-    """Derive the release scope from a Milestone (Issue #253).
+    """Derive the release scope from a Milestone.
 
     The release scope is the Milestone's COMPLETED Issues under the
     Milestone whose title is EXACTLY `milestone_title` (the same
@@ -564,13 +564,13 @@ def build_release_changelog(repo: str, scope: list[int]) -> str:
     """Render deterministic readable notes from live scoped Issue evidence.
 
     Each scope number is resolved with one `gh api graphql` round trip
-    (`issueOrPullRequest`, the same access path `gh issue view` used
-    before Issue #772): the Issue fields, labels and closing-PR
+    (`issueOrPullRequest`, the same access path `gh issue view` uses):
+    the Issue fields, labels and closing-PR
     references — now including each PR's author login and avatar so the
     Contributors section costs zero extra API calls.  A title is the
     concise change description; when it is absent, the first non-empty
     body line is usable summary evidence.  A NOT_PLANNED-closed Issue is
-    not released work (Issue #707) — it is excluded from the Changelog
+    not released work — it is excluded from the Changelog
     (the Scope evidence annotates the exclusion).  A closing PR's link
     is written only when `gh pr view` reports the PR MERGED: an unmerged
     PR never appears in the release notes, and its author is not a
@@ -660,7 +660,7 @@ def build_release_changelog(repo: str, scope: list[int]) -> str:
                 raise ValueError(
                     f"release changelog Issue #{number} has malformed PR evidence"
                 )
-            # Issue #707: an unmerged PR is not released content — its
+            # An unmerged PR is not released content — its
             # link never enters the release notes.
             pr_state = pr_view(pr_number, "state", repo=repo).get("state")
             if pr_state != "MERGED":
@@ -717,7 +717,7 @@ def check_release_gates(repo: str, base_branch: str, release_commit: str,
                         on_delivery_wait: Callable[[str], None] | None = None,
                         repo_has_ci: bool = False,
                         ) -> tuple[list[str], bool]:
-    """Enforce the pre-release gates (Issue #98) and return their evidence.
+    """Enforce the pre-release gates and return their evidence.
 
     Returns ``(evidence, repo_has_ci)`` — the second element is whether
     any check run was observed on the gated commit, so the release flow
@@ -730,8 +730,7 @@ def check_release_gates(repo: str, base_branch: str, release_commit: str,
     1. No open Issue still carries `ai-in-progress`, `ai-pr-opened`
        or `ai-fix-needed` — the release Issue itself is excluded (it
        carries `ai-in-progress` while the release runs). With a
-       `milestone`, the check is scoped to that Milestone (Issue #671:
-       the documented `gh issue list --milestone <title>` filter), the
+       `milestone`, the check is scoped to that Milestone (the documented `gh issue list --milestone <title>` filter), the
        same criterion as the #663 completeness gate: an in-flight Issue
        of another Milestone — or of no Milestone — is not this
        release's delivery and never blocks it. Without a `milestone`
@@ -745,20 +744,19 @@ def check_release_gates(repo: str, base_branch: str, release_commit: str,
        ``repo_has_ci=True``, the frozen base already showed checks, so
        this repository runs CI and an empty list on a freshly pushed
        commit means the checks have not REGISTERED yet (GitHub creates
-       CheckRuns seconds after the push, Issue #657): the gate then
+       CheckRuns seconds after the push): the gate then
        polls within the same budget until the first check appears and
        never passes an empty list as "nothing to gate"). A PENDING
        check (queued/in_progress —
        the release commit is born from the last delivery merge, so its
-       CI is almost always still running, Issue #268) is not a
+       CI is almost always still running) is not a
        conclusion: the gate polls until every check completes (one
        `release_waiting_ci` journal line per poll, the wait reflected
        through `on_wait`), then decides on the final conclusions.
        Waiting past `ci_wait_seconds` fails with its own timeout
        reason, explicitly distinct from a CI failure.
 
-    Open PRs are deliberately NOT a gate (Issue #608, maintainer ruling
-    2026-09-09, final): an open PR is queue state, never a release
+    Open PRs are deliberately NOT a gate: an open PR is queue state, never a release
     premise. The release contract is the milestone's closed-Issue scope
     check, green full tests and green CI on the release commit —
     whether open PRs exist, how many, or who authored them says nothing
@@ -774,7 +772,7 @@ def check_release_gates(repo: str, base_branch: str, release_commit: str,
     evidence: list[str] = []
     open_deliveries: set[int] = set()
     for label in (IN_PROGRESS_LABEL, PR_OPENED_LABEL, FIX_NEEDED_LABEL):
-        # Issue #671: the leftover-delivery check is scoped to the
+        # The leftover-delivery check is scoped to the
         # release's Milestone, so an unrelated in-flight Issue can
         # no longer block the release indefinitely.
         issues = list_issues(
@@ -837,7 +835,7 @@ def check_release_gates(repo: str, base_branch: str, release_commit: str,
             for check in check_runs if check.get("status") != "completed"
         ]
         if repo_has_ci and not check_runs:
-            # Issue #657: an empty list on a just-pushed commit in a CI
+            # An empty list on a just-pushed commit in a CI
             # repository is "not registered yet", not "nothing to gate"
             # — wait for the first check within the same budget; a
             # timeout below fails with the wait-timeout reason.
@@ -893,7 +891,7 @@ def check_release_gates(repo: str, base_branch: str, release_commit: str,
             f"CI on the release commit: no check runs on "
             f"{release_commit} (nothing to gate)"
         )
-    # Issue #608: no open-PR gate — an open PR is queue state, not a
+    # No open-PR gate — an open PR is queue state, not a
     # release premise (see the docstring for the maintainer ruling).
     return evidence, bool(check_runs)
 
@@ -1070,14 +1068,14 @@ def prepare_release_version(worktree: Path, tag: str,
 def release_tag_commit(repo_dir: Path, tag: str) -> str | None:
     """Return the commit the tag points to on the remote, or None.
 
-    (Issue #98) `git ls-remote` keeps the existence probe read-only and
+     `git ls-remote` keeps the existence probe read-only and
     its exit semantics unambiguous: exit 0 with empty output means the
     remote has no such tag (None); ANY non-zero exit is a real failure
     (network/auth) and propagates. The previous `git fetch` probe read
     exit 128 as "missing", but a network failure also exits 128 — a
     transient outage would read as "no tag on the remote", the retry
     would re-create the tag, and a local residue from the failed push
-    deadlocked the release ticket (Issue #585). Annotated tags are
+    deadlocked the release ticket. Annotated tags are
     peeled with the `^{}` line ls-remote reports alongside the tag
     object.
 
@@ -1111,7 +1109,7 @@ def ensure_release_tag_pushed(repo_dir: Path, tag: str,
 
     本地残留收敛：上次 `git tag` 成功但 push 失败会留下本地 tag，重试
     时远端仍无此 tag，不处理残留的话 `git tag -a` 永远 fatal: tag
-    already exists（发布票死锁，Issue #585）。残留指向本次发布提交 →
+    already exists（发布票死锁）。残留指向本次发布提交 →
     跳过重建直接重推；指向别的提交 → fail fast——已有的 tag 永不移动
     或覆盖（与 `release_tag_commit` 的远端侧同一不变量）。
     """
@@ -1152,7 +1150,7 @@ def publish_release(*, repo: str, tag: str, version: str,
                     release_commit: str, changelog: str,
                     scope_evidence: list[str], gate_evidence: list[str], test_evidence: str,
                     run_id: str, issue_number: int) -> str:
-    """Create the GitHub Release for the tag — idempotently (Issue #98).
+    """Create the GitHub Release for the tag — idempotently.
 
     When a Release for the tag already exists (a restart after a
     successful `gh release create`) its URL is reused, never a second
@@ -1202,7 +1200,7 @@ def publish_release(*, repo: str, tag: str, version: str,
     return release_view(repo, tag, fields="tagName,url")["url"]
 
 
-# Issue #754: the GitHub issue index is eventually consistent —
+# The GitHub issue index is eventually consistent —
 # `gh issue close` returning success does not mean the
 # `issues?milestone=N&state=open` list reflects it yet, and v0.4.10 read
 # a stale non-empty list in the same second as the close. A non-empty
@@ -1215,7 +1213,7 @@ MILESTONE_OPEN_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 def close_release_milestone(repo: str, version: str, *, run_id: str | None = None,
                             release_issue: int | None = None) -> str:
-    """Close the Milestone whose title is exactly `version` (Issue #214).
+    """Close the Milestone whose title is exactly `version`.
 
     Runs on the release success path (after the tag is pushed, the
     GitHub Release is published and the release Issue is closed with
@@ -1230,17 +1228,17 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
     - already `closed` -> idempotent success (no mutation, no reopen);
     - `open` with open issues -> fail fast with the version, the
       Milestone number/url and the open issue list — but only after
-      bounded backoff re-reads (Issue #754: the issue index is
+      bounded backoff re-reads (the issue index is
       eventually consistent, so a list read in the same second as the
       release Issue's `gh issue close` can still show it as open);
     - `open` with 0 open issues -> closed via the official REST
       contract `PATCH /repos/{owner}/{repo}/milestones/{number}`
       with `state=closed` (OpenAPI `issues/update-milestone`).
 
-    `release_issue` is THIS release's own ticket number (Issue #808).
+    `release_issue` is THIS release's own ticket number.
     The gate never counts it as unfinished work: it is being closed by
     this very release, so a stale-open listing of exactly that ticket
-    is the known Issue #754 index lag, and waiting out the backoff for
+    is the known index lag, and waiting out the backoff for
     it would make the milestone close depend on the index refresh
     timing. Every gate read drops it before the 0-open-issues
     judgment; a refusal then names only the REAL leftovers and
@@ -1286,7 +1284,7 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
     excluded_tickets: list[int] = []
 
     def open_leftovers() -> list[dict]:
-        # Issue #808: the gate judges the milestone's REAL unfinished
+        # The gate judges the milestone's REAL unfinished
         # work — never this release's own ticket.
         issues = milestone_open_issues(repo, int(number))
         if release_issue is None:
@@ -1309,7 +1307,7 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
     retries = 0
     while open_issues and retries < len(MILESTONE_OPEN_RETRY_DELAYS):
         # The release Issue close succeeded seconds ago; a non-empty read
-        # here is more likely the index lagging (Issue #754) than real
+        # here is more likely the index lagging than real
         # unfinished work. Re-read with bounded backoff; the raise below
         # fires only once the list stays non-empty across all retries.
         time.sleep(MILESTONE_OPEN_RETRY_DELAYS[retries])
@@ -1352,7 +1350,7 @@ def release_docs_page(*, version: str, tag_object: str,
                       body: str, language: str) -> str:
     """Build one docs-site Release notes page for a published release.
 
-    (Issue #275) The page content is the published GitHub Release body
+     The page content is the published GitHub Release body
     (no changelog re-implementation — #204 owns that) plus the meta the
     existing release pages share: the tag/release-commit mapping, the
     publish time and the release task Issue number. Two mechanical
@@ -1416,7 +1414,7 @@ def release_docs_page(*, version: str, tag_object: str,
 
 def current_latest_release_slug(config_text: str) -> str:
     """The first page of the English `Releases` group — the current
-    latest release (the groups are latest-first, Issue #154)."""
+    latest release (the groups are latest-first)."""
     config = json.loads(config_text)
     for lang in config["navigation"]["languages"]:
         if lang.get("language") != "en":
@@ -1440,7 +1438,7 @@ def current_latest_release_slug(config_text: str) -> str:
 def update_release_navigation(config_text: str, slug: str) -> tuple[str, bool]:
     """Insert `slug` at the head of both release navigation groups.
 
-    (Issue #275) The `Releases` (en) and `发布` (zh) groups list the
+     The `Releases` (en) and `发布` (zh) groups list the
     releases latest-first; a new release goes FIRST in both (the zh
     entries carry the `zh/` prefix). A slug already listed in both
     groups leaves the config untouched (idempotent). Exactly one group
@@ -1473,7 +1471,7 @@ def move_latest_marker(worktree: Path, old_slug: str,
                        new_slug: str, *, resume: bool) -> list[str]:
     """Move the `(latest)` title marker off the previous latest page.
 
-    (Issue #275) Only the newest release page may carry the marker:
+     Only the newest release page may carry the marker:
     ` (latest)` (en) / `（最新）` (zh) is stripped from the previous
     latest page's H1. When the old page already lacks the marker the
     move is only accepted on a resume (`resume=True`: the new page
@@ -1521,7 +1519,7 @@ def sync_release_docs(*, source_repo: str, repo_dir: Path,
                       release_commit: str, issue_number: int) -> str:
     """Sync the docs-site Release notes for one published release.
 
-    (Issue #275) Release state machine step 8 — runs AFTER the GitHub
+     Release state machine step 8 — runs AFTER the GitHub
     Release exists (step 7) and BEFORE the Milestone is closed (step 9):
 
     - fetches the published Release (`gh release view`, the same call
@@ -1665,11 +1663,11 @@ def release_success_comment_body(run_id: str, run_info: str,
                                  milestone_evidence: str) -> str:
     """The terminal success comment: the full verification evidence.
 
-    (Issue #98) The comment is the auditable record of the release:
+     The comment is the auditable record of the release:
     run marker, release URL, version/tag/release commit, the
     per-item scope evidence, the gate evidence, the test evidence, the
-    docs-site Release notes evidence (Issue #275) and the Milestone
-    evidence (Issue #214: the Milestone whose title is the released
+    docs-site Release notes evidence and the Milestone
+    evidence (the Milestone whose title is the released
     version is closed on the success path).
     """
     info = _run_info_fields(run_info)
@@ -1704,7 +1702,7 @@ def release_success_comment_body(run_id: str, run_info: str,
 
 def release_failure_comment_body(run_id: str, run_info: str,
                                  error: str) -> str:
-    """The terminal failure comment: the blocked scene (Issue #98).
+    """The terminal failure comment: the blocked scene.
 
     A release failure is terminal (`ai-blocked` ALONE, no automatic
     retry): the comment carries the run marker and the concrete
@@ -1722,21 +1720,20 @@ def process_release(issue: dict, config: RunnerConfig,
                    source_repo: str) -> str:
     """Run the deterministic release state machine for one release Issue.
 
-    (Issue #98) A release task NEVER enters the normal `run_pi`
+     A release task NEVER enters the normal `run_pi`
     development path: the Runner executes the state machine itself,
     step by step, each step idempotent so a restart resumes the same
     run (same run id, same worktree) from the top:
 
     1. Strictly parse the `## Release` declaration from the Issue
        body (version, base_branch, scope or
-       scope_from_milestone — exactly one of the two, Issue #253;
+       scope_from_milestone — exactly one of the two;
        the declaration carries no test contract — test acceptance
-       is the CI result, Issue #569).
+       is the CI result).
     2. Freeze the base — the release commit is exactly
        `origin/<base_branch>` (fetched under the base-sync lock).
     2b. Prove the declared (or defaulted) `version_file` exists at the
-       root of the frozen release tree (`verify_release_version_file`,
-       Issue #740) — before any gate wait, so a declaration/repo
+       root of the frozen release tree (`verify_release_version_file`) — before any gate wait, so a declaration/repo
        mismatch fails fast at claim time with the supported files that
        do exist, never as a late FileNotFoundError after the gates.
     3. Enforce the pre-release gates (`check_release_gates`).
@@ -1752,14 +1749,14 @@ def process_release(issue: dict, config: RunnerConfig,
     5. Test acceptance is the #268 CI-wait gate on the release commit:
        after the version bump the gates re-run against that exact
        commit, and a red or timed-out CI takes the existing recoverable
-       failure path. No local test execution (Issue #569).
+       failure path. No local test execution.
     6. Tag: the remote tag must not exist or must point EXACTLY at
        the release commit (a mismatch fails — an existing tag is
        never moved); otherwise create an annotated tag at the release
        commit and push it with a plain push (never `--force`).
     7. Publish the GitHub Release (idempotent) with the full
        verification evidence.
-    8. Sync the docs-site Release notes (Issue #275): generate
+    8. Sync the docs-site Release notes: generate
        `docs/release-<version>.mdx` + `docs/zh/release-<version>.mdx`
        from the published Release body, update both navigation groups,
        move the `(latest)` marker, and commit + push those docs changes
@@ -1768,7 +1765,7 @@ def process_release(issue: dict, config: RunnerConfig,
     9. Apply `ai-merged` and close the release Issue (terminal delivery
        transition).
     10. Close the Milestone whose title is EXACTLY the released
-        version (Issue #214), then write the success comment (release
+        version, then write the success comment (release
         URL, tag, commit, evidence, docs-site Release notes evidence,
         Milestone evidence). Exact title match only; close it only when
         it has 0 open Issues; already-closed is idempotent. A missing
@@ -1823,8 +1820,8 @@ def process_release(issue: dict, config: RunnerConfig,
         )
 
     def on_ci_wait(detail: str) -> None:
-        # Issue #268: the CI wait is reflected in the live progress
-        # comment (pure bypass, Issue #79); the gate itself emits the
+        # The CI wait is reflected in the live progress
+        # comment (pure bypass); the gate itself emits the
         # `release_waiting_ci` journal line.
         state = progress()
         state["phase"] = f"waiting CI: {detail}"
@@ -1838,7 +1835,7 @@ def process_release(issue: dict, config: RunnerConfig,
     try:
         declaration = parse_release_declaration(issue["body"])
         base_branch = declaration["base_branch"]
-        # Issue #811: the started milestone below and the failure comment
+        # The started milestone below and the failure comment
         # read THIS value — base_branch known, base_sha not yet (the
         # post-gate reassignment further down adds base_sha). The journal
         # refactor deleted the assignment and both comments lost the only
@@ -1863,7 +1860,7 @@ def process_release(issue: dict, config: RunnerConfig,
             ),
         )
         release_commit = freeze_base(config.repo_dir, base_branch)
-        # Issue #740: the declared (or defaulted) version_file is proven
+        # The declared (or defaulted) version_file is proven
         # to exist in the frozen release tree BEFORE any gate wait — a
         # mismatch used to surface only at the version-write step, after
         # the gates and the scope verification, and burned the ticket
@@ -1880,7 +1877,7 @@ def process_release(issue: dict, config: RunnerConfig,
             # carry the persisted timer.  A public comment must not be able
             # to inject an old timestamp and turn a recoverable wait into an
             # immediate terminal block (the same trust boundary as resume
-            # scenes, Issue #45).
+            # scenes).
             if not _comment_is_trusted(comment):
                 continue
             body = comment.get("body", "")
@@ -1901,7 +1898,7 @@ def process_release(issue: dict, config: RunnerConfig,
             f"base_branch={base_branch} base_sha={release_commit} "
             f"run_id={run_id} priority={priority}"
         )
-        # Issue #671: the leftover-delivery gate is scoped to the same
+        # The leftover-delivery gate is scoped to the same
         # Milestone as the #663 completeness gate — the release Issue's own
         # GitHub Milestone, `active_milestone` fallback.
         target_milestone = release_target_milestone(
@@ -1910,7 +1907,7 @@ def process_release(issue: dict, config: RunnerConfig,
         gate_evidence, repo_has_ci = check_release_gates(
             source_repo, base_branch, release_commit, number,
             milestone=target_milestone,
-            # Issue #268: the gate waits out pending CI checks on the
+            # The gate waits out pending CI checks on the
             # release commit; the real load_config always provides the
             # key, the module constant stays the fallback for hand-built
             # configs.
@@ -1927,7 +1924,7 @@ def process_release(issue: dict, config: RunnerConfig,
             ),
         )
         if declaration.get("scope_from_milestone") is not None:
-            # Issue #253: the scope is derived from the Milestone, then
+            # The scope is derived from the Milestone, then
             # verified item by item exactly like a hand-listed scope.
             derived_scope, open_milestone_evidence = (
                 derive_release_scope_from_milestone(
@@ -1989,7 +1986,7 @@ def process_release(issue: dict, config: RunnerConfig,
         # pre-version source commit. The just-pushed commit may hit the
         # CheckRun registration lag, so gate 1's observation (checks on the
         # frozen base = this repository runs CI) forbids the empty-list
-        # pass here (Issue #657).
+        # pass here.
         gate_evidence, _ = check_release_gates(
             source_repo, base_branch, release_commit, number,
             milestone=target_milestone,
@@ -2015,7 +2012,7 @@ def process_release(issue: dict, config: RunnerConfig,
             deployment_home, lock_repo_dir=deployment_home,
             run_command=run_command,
         )
-        # Issue #569: there is NO local test execution — the CI-wait gate
+        # There is NO local test execution — the CI-wait gate
         # re-run above already decided the test acceptance on this exact
         # release commit; a red or timed-out CI took the recoverable
         # failure path there.
@@ -2040,7 +2037,7 @@ def process_release(issue: dict, config: RunnerConfig,
             elif tag_commit_is_ancestor_of_base(
                     existing_tag_commit, release_commit,
                     config.repo_dir):
-                # Issue #275: the docs-sync step (step 8) pushed the release
+                # The docs-sync step (step 8) pushed the release
                 # notes to the base branch, advancing origin/<base> past the
                 # tag commit. On a resume the frozen base is the docs commit;
                 # the tag commit is the canonical release commit — recover it
@@ -2098,8 +2095,8 @@ def process_release(issue: dict, config: RunnerConfig,
             # point. The ai-merged transition and the Issue close are
             # bookkeeping of that irreversible fact — a transient failure
             # here must not fall through to the generic handler and
-            # rewrite the published result as ai-blocked (Issue #79:
-            # bypass, never a terminal rewrite; same rule as the
+            # rewrite the published result as ai-blocked (a
+            # bypass — never a terminal rewrite; same rule as the
             # milestone evidence below).
             LOGGER.exception(
                 "issue=%s release_publish_closeout_failed", number,
@@ -2111,9 +2108,9 @@ def process_release(issue: dict, config: RunnerConfig,
         except Exception as exc:
             # The tag and GitHub Release are already published at this point.
             # Milestone closure is evidence only and must not rewrite that
-            # irreversible release result as ai-blocked (Issue #79). The
+            # irreversible release result as ai-blocked. The
             # wording states plainly that the third release criterion was
-            # missed — the milestone was NOT closed (Issue #808).
+            # missed — the milestone was NOT closed.
             LOGGER.exception(
                 "issue=%s release_milestone_evidence_failed", number,
             )
@@ -2146,7 +2143,7 @@ def process_release(issue: dict, config: RunnerConfig,
         )
         return release_url
     except ReleaseDeliveriesWaiting as waiting:
-        # Issue #381: this is a clean, recoverable tick. Return the release
+        # This is a clean, recoverable tick. Return the release
         # ticket to the ready queue before releasing the caller's slot.
         apply_label_patch(
             number, repo=source_repo, event=EVENT_RELEASE_WAITING,
@@ -2205,7 +2202,7 @@ class ReleaseDeliveriesWaiting(RuntimeError):
 def release_target_milestone(
     issue: dict, active_milestone: str | None = None,
 ) -> str | None:
-    """Return the Milestone a release Issue releases (Issue #663).
+    """Return the Milestone a release Issue releases.
 
     The completeness gate judges the Milestone the release belongs to:
     the Issue's own GitHub Milestone is authoritative, and the configured

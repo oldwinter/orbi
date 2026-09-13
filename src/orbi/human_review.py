@@ -1,4 +1,4 @@
-"""The human acceptance gate's checklist (Issue #763).
+"""The human acceptance gate's checklist.
 
 The gate's carrier is the human-only label `ai-human-review`
 (`orbi.delivery_labels`); this module is its readable face: the two
@@ -29,7 +29,7 @@ from orbi.delivery_labels import HUMAN_REVIEW_LABEL
 CHECKLIST_MARKER = "orbi:human-review"
 _CHECKLIST_SCHEMA = 1
 
-# Column-2 items (Issue #763 section 4: the machine-unverifiable
+# Column-2 items (the machine-unverifiable
 # minimum). Each fires on a data condition of the delivered diff, not
 # on a repo-agnostic "humans must check this" template.
 _INTENT_ITEM = (
@@ -128,7 +128,7 @@ def build_checklist(*, test_result: str | None,
     column2: list[str] = []
     if test_result:
         column1.append(f"测试结果：{test_result}")
-        # Issue #805: no declared test command — the suite is the
+        # No declared test command — the suite is the
         # repository's own test suite (the agent infers the method).
         column1.append(
             f"覆盖层：仓库测试套件 —— 自动化断言覆盖到代码与接口层；"
@@ -153,7 +153,7 @@ def render_checklist_comment(*, run_id: str, pr_url: str,
                              checklist: dict) -> str:
     """Render the Issue comment: run marker, both columns, machine block.
 
-    Hard constraints (Issue #763): no line may start with
+    Hard constraints: no line may start with
     `Orbi review round ` (`review_rounds_so_far` counts it and the
     checklist would burn the bounded review budget); an empty column 2
     says 无需人工介入 explicitly and does not require the label; the
@@ -161,7 +161,7 @@ def render_checklist_comment(*, run_id: str, pr_url: str,
     """
     column1 = checklist["column1"]
     column2 = checklist["column2"]
-    # Issue #805: the review instruction names the repository's own test
+    # The review instruction names the repository's own test
     # suite — no declared test command exists to quote.
     lines = [
         f"<!-- orbi:run={run_id} -->",

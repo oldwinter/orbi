@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Pi process execution subsystem (moved from `runner.py`, Issue #300).
+"""Pi process execution subsystem (moved from `runner.py`).
 
 Spawns a Pi session and streams its live activity into the journal, owns the
 Pi-process failure classes and the poll/idle/model-wait/recovery tuning
 constants. It imports `orbi.pi_activity` and `orbi.pi_recovery` only; the
 runner-side lifecycle hooks it needs (`issue_context`, `set_active_pi`) are
 imported lazily inside `stream_pi` so this module never imports `runner`
-(the runner imports this module — Issue #266 circular-import rule).
+(the runner imports this module — the circular-import rule).
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ from orbi.pi_recovery import (
 
 if TYPE_CHECKING:
     # Annotation-only: `orbi.runner` imports this module's constants at
-    # runtime (Issue #790).
+    # runtime.
     from orbi.runner import RunnerConfig
 
 
@@ -57,21 +57,21 @@ LOGGER = logging.getLogger("orbi.pi_process")
 
 LOGGER.addFilter(RunIdFilter())
 
-# Live activity polling while Pi runs (Issue #24): every poll the journal
+# Live activity polling while Pi runs: every poll the journal
 # gets either an `activity` line (something changed) or a `heartbeat` line
 # (nothing changed; the idle time is carried on the line itself).
 PI_POLL_INTERVAL = 15.0
 
 
-# Idle warning (Issue #18): no model/session activity for 5 minutes
+# Idle warning: no model/session activity for 5 minutes
 # (and the model is not expected to reply next) logs one `pi_idle`
 # warning; the first new session event after it logs `pi_resumed`.
-# A slow active model (model_wait, Issue #40) is never reported idle.
+# A slow active model (model_wait) is never reported idle.
 PI_IDLE_WARN_SECONDS = 300.0
 
 
-# Hung-model-request detection (Issue #75, safe recovery since Issue
-# #218): while the newest session event is a tool result (model_wait)
+# Hung-model-request detection (safe recovery): while the newest
+# session event is a tool result (model_wait)
 # the model is expected to reply next. A real (slow) model keeps
 # producing session events; a HUNG model request (the model service
 # process alive but the request never completes, or the upstream dead:
@@ -87,7 +87,7 @@ PI_IDLE_WARN_SECONDS = 300.0
 # arriving — a slow generation survives. It measures silence between
 # COMPLETE session events (Pi does not stream token-level progress
 # into the JSONL), not token-level model progress. Configurable since
-# Issue #228: the TOML field `model_wait_dead_seconds` overrides this
+# The TOML field `model_wait_dead_seconds` overrides this
 # default (1800 s, 30 minutes — a slow local model (e.g. a 27B Q4 GGUF
 # behind a llama-server with a 1200 s request timeout: ~57 tokens/s at
 # 12K context on an RX 7900 XTX with all layers on GPU, well under 20
@@ -97,7 +97,7 @@ PI_IDLE_WARN_SECONDS = 300.0
 PI_MODEL_WAIT_DEAD_SECONDS = 1800.0
 
 
-# Swallowed-model-request probe (Issue #233): while Pi is frozen in
+# Swallowed-model-request probe: while Pi is frozen in
 # model_wait the Runner probes the model's /slots endpoint (the
 # `model_wait_probe_url` config). When EVERY slot reports idle
 # (is_processing=false) for this sustained grace the request was
@@ -108,13 +108,13 @@ PI_MODEL_WAIT_DEAD_SECONDS = 1800.0
 # default) so a swallow is recovered in ~1 minute, not ~30; it is long
 # enough that a request still being scheduled into the slot (the brief
 # accept->schedule window) is never misread as a swallow. The probe is
-# a pure bypass (Issue #79): a probe failure is inconclusive and the
+# a pure bypass: a probe failure is inconclusive and the
 # `model_wait_dead_seconds` bound still applies. The TOML field
 # `model_wait_probe_seconds` overrides this default.
 PI_MODEL_WAIT_PROBE_SECONDS = 60.0
 
 
-# Idle-stall recovery (Issue #94): a stalled (non-model_wait) session
+# Idle-stall recovery: a stalled (non-model_wait) session
 # is recovered automatically instead of only warning. Measured in idle
 # windows of `idle_warn_seconds`: at the first window the pre-idle
 # descendants (the hung tools) get SIGTERM (the failure signal reaches
@@ -125,7 +125,7 @@ PI_MODEL_WAIT_PROBE_SECONDS = 60.0
 PI_IDLE_RECOVERY_CYCLES = 3
 
 
-# Provider rate-limit retry (Issue #321): a Pi session killed by a
+# Provider rate-limit retry: a Pi session killed by a
 # provider 429 (the free-tier burst scene — the stderr carries `429` /
 # `quota` / `RESOURCE_EXHAUSTED` / `retry in`) is TRANSIENT throttling,
 # not a task failure: the SAME session is re-spawned in the same run
@@ -138,7 +138,7 @@ PI_IDLE_RECOVERY_CYCLES = 3
 # PI_RATE_LIMIT_RETRIES backoff retries still end in a 429 exit (6
 # consecutive 429 exits at the default 5) does the terminal failure run
 # — `RateLimitExhaustedError` (`ai-blocked`), with the cumulative count
-# and the quota repair action in the message (Issue #698: the count is
+# and the quota repair action in the message (the count is
 # the RUN's, persisted across restarts, so the limit actually bites).
 # Long-term quota exhaustion is OUT of scope here (#313): this loop
 # only bridges short burst windows.
@@ -149,7 +149,7 @@ PI_RATE_LIMIT_BACKOFF_MAX_SECONDS = 300.0
 
 
 # The 429 retry counter is per-DELIVERY-ATTEMPT state, not per-process
-# state (Issue #698): the pre-#698 counter lived in a `stream_pi` local
+# state: the pre-#698 counter lived in a `stream_pi` local
 # and reset on every runner restart, so `PI_RATE_LIMIT_RETRIES` was
 # unreachable as a terminal outcome (the beta incident: 22 restarts,
 # 19×429, zero output, the Issue stuck `ai-in-progress`). The count is
@@ -223,9 +223,9 @@ def _record_429_attempts(cwd: Path, run_id: str, attempts: int) -> None:
 
 
 # The bootstrap runner streams every Pi session of a run through the same
-# live activity pipeline (Issue #24/#40); implement/review share the same
-# line format and carry their role (Issue #41: one run_id end to end, the
-# roles are steps of the same run). Issue #82 removed the cold-start fixer
+# live activity pipeline; implement/review share the same
+# line format and carry their role (one run_id end to end, the
+# roles are steps of the same run). There is no cold-start fixer
 # role: the review session fixes findings in the same session, so a run
 # has at most two Pi sessions (implement, then review).
 ROLE_IMPLEMENT = "implement"
@@ -250,12 +250,12 @@ class RecoverablePiTimeoutError(subprocess.TimeoutExpired, RecoverablePiFailure)
 
 
 class ModelWaitDeadError(RuntimeError):
-    """The hung-model-request recovery (Issue #218/#228) killed the Pi
+    """The hung-model-request recovery killed the Pi
     session: the model request is HUNG (the model service process is alive
     but the request never completes, the session JSONL froze in
     `model_wait` past `model_wait_dead_seconds`).
 
-    This is a CLASSIFIED, AI-recoverable delivery failure (Issue #227):
+    This is a CLASSIFIED, AI-recoverable delivery failure:
     the worktree keeps the interrupted work and the run state file is
     intact, so `process_issue` keeps the Issue `ai-in-progress` and the
     next tick's in-flight restart scan resumes the SAME run (same run id,
@@ -267,7 +267,7 @@ class ModelWaitDeadError(RuntimeError):
 
 class ProviderRateLimitedError(RuntimeError):
     """The Pi session exited because the provider throttled it (a 429
-    marker on the session's stderr, Issue #321): TRANSIENT rate limiting,
+    marker on the session's stderr): TRANSIENT rate limiting,
     not a task failure.
 
     Internal to `stream_pi`'s retry loop: the loop either re-spawns the
@@ -292,7 +292,7 @@ class ProviderRateLimitedError(RuntimeError):
 
 class RateLimitExhaustedError(RuntimeError):
     """The rate-limit backoff budget of one delivery attempt is
-    exhausted (Issue #698): `PI_RATE_LIMIT_RETRIES` cumulative 429 exits
+    exhausted: `PI_RATE_LIMIT_RETRIES` cumulative 429 exits
     across every restart of the same run_id — TERMINAL, never a
     recoverable resume.
 
@@ -321,7 +321,7 @@ def _drain_stream(stream, chunks: list[bytes],
                   silence_s: float = 30.0) -> bool:
     """Read a pipe to EOF, appending chunks (process must be finished).
 
-    Issue #709: Pi's tool subprocesses inherit this pipe's write end and
+    Pi's tool subprocesses inherit this pipe's write end and
     can outlive Pi — after Pi is reaped, EOF then never arrives and an
     unbounded blocking read would wedge the tick (and its slot) forever,
     past every timeout mechanism. Each received chunk restarts the
@@ -349,8 +349,8 @@ def _log_activity(activity: dict, *, issue_ref: str,
                   role: str, state: str | None = None) -> None:
     """Log one short activity line with the changed fields only.
 
-    No `run=` field (Issue #57): the `[run_id]` prefix added by
-    `RunIdFilter` (Issue #41) is the single run-id carrier on the
+    No `run=` field: the `[run_id]` prefix added by
+    `RunIdFilter` is the single run-id carrier on the
     high-frequency lines, so the id appears exactly once per line.
     """
     event(
@@ -369,7 +369,7 @@ def _log_heartbeat(activity: dict, *, issue_ref: str,
 
     `state` carries the model_wait flag while the model is expected to
     reply next, so a slow active model is not reported as idle (Issue
-    #40). No `run=` field (Issue #57): the `[run_id]` prefix is the
+    #40). No `run=` field: the `[run_id]` prefix is the
     single run-id carrier on the high-frequency lines.
     """
     event(
@@ -381,7 +381,7 @@ def _log_heartbeat(activity: dict, *, issue_ref: str,
 
 def _log_startup(kind: str, *, issue_ref: str, role: str, activity: dict,
                  elapsed: float, extra: str = "") -> None:
-    """Log one startup phase line (Issue #176).
+    """Log one startup phase line.
 
     Every startup phase (`process_spawned`, `session_created`,
     `first_request_started`, `first_response_received`,
@@ -389,8 +389,8 @@ def _log_startup(kind: str, *, issue_ref: str, role: str, activity: dict,
     role, the provider/model Pi selected (`-` until the session's
     `model_change` record says otherwise), the elapsed time since the
     Pi process was spawned, and any extra fields of the phase (`pid=`,
-    `reason=`, `session_created=`, `first_request=`). No `run=` field
-    (Issue #57): the `[run_id]` prefix is the single run-id carrier.
+    `reason=`, `session_created=`, `first_request=`). No `run=` field:
+    the `[run_id]` prefix is the single run-id carrier.
     Identifiers only — never a key, the prompt or model output.
     """
     event(
@@ -402,12 +402,11 @@ def _log_startup(kind: str, *, issue_ref: str, role: str, activity: dict,
 
 
 def _classify_startup_exit(stderr: str, returncode: int) -> str:
-    """The distinguishable `startup_failed` reason for an early Pi exit
-    (Issue #176).
+    """The distinguishable `startup_failed` reason for an early Pi exit.
 
     The classification is evidence-based on Pi's own stderr (the
     minimal correlation the Issue asks for): a provider rate limit
-    (`429` / `quota` / `RESOURCE_EXHAUSTED` / `retry in` — Issue #321)
+    (`429` / `quota` / `RESOURCE_EXHAUSTED` / `retry in`)
     is `provider_rate_limited` (checked FIRST: a throttling response
     that happens to mention the key is still a rate limit); a provider
     authentication failure (`401`/`403`, `unauthorized`, `forbidden`,
@@ -432,7 +431,7 @@ def _classify_startup_exit(stderr: str, returncode: int) -> str:
 
 
 # The 429 response's own retry hint, in the two shapes observed in the
-# wild (Issue #321, the #302 scene: the Google 429 text "Please retry in
+# wild (the Google 429 text "Please retry in
 # 36.123456s" — measured 2s -> 19s -> 36s — and the google.rpc.RetryInfo
 # JSON field `"retryDelay": "36s"`).
 _RETRY_AFTER_PATTERNS = (
@@ -442,7 +441,7 @@ _RETRY_AFTER_PATTERNS = (
 
 
 def _is_rate_limited(stderr: str) -> bool:
-    """Whether Pi's stderr carries a provider 429 marker (Issue #321)."""
+    """Whether Pi's stderr carries a provider 429 marker."""
     lowered = stderr.lower()
     return any(marker in lowered for marker in PI_RATE_LIMIT_MARKERS)
 
@@ -473,13 +472,13 @@ def _backoff_seconds(attempt: int, stderr: str) -> float:
 
 def _log_provider_config_loaded(*, issue_ref: str, role: str, config: RunnerConfig,
                                 elapsed: float) -> None:
-    """Log the `provider_config_loaded` startup line (Issue #176).
+    """Log the `provider_config_loaded` startup line.
 
     The provider file has been loaded and validated (at config load)
     and materialized for this run — or resolved to Pi's own agent dir
     when unconfigured. The provider/model fields are the configured
     identifiers (the same non-sensitive values already on the redacted
-    command line, Issue #119) or `-` when Pi keeps its own defaults.
+    command line) or `-` when Pi keeps its own defaults.
     """
     _log_startup(
         "provider_config_loaded", issue_ref=issue_ref, role=role,
@@ -494,7 +493,7 @@ def _log_startup_failed(*, issue_ref: str, role: str, activity: dict,
                         timed_out: bool, model_wait_dead: bool,
                         model_wait_swallowed: bool,
                         idle_recovery_failed: bool) -> None:
-    """Log one `startup_failed` line (Issue #176): the run failed
+    """Log one `startup_failed` line: the run failed
     BEFORE the first response, so the line says WHERE the startup was
     stuck (`session_created=`, `first_request=`) plus the
     distinguishable `reason=`. The existing `run_failed` scene line and
@@ -525,7 +524,7 @@ def _startup_failed_reason(activity: dict, *, returncode: int,
                            model_wait_swallowed: bool,
                            idle_recovery_failed: bool) -> str:
     """The `startup_failed` reason for a failure before the first
-    response (Issue #176): the kill-path class first, then the
+    response: the kill-path class first, then the
     root-cause evidence from Pi's stderr (`provider_rate_limited` /
     `auth_failure` / `network_timeout` — the missing session file is
     usually the CONSEQUENCE of the rate-limit/auth/network failure,
@@ -585,13 +584,13 @@ def _refresh_session_evidence(activity: dict, session_dir: Path,
 
 def _pending_timeout_targets(targets: list[dict]) -> list[tuple[dict, float]]:
     """The pre-idle descendants still INSIDE an explicit `timeout`
-    deadline (Issue #169): `[(target, deadline_epoch), ...]`.
+    deadline: `[(target, deadline_epoch),...]`.
 
     A descendant whose command line carries a coreutils
     `timeout <seconds>` wrapper and whose deadline is still in the
     future is a legitimately running tool — the runner waits for the
     deadline instead of signaling it. The age is measured CLOCK
-    CONSISTENTLY (Issue #169): the process's boot-time start offset
+    CONSISTENTLY: the process's boot-time start offset
     (stat field 22) against CLOCK_BOOTTIME, never the
     realtime-flavoured `process_start_epoch` — a realtime step after
     boot (NTP) must not make a tool look older than it is. A
@@ -644,12 +643,11 @@ def _pending_timeout_targets(targets: list[dict]) -> list[tuple[dict, float]]:
 
 
 class IdleRecoveryTracker:
-    """The idle-stall escalation strategy (Issue #94, extracted by
-    #287): the stream loop used to keep its seven mutable pieces of
-    escalation state inline (`idle_start_epoch` /
+    """The idle-stall escalation strategy: the seven mutable pieces of
+    escalation state — once inline in the stream loop — live here
+    (`idle_start_epoch` /
     `idle_start_monotonic` / `recovery` / `recovery_targets` /
-    `recovery_step` / `deadline_passed` / `idle_wait_logged`); they now
-    live here, so the escalation is one replaceable strategy the loop
+    `recovery_step` / `deadline_passed` / `idle_wait_logged`), so the escalation is one replaceable strategy the loop
     drives with `reset` (the stall ended), `open_window` (the #18 idle
     warning opened the window) and one `escalate` call per idle poll,
     then reads `state` (the progress-comment value) and `exhausted`
@@ -714,7 +712,7 @@ class IdleRecoveryTracker:
         # full idle window after the TERM.
         self._step = 0
         # Past-deadline `timeout` targets first observed alive, mapped
-        # to the idle cycle they were first observed (Issue #181): the
+        # to the idle cycle they were first observed: the
         # target is signaled only if it is STILL alive one full idle
         # window later (cycle > recorded cycle); a pid that exits in
         # the meantime is dropped (it simply stops being a target).
@@ -757,7 +755,7 @@ class IdleRecoveryTracker:
         cycle = int(silence // self._window_seconds) + 1
         if self._step == 0:
             targets = find_idle_descendants(pid, self._window_epoch)
-            # Evidence-based wait (Issue #169, the #105 regression): a
+            # Evidence-based wait: a
             # pre-idle descendant that runs a coreutils
             # `timeout <seconds> ...` wrapper INSIDE its deadline is a
             # legitimately running tool, not a hung one — the runner
@@ -785,7 +783,7 @@ class IdleRecoveryTracker:
                     self._wait_logged = True
                 self._state = "wait"
             else:
-                # Past-deadline grace (Issue #181): a target whose
+                # Past-deadline grace: a target whose
                 # nominal `timeout` deadline passed is NOT escalated in
                 # the window it is first observed alive — the wrapper's
                 # own deadline handling (alarm -> signal delivery ->
@@ -869,7 +867,7 @@ class IdleRecoveryTracker:
                     # reached its own deadline): the wait state is
                     # stale — clear it so the progress comment does not
                     # keep showing `recovery: wait` while the
-                    # escalation runs (Issue #169).
+                    # escalation runs.
                     self._state = None
                     self._deadline_passed.clear()
                     self._step = 1
@@ -921,7 +919,7 @@ def stream_pi(
     progress: Callable[[dict], None] | None = None,
     pi_env: dict[str, str] | None = None,
 ) -> str:
-    """Run Pi and stream concise live activity into the journal (Issue #40).
+    """Run Pi and stream concise live activity into the journal.
 
     The full invariant scene (branch, worktree, session file) is logged
     once as `run_start`. While Pi runs, only short changed fields are
@@ -937,7 +935,7 @@ def stream_pi(
     as the complete local record; the full prompt and Issue body are
     never logged.
 
-    Startup phases (Issue #176): `process_spawned` is logged right
+    Startup phases: `process_spawned` is logged right
     after the spawn (with the pid); `session_created`,
     `first_request_started` and `first_response_received` are logged
     once each as the session JSONL crosses the milestones (the session
@@ -955,7 +953,7 @@ def stream_pi(
     `idle_recovery_stale`); the existing `run_failed` line and the
     raised failure are unchanged (fail-fast semantics preserved).
 
-    Provider rate-limit retry (Issue #321): when Pi exits non-zero and
+    Provider rate-limit retry: when Pi exits non-zero and
     its stderr carries a provider 429 marker (`429` / `quota` /
     `RESOURCE_EXHAUSTED` / `retry in`), the exit is classified as
     TRANSIENT throttling — not a task failure — and the SAME Pi session
@@ -967,14 +965,13 @@ def stream_pi(
     `pi_retry_429` line (run id, attempt, next_retry_in). Only after
     `PI_RATE_LIMIT_RETRIES` (default 5) CUMULATIVE backoff retries still
     end in a 429 exit does the terminal failure run —
-    `RateLimitExhaustedError`, never a recoverable resume (Issue #698:
-    the attempt count is persisted per run in the worktree's `.orbi/`
+    `RateLimitExhaustedError`, never a recoverable resume (the attempt count is persisted per run in the worktree's `.orbi/`
     dir, so it keeps rising across runner restarts and the limit
     actually bites) — with the `run_failed` scene marked
     `reason=provider_rate_limited`. Long-term quota exhaustion stays out
     of scope (#313); non-429 failures are untouched.
 
-    `progress` (Issue #18) is invoked on EVERY poll — an activity change
+    `progress` is invoked on EVERY poll — an activity change
     or a heartbeat — with the current activity state, while the Pi
     process is still running: the caller renders the live GitHub
     progress comment and PATCHes the same run-marker comment in place,
@@ -982,13 +979,13 @@ def stream_pi(
     run. A callback error is logged and never interrupts the task
     (observability is best-effort, the delivery is not).
 
-    Idle warning (Issue #18): when no model/session event arrives for
+    Idle warning: when no model/session event arrives for
     `idle_warn_seconds` (default 5 minutes) and the state is NOT
     model_wait, ONE `pi_idle` WARNING carries `stale_seconds`; the
     first new session event after it logs `pi_resumed`. A slow active
-    model (model_wait) is never reported idle (Issue #40).
+    model (model_wait) is never reported idle.
 
-    Idle-stall recovery (Issue #94): the warning is no longer the end
+    Idle-stall recovery: the warning is no longer the end
     of the story. While the session stays stalled (no new activity,
     not model_wait) the runner recovers it, one step per idle window
     of `idle_warn_seconds` since the stall was first seen:
@@ -1012,13 +1009,13 @@ def stream_pi(
     LOGGER.info("command=%s cwd=%s", " ".join(safe_command), cwd)
     issue_ref = issue_context(source_repo, issue)
     session_dir = cwd / ".pi-session"
-    # Issue #698: the counter is the RUN's, not this invocation's — a
+    # The counter is the RUN's, not this invocation's — a
     # resumed run continues where the killed process stopped.
     attempt = _load_429_attempts(cwd, run_id)
     while True:
         # Session files that already exist before this Pi process starts
-        # are never followed (Issue #45 round-5 review, Major 3): a
-        # resumed run — and, since Issue #321, a retried invocation —
+        # are never followed: a
+        # resumed run — and a retried invocation —
         # re-snapshots the baseline so the previous invocation's JSONL is
         # never reported as this attempt's session.
         known_files = (
@@ -1048,7 +1045,7 @@ def stream_pi(
             delay = _backoff_seconds(attempt, exc.stderr)
             attempt += 1
             # Persisted BEFORE the sleep: a kill during the wait keeps
-            # every retry already spent (Issue #698).
+            # every retry already spent.
             _record_429_attempts(cwd, run_id, attempt)
             event(
                 "pi_retry_429", level=logging.WARNING,
@@ -1062,10 +1059,10 @@ def stream_pi(
 
 def _log_run_failed(activity: dict, *, run_id: str, issue_ref: str,
                     role: str, branch: str, cwd: Path, reason: str) -> None:
-    """The single `run_failed` log skeleton (Issue #292): the
+    """The single `run_failed` log skeleton: the
     six-argument `format_run_scene` plus the reason. The `_fail_run`
     closure of `_stream_pi_once` and the exhausted-retries terminal
-    failure (`_fail_rate_limited`, Issue #321) share it, so a new log
+    failure (`_fail_rate_limited`) share it, so a new log
     field is still added in exactly one place."""
     event(
         "run_failed",
@@ -1081,8 +1078,7 @@ def _fail_rate_limited(
     exc: ProviderRateLimitedError, *, attempts: int, run_id: str,
     issue_ref: str, role: str, branch: str, cwd: Path,
 ) -> NoReturn:
-    """The exhausted-retries terminal failure (Issue #321, terminal since
-    #698): `attempts` cumulative 429 exits (the RUN's count, persisted
+    """The exhausted-retries terminal failure: `attempts` cumulative 429 exits (the RUN's count, persisted
     across restarts) have burned the backoff budget, so the delivery
     terminates — `RateLimitExhaustedError` is never a recoverable resume
     (the classification is terminal in both phases, implement and
@@ -1134,7 +1130,7 @@ def _stream_pi_once(
     session_dir: Path,
     known_files: set[Path],
 ) -> str:
-    """Spawn and stream ONE Pi session attempt (Issue #321): the whole
+    """Spawn and stream ONE Pi session attempt: the whole
     pre-#321 `stream_pi` body — the `run_start` scene, the live
     activity/heartbeat lines, the idle/model-wait kill paths and the
     evidence-based exit classification. A 429-classified non-zero exit
@@ -1147,7 +1143,7 @@ def _stream_pi_once(
     # are only emitted when the visible fields actually change.
     initial = watcher.poll()
     last_visible = (initial["phase"], initial["action"], initial["result"])
-    # Issue #157: `pi_env` carries the per-run Pi agent dir
+    # `pi_env` carries the per-run Pi agent dir
     # (`PI_CODING_AGENT_DIR`, verified against real Pi 0.84.3) so the
     # configured provider file is visible to Pi. Absent -> the process
     # inherits the Runner's environment unchanged (pre-#157 shape).
@@ -1155,11 +1151,11 @@ def _stream_pi_once(
         command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=None if pi_env is None else {**os.environ, **pi_env},
     )
-    # Track the live Pi child for the stop handler (Issue #48): a
+    # Track the live Pi child for the stop handler: a
     # SIGTERM during this window must shut the child down, never
     # orphan it. Cleared again once the child is reaped (finally).
     set_active_pi(process)
-    # Startup phase (Issue #176): the process is spawned — the first
+    # Startup phase: the process is spawned — the first
     # sub-phase of `starting` is now observable (pid, elapsed since
     # spawn). The run_start scene line below carries the same
     # pre-session state (phase=session_pending); from here the live
@@ -1181,13 +1177,13 @@ def _stream_pi_once(
     activity = watcher.poll()
     timed_out = False
     model_wait_dead = False
-    # Startup milestones already reported (Issue #176): each flips once
+    # Startup milestones already reported: each flips once
     # per session file (a resumed run creates a NEW file, and its
     # first request/response are the new session's — the watcher
     # resets the flags on the switch, so the lines fire again for the
     # new session, exactly once each).
     startup_seen = (False, False, False)
-    # Swallowed-model-request probe state (Issue #233): the monotonic
+    # Swallowed-model-request probe state: the monotonic
     # moment the /slots probe first reported every slot idle while Pi was
     # in model_wait (None until then). Reset whenever a slot is processing,
     # the probe is inconclusive, or model_wait is left. When the idle
@@ -1196,16 +1192,16 @@ def _stream_pi_once(
     # model_wait_dead_seconds bound).
     probe_first_idle: float | None = None
     model_wait_swallowed = False
-    # model_wait transitions (Issue #40): one line when the state is
+    # model_wait transitions: one line when the state is
     # entered and one when it is left; unchanged polls are heartbeats
     # that carry the state, so a slow model never looks idle and no
     # warning is ever escalated from a slow response.
     last_model_wait = activity["model_wait"]
-    # Idle warning state (Issue #18): at most one `pi_idle` warning per
+    # Idle warning state: at most one `pi_idle` warning per
     # stall; the first new session event after it logs `pi_resumed`.
     idle_warned = False
-    # Idle-stall recovery state (Issue #94, extracted into the strategy
-    # class by Issue #287): the escalation (window bookkeeping, TERM →
+    # Idle-stall recovery state (the strategy
+    # class): the escalation (window bookkeeping, TERM →
     # KILL → session-kill, the timeout evidence chain) lives in the
     # tracker — the loop mirrors the warning machine's transitions to
     # it and reads the state back for the progress comment and the
@@ -1231,7 +1227,7 @@ def _stream_pi_once(
                     else:
                         stderr_chunks.append(data)
             activity = watcher.poll()
-            # Startup milestones (Issue #176): one line per flip — the
+            # Startup milestones: one line per flip — the
             # session file appeared, the first request went out, the
             # first response arrived. Each carries the provider/model
             # selected by that point and the elapsed time since spawn.
@@ -1266,8 +1262,8 @@ def _stream_pi_once(
                 activity["phase"], activity["action"], activity["result"],
             )
             # The wait state rides on the activity/heartbeat lines
-            # (Issue #40). Once the model_wait silence crosses the dead
-            # threshold the wait is DEAD, not slow (Issue #218): the
+            # Once the model_wait silence crosses the dead
+            # threshold the wait is DEAD, not slow: the
             # state is `model_wait_slow` on the last heartbeat before
             # the kill below — visible, and the kill fires on this same
             # poll regardless of the connection state.
@@ -1281,7 +1277,7 @@ def _stream_pi_once(
                 wait_state = None
             if visible != last_visible:
                 # Only changed fields are repeated; an unchanged poll is a
-                # heartbeat (Issue #40).
+                # heartbeat.
                 _log_activity(
                     activity, issue_ref=issue_ref,
                     role=role,
@@ -1298,8 +1294,7 @@ def _stream_pi_once(
                 # One transition line per state change: entering model_wait
                 # (the model is expected to reply next) or leaving it
                 # (the next session event arrived: resumed). No `run=`
-                # field: the `[run_id]` prefix carries the run id
-                # (Issue #57).
+                # field: the `[run_id]` prefix carries the run id.
                 event(
                     "model_wait" if activity["model_wait"] else "resumed",
                     issue=issue_ref, role=role,
@@ -1310,25 +1305,25 @@ def _stream_pi_once(
                 last_model_wait = activity["model_wait"]
                 # Leaving model_wait (the next session event arrived):
                 # the swallow-probe window is over — reset it so a later
-                # model_wait starts a fresh window (Issue #233).
+                # model_wait starts a fresh window.
                 if not activity["model_wait"]:
                     probe_first_idle = None
-            # Idle warning (Issue #18): a stalled session (no model/
+            # Idle warning: a stalled session (no model/
             # session event for `idle_warn_seconds`, and the model is
             # not expected to reply next) logs ONE `pi_idle` warning
             # with the stale time; the first new session event after it
             # logs `pi_resumed`. A slow active model (model_wait) never
-            # warns (Issue #40).
+            # warns.
             if idle_warned and activity["changed"]:
                 # No `run=` field: the `[run_id]` prefix carries the run
-                # id (Issue #57).
+                # id.
                 event(
                     "pi_resumed", issue=issue_ref, role=role,
                     phase=activity["phase"],
                 )
                 idle_warned = False
                 # The stall is over: the whole recovery state resets
-                # (Issue #94) — a later stall starts a fresh window.
+                # — a later stall starts a fresh window.
                 idle_recovery.reset()
             elif (
                 not activity["model_wait"]
@@ -1336,18 +1331,18 @@ def _stream_pi_once(
                 and activity["stale_seconds"] >= idle_warn_seconds
             ):
                 # No `run=` field: the `[run_id]` prefix carries the run
-                # id (Issue #57).
+                # id.
                 event(
                     "pi_idle", level=logging.WARNING,
                     issue=issue_ref, role=role, phase=activity["phase"],
                     stale_seconds=format_duration(activity["stale_seconds"]),
                 )
                 idle_warned = True
-                # The idle window starts now (Issue #94): only
+                # The idle window starts now: only
                 # descendants that already existed before this moment
                 # are recovery targets.
                 idle_recovery.open_window()
-            # Idle-stall recovery (Issue #94, strategy in
+            # Idle-stall recovery (strategy in
             # `IdleRecoveryTracker`): a stalled session (no
             # model/session activity for idle windows, and the model is
             # NOT expected to reply next) is recovered instead of only
@@ -1373,7 +1368,7 @@ def _stream_pi_once(
                     idle_recovery_failed = True
                     break
             # The live progress comment shows the recovery state while
-            # it is active (Issue #94); the watcher state is a fresh
+            # it is active; the watcher state is a fresh
             # dict per poll, so the field never leaks into other polls.
             activity["recovery"] = idle_recovery.state
             if progress is not None:
@@ -1384,7 +1379,7 @@ def _stream_pi_once(
                         "progress_publish_failed run=%s issue=%s role=%s",
                         run_id, issue_ref, role,
                     )
-            # Swallowed-model-request detection (Issue #233): the model
+            # Swallowed-model-request detection: the model
             # is expected to reply next (model_wait) and the /slots probe
             # (when configured) reports that EVERY slot is idle for the
             # sustained grace — the request was accepted by the upstream
@@ -1393,8 +1388,8 @@ def _stream_pi_once(
             # generating). This is a real hang that the
             # model_wait_dead_seconds bound would only catch minutes
             # later, so the runner kills Pi FAST and fails fast through
-            # the normal failure path. The probe is a pure bypass
-            # (Issue #79): an inconclusive probe (None) is simply "no
+            # the normal failure path. The probe is a pure bypass:
+            # an inconclusive probe (None) is simply "no
             # evidence" and the model_wait_dead_seconds bound still
             # applies; a slot that is processing (False) resets the idle
             # window (a slow model is not a swallow). Never fires while
@@ -1441,13 +1436,12 @@ def _stream_pi_once(
                     # inconclusive (None): no swallow evidence — reset
                     # the idle window so it must be sustained again.
                     probe_first_idle = None
-            # Hung-model-request detection (Issue #75, safe recovery
-            # since Issue #218): the model is expected to reply next
+            # Hung-model-request detection: the model is expected to reply next
             # (model_wait) and the session file has been frozen for the
             # dead threshold: the model request is HUNG. A live
             # connection to the upstream (a TCP socket in the live
             # states ESTABLISHED/SYN_SENT/SYN_RECV) is evidence for the
-            # journal, never a veto (Issue #218: process alive ≠
+            # journal, never a veto (process alive ≠
             # responding — the #183 scene: llama-server alive, the
             # request hung, the slot held for hours). The runner kills
             # the Pi session and fails fast through the normal failure
@@ -1478,9 +1472,9 @@ def _stream_pi_once(
                 break
     finally:
         # The child is reaped (or dead): the stop handler must never
-        # signal an already-exited process (Issue #48).
+        # signal an already-exited process.
         set_active_pi(None)
-        # Issue #709: a tool grandchild may hold the pipe write end past
+        # A tool grandchild may hold the pipe write end past
         # Pi's death — abandon the silent tail instead of wedging the
         # tick inside this finally block.
         drained = _drain_stream(process.stdout, stdout_chunks,
@@ -1495,13 +1489,13 @@ def _stream_pi_once(
             )
     stdout = _decode_chunks(stdout_chunks)
     stderr = _decode_chunks(stderr_chunks)
-    # Issue #656: the last live poll can predate the journal Pi flushed
+    # The last live poll can predate the journal Pi flushed
     # while dying — refresh the journal evidence before the startup
     # line and the exit classification read it.
     activity = _refresh_session_evidence(
         activity, session_dir, known_files,
     )
-    # Startup failure (Issue #176): a failure before the first response
+    # Startup failure: a failure before the first response
     # is a STARTUP failure — the line says where the startup was stuck
     # with a distinguishable reason. After the first response the
     # existing `run_failed` scene line alone describes the mid-run
@@ -1515,7 +1509,7 @@ def _stream_pi_once(
             model_wait_swallowed=model_wait_swallowed,
             idle_recovery_failed=idle_recovery_failed,
         )
-    # The single `run_failed` site (Issue #292): every terminal branch
+    # The single `run_failed` site: every terminal branch
     # computes its reason and exception and lands here, so a new log
     # field is added once, not per branch. The skeleton itself lives in
     # `_log_run_failed` (shared with the #321 exhausted-retries terminal
@@ -1551,7 +1545,7 @@ def _stream_pi_once(
         )
     if model_wait_dead:
         stale = format_duration(activity["stale_seconds"])
-        # Issue #227: the classified hung-model-request failure —
+        # The classified hung-model-request failure —
         # `process_issue` keeps the Issue `ai-in-progress` (the next tick
         # resumes the same run) instead of the terminal `ai-blocked`.
         _fail_run(
@@ -1571,7 +1565,7 @@ def _stream_pi_once(
             ),
         )
     if process.returncode != 0:
-        # Issue #321: a provider 429 exit is TRANSIENT throttling, not a
+        # A provider 429 exit is TRANSIENT throttling, not a
         # task failure — the `stream_pi` retry loop backs off and
         # re-spawns this session. The refreshed activity rides on the
         # exception so the retry logs and the exhausted-retries terminal
@@ -1591,7 +1585,7 @@ def _stream_pi_once(
             # failure (for example provider initialization) and must keep
             # the existing terminal failure behavior.  Only an interrupted
             # session after a request has actually started is resumable —
-            # and that is judged from the journal on disk (Issue #656),
+            # and that is judged from the journal on disk,
             # never from a live poll that can predate it.
             RecoverablePiProcessError
             if activity["first_request"]

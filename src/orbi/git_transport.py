@@ -1,4 +1,4 @@
-"""Git transport contract (Issue #114, #580).
+"""Git transport contract.
 
 Two authentication channels with distinct responsibilities:
 
@@ -9,12 +9,12 @@ Two authentication channels with distinct responsibilities:
   `origin` remote, in ONE of two configured modes (orbi.toml
   `git_transport`):
 
-  - `ssh` (default, the Issue #114 contract): the SCP-style
+  - `ssh` (default): the SCP-style
     `git@github.com:owner/repo.git`, authenticated by the machine's
     SSH key. A workflow push must never depend on the OAuth App
     `workflow` scope — the HTTPS/OAuth transport that blocked Issue
     #106.
-  - `https` (Issue #580, the token-only sandbox path): the origin
+  - `https`: the origin
     stays `https://github.com/owner/repo.git` and the credentials
     come from the `gh` credential helper (`gh auth login --with-token`)
     — no SSH private key anywhere.
@@ -51,7 +51,7 @@ SSH_USER = "git"
 # separate pushurl is set).
 MIGRATION_COMMAND = "git remote set-url origin {url}"
 # The human-run entry that is authorized to perform the migration.
-# Issue #140: the official entry is the installed `orbi` CLI.
+# The official entry is the installed `orbi` CLI.
 MIGRATION_ENTRY = "orbi setup"
 # The configured transport modes (orbi.toml `git_transport`).
 MODES = ("ssh", "https")
@@ -88,7 +88,7 @@ def https_url_for(repo: str) -> str:
     """The HTTPS URL of one configured `owner/name` source repo.
 
     `owner/name` → `https://github.com/owner/name.git` (the https
-    transport mode of Issue #580; credentials via the gh credential
+    transport mode; credentials via the gh credential
     helper).
     """
     return f"https://{GITHUB_HOST}/{_validated_repo(repo)}.git"
@@ -151,8 +151,8 @@ def check_transport(
     """Check (and only when authorized, migrate) the git transport.
 
     `mode` is the configured transport (`git_transport` in orbi.toml):
-    `"ssh"` (default, the exact Issue #114 contract) or `"https"`
-    (Issue #580). Checks, in order: the `origin` remote exists; it
+    `"ssh"` (default) or `"https"`.
+    Checks, in order: the `origin` remote exists; it
     points at the FIRST configured source repo (the deployment
     checkout is that repo's clone — the worktrees share the single
     remote); its protocol matches the mode; when `probe` is on,
@@ -264,7 +264,7 @@ def check_transport(
         "url": url,
         "expected": expected,
         "migrated": migrated,
-        # Issue #580 compat: the SSH-specific probe result stays (None
+        # Compat: the SSH-specific probe result stays (None
         # in https mode — no SSH probe runs there);
         # `transport_reachable` is the ACTIVE transport's probe result.
         "ssh_reachable": reachable if mode == "ssh" else None,

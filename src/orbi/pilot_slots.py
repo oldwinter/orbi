@@ -1,4 +1,4 @@
-"""Cross-process concurrency slots for Orbi (Issue #39).
+"""Cross-process concurrency slots for Orbi.
 
 The local machine can only serve a limited number of concurrent Pilot
 tasks, so the configured ``max_concurrency`` is enforced with one slot
@@ -16,7 +16,7 @@ ownership token:
   A live holder can never lose its slot based on elapsed time or a
   missing write — even if it pauses arbitrarily long before or after
   taking the lock.
-- Delivery identity (Issue #809): after selecting a delivery the holder
+- Delivery identity: after selecting a delivery the holder
   rewrites its slot file to ``<pid>\\n<repo>#<issue>`` — line 1 stays the
   holder PID, line 2 names the (repo, issue) the holder is working on.
   Like the PID, the identity is observational metadata; the flock stays
@@ -138,7 +138,7 @@ def slot_occupancy(state_dir: Path, capacity: int) -> list[tuple[int, int | None
 def mark_slot_delivery(slot: Slot, repo: str, issue: int) -> None:
     """Record in the held slot file which delivery the holder is working.
 
-    Issue #809: called by the runner immediately after selecting a
+    Called by the runner immediately after selecting a
     delivery — a fresh claim (the implement phase is in flight), a
     resume (the review is in flight) and the implement→opened-PR
     boundary are all covered by this one write. The identity is what
@@ -157,7 +157,7 @@ def mark_slot_delivery(slot: Slot, repo: str, issue: int) -> None:
 def slot_held_deliveries(state_dir: Path, capacity: int) -> set[tuple[str, int]]:
     """Return the (repo, issue) deliveries held by LIVE other runners.
 
-    Issue #809: only slots whose flock is held by another pid are read —
+    Only slots whose flock is held by another pid are read —
     the lock is the truth, so a free slot's leftover identity is stale by
     definition and a live holder without a readable identity (not yet
     selected, or an old runner) contributes nothing (fail open: the scan
@@ -198,7 +198,7 @@ def _read_delivery(path: Path) -> tuple[str, int] | None:
 def _read_pid(path: Path) -> int | None:
     """Return the observational holder PID from one slot file, if present.
 
-    The PID is the file's FIRST line; an identity line (Issue #809) or
+    The PID is the file's FIRST line; an identity line or
     any other trailing content never breaks the parse.
     """
     try:

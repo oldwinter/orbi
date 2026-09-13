@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automatic GitHub progress publishing (Issue #18).
+"""Automatic GitHub progress publishing.
 
 The runner keeps exactly one live progress comment per run on the source
 Issue. The comment carries a hidden HTML run marker
@@ -175,7 +175,7 @@ def find_progress_comment(
 def issue_field(issue: int, title: str) -> str:
     """Render the progress comment's issue value: `#<number> <title>`.
 
-    Issue #100: the issue line shows the number AND the title so a
+    The issue line shows the number AND the title so a
     mobile user sees what the agent works on without opening GitHub.
     The `#<number>` prefix is preserved so existing log/scene parsing
     keeps working. The title is flattened to a single line (whitespace
@@ -219,7 +219,7 @@ def progress_body(state: dict) -> str:
         "",
         PROGRESS_HEADER,
         "",
-        # Issue #100: number AND title, one consistent format in every
+        # Number AND title, one consistent format in every
         # scene; both state keys are required (a state without the
         # title fails fast, never a fabricated or bare number).
         f"- issue: {issue_field(state['issue'], state['issue_title'])}",
@@ -228,7 +228,7 @@ def progress_body(state: dict) -> str:
         # of the run.
         f"- run_id={state['run_id']}",
         f"- role: {value('role')}",
-        # Pickup priority (Issue #101): `p0` for urgent Issues,
+        # Pickup priority: `p0` for urgent Issues,
         # `normal` otherwise — visible at a glance on mobile.
         f"- priority: {value('priority')}",
         f"- phase: {value('phase')}",
@@ -241,12 +241,12 @@ def progress_body(state: dict) -> str:
         f"- PR: {value('pr')}",
         f"- session: {value('session')}",
     ]
-    # Idle-stall recovery (Issue #94): the recovery state is shown only
+    # Idle-stall recovery: the recovery state is shown only
     # while it is active (`term` / `kill`); an idle run keeps the
     # pre-#94 body shape exactly.
     if state.get("recovery"):
         lines.append(f"- recovery: {state['recovery']}")
-    # Issue #526: the progress comment (and the blocked / fix-needed
+    # The progress comment (and the blocked / fix-needed
     # scene it becomes) carries the runner fingerprint like every other
     # Orbi comment.
     return _with_runner_marker("\n".join(lines))
@@ -262,10 +262,10 @@ class ProgressPublisher:
     `patch` updates the tracked comment in place and fails fast when no
     comment is tracked yet; `finish` publishes the final outcome on the
     tracked comment, or locates/creates it like `ensure` when the run
-    never got that far (Issue #474). `milestone` posts a short
+    never got that far. `milestone` posts a short
     standalone comment. `failure_scene` updates the run's identical
-    recoverable-failure comment in place instead of appending a duplicate
-    (Issue #645). Every call goes through `run_command` (gh api)
+    recoverable-failure comment in place instead of appending a duplicate.
+    Every call goes through `run_command` (gh api)
     and raises on any error.
     """
 
@@ -284,8 +284,7 @@ class ProgressPublisher:
     def _update_endpoint(self, comment_id: int) -> str:
         # Update an issue comment: PATCH /repos/{owner}/{repo}/issues/
         # comments/{comment_id} — no issue number. Appending the id to
-        # the list/create endpoint is not a GitHub REST route and 404s
-        # (Issue #58).
+        # the list/create endpoint is not a GitHub REST route and 404s.
         return f"repos/{self.repo}/issues/comments/{comment_id}"
 
     def _list_comments(self) -> list[dict]:
@@ -329,7 +328,7 @@ class ProgressPublisher:
 
         The run's other marker-carrying comments (scene comments,
         milestones) are never touched: only the comment that also
-        carries the progress header is resumed (Issue #18).
+        carries the progress header is resumed.
         """
         existing = find_progress_comment(
             self._list_comments(), self.run_id,
@@ -352,7 +351,7 @@ class ProgressPublisher:
         """Post a short standalone milestone comment (mobile notification).
 
         The milestone carries the hidden run marker and the visible
-        `run_id=` field like every other comment of the run (Issue #41:
+        `run_id=` field like every other comment of the run (
         one run_id end to end, every comment of the attempt carries
         both). The visible field is appended when the text does not
         carry it already, so the contract holds for every milestone
@@ -375,7 +374,7 @@ class ProgressPublisher:
     def failure_scene(self, body: str) -> None:
         """Update this run's identical recoverable-failure comment in place.
 
-        Issue #645: a recoverable failure retries every tick while the
+        A recoverable failure retries every tick while the
         provider quota window lasts (hours), so re-posting the identical
         scene comment each tick buries the delivery progress. When this
         run already has a comment carrying the exact same rendered body
@@ -399,7 +398,7 @@ class ProgressPublisher:
         """Publish the final outcome body on the run's progress comment.
 
         When no comment is tracked yet — a run that fails before
-        `ensure` (Issue #474: a release declaration parse error calls
+        `ensure` (a release declaration parse error calls
         `finish` first) — the final outcome is still published: the
         run's progress comment is located or created exactly like
         `ensure`, never a `RuntimeError` and never a duplicate comment
@@ -411,8 +410,8 @@ class ProgressPublisher:
         self.patch(body)
 
 
-# --- test evidence and run-scene helpers (moved from `orbi.runner`,
-# --- Issue #785: the progress state belongs to the progress module) ----
+# --- test evidence and run-scene helpers (the progress state belongs
+# --- to the progress module) ----
 
 
 # pytest's final summary line: `1 failed, 155 passed in 4.43s` (the
@@ -462,7 +461,7 @@ def _is_no_result(line: str) -> bool:
 
 def read_test_result(worktree: Path) -> str | None:
     """Summarize the worktree's `.orbi/test.log`, or None when it does
-    not exist (Issue #302: the contract test command writes the log
+    not exist (the contract test command writes the log
     into the excluded run dir, never at the worktree root).
 
     Prefers the pytest summary line (`1 failed, 155 passed in 4.43s`):
@@ -520,14 +519,14 @@ def _progress_state(*, issue: int, title: str, run_id: str, role: str,
                     activity: dict | None = None) -> dict:
     """Collect the current run state for the GitHub progress comment.
 
-    `title` is the issue's GitHub title (Issue #100): the progress
+    `title` is the issue's GitHub title: the progress
     comment's issue line shows `#<number> <title>` in every scene. It
     is required — the GitHub issue data contract guarantees a
     non-empty string title (every runner scan fetches it), and a
     missing title fails fast in `progress.issue_field` instead of
     fabricating one.
-    `priority` is the pickup priority of the issue (`p0` or `normal`,
-    Issue #101), derived from the issue's labels at claim/resume time.
+    `priority` is the pickup priority of the issue (`p0` or `normal`)
+    derived from the issue's labels at claim/resume time.
     `activity` is the live state from the `stream_pi` watcher while a Pi
     session runs (fresh and already read); without it the newest session
     file is full-scanned. Activity snapshotting is best-effort
@@ -555,7 +554,7 @@ def _progress_state(*, issue: int, title: str, run_id: str, role: str,
         "branch": branch,
         "pr": pr_url,
         "session": (activity or {}).get("session_id"),
-        # Idle-stall recovery state (Issue #94): `term` / `kill` while
+        # Idle-stall recovery state: `term` / `kill` while
         # the runner recovers a stalled session, absent/None otherwise
         # (the body renders the line only while it is active).
         "recovery": (activity or {}).get("recovery"),
@@ -572,7 +571,7 @@ def _progress_body(state: dict, *, outcome: str | None = None) -> str:
 
 def _safe_publish(*, run_id: str, issue: int, source_repo: str,
                   role: str, action: Callable[[], None]) -> None:
-    """Run one progress-publishing step as a pure bypass (Issue #79).
+    """Run one progress-publishing step as a pure bypass.
 
     The main delivery path is claim -> worktree -> Pi -> verify PR ->
     review -> fix -> merge; the GitHub progress comment is observability
@@ -580,8 +579,7 @@ def _safe_publish(*, run_id: str, issue: int, source_repo: str,
     change) is logged as `progress_publish_failed` and never fails the
     delivery, never marks the Issue `ai-blocked`, and never skips
     `run_pi` / `delivery_step`. This is the same semantics as the
-    in-stream live-PATCH callback; Issue #60 already applied it to the
-    post-PR record, Issue #79 extends it to the whole
+    in-stream live-PATCH callback; the bypass covers the whole
     `ProgressPublisher` path (ensure / milestone / finish).
     """
     try:

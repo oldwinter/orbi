@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idle-stall recovery for a running Pi session (Issue #94).
+"""Idle-stall recovery for a running Pi session.
 
 A Pi session can stall while a tool call hangs forever (a `while True`
 test in the TDD red phase, a `next(generator)` that never returns, ...):
@@ -33,7 +33,7 @@ from pathlib import Path
 # The real procfs; the unit tests point this at a fake directory.
 PROC = Path("/proc")
 
-# The /slots probe timeout (Issue #233): the probe runs inside the poll
+# The /slots probe timeout: the probe runs inside the poll
 # loop and must never block it — a bounded, short request. The model
 # endpoint is local (127.0.0.1) in the documented deployment, so 5 s is
 # generous for a healthy endpoint and short compared to the dead-request
@@ -87,7 +87,7 @@ def process_ppid(pid: int) -> int | None:
 def process_state(pid: int) -> str | None:
     """The process state char (stat field 3: R/S/D/Z/T/...).
 
-    The evidence for a stalled-but-running tool (Issue #169): a process
+    The evidence for a stalled-but-running tool: a process
     in S/R is alive and working, Z is gone for good. None when the
     process is gone or the line is malformed.
     """
@@ -126,7 +126,7 @@ def process_start_monotonic(pid: int, *, hz: float) -> float | None:
 
     stat field 22 (starttime, ticks since boot) converted with `hz`.
     Callers comparing this value must use CLOCK_BOOTTIME too, because
-    CLOCK_MONOTONIC stops during suspend (Issue #169).
+    CLOCK_MONOTONIC stops during suspend.
     """
     raw = _read_stat(pid)
     if raw is None:
@@ -207,7 +207,7 @@ def _parse_duration(token: str) -> float | None:
 def timeout_duration(cmdline: str) -> float | None:
     """The duration (seconds) of a coreutils `timeout <duration>`
     wrapper in the command line, or None when the command has no clear
-    timeout (Issue #169).
+    timeout.
 
     The wrapper must BE the command: the prompt contract form
     `timeout <seconds> ...`, or the `bash -c` payload form the Pi bash
@@ -249,9 +249,9 @@ def upstream_alive(pid: int) -> bool:
     """True when the process holds an open TCP socket in a live
     connection state (ESTABLISHED / SYN_SENT / SYN_RECV) with a remote
     address — the evidence that a model request to the upstream
-    (llama/proxy) is still connected (Issue #169).
+    (llama/proxy) is still connected.
 
-    Since Issue #218 this is EVIDENCE ONLY: a live connection proves
+    This is EVIDENCE ONLY: a live connection proves
     the request is connected, not that the model is answering (the
     #183 scene: llama-server alive, the request hung, the slot held
     for hours). The `model_wait_dead` kill of a frozen model_wait past
@@ -366,7 +366,7 @@ def find_idle_descendants(root_pid: int, idle_start_epoch: float,
     for pid in descendant_pids(root_pid):
         # A zombie (state Z) is already dead — the parent just has not
         # reaped it yet: signaling it is meaningless and its empty
-        # cmdline would fall back to the comm name, a lie (Issue #169).
+        # cmdline would fall back to the comm name, a lie.
         if process_state(pid) == "Z":
             continue
         start = process_start_epoch(pid, btime=btime, hz=hz)
@@ -394,14 +394,14 @@ def pid_alive(pid: int) -> bool:
 
 
 def slots_idle(url: str, timeout: float = SLOTS_PROBE_TIMEOUT) -> bool | None:
-    """Probe the model's `/slots` endpoint (Issue #233).
+    """Probe the model's `/slots` endpoint.
 
     The fast path for the #231 swallow scene: the model service process is
     alive and the connection is ESTABLISHED, but the request was accepted
     and never scheduled into the slot — the slot reports idle while Pi waits
     forever. The probe asks the model endpoint directly whether any slot is
     actually generating, which `upstream_alive` (a socket-state check) cannot
-    see (process alive ≠ responding, Issue #218).
+    see (process alive ≠ responding).
 
     The endpoint contract is verified against the real llama-server: `GET
     /slots` returns a JSON **list** of slot objects, each carrying an
@@ -420,7 +420,7 @@ def slots_idle(url: str, timeout: float = SLOTS_PROBE_TIMEOUT) -> bool | None:
       that carry no flag would fabricate the swallow evidence and send
       the #231 recovery after a model that is in fact generating. The
       caller treats `None` as "no evidence" — the probe is a pure
-      bypass (Issue #79) and never fails the delivery.
+      bypass and never fails the delivery.
     """
     try:
         # urlopen raises HTTPError for a non-2xx status (caught below),

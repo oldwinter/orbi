@@ -1,6 +1,6 @@
 """Runner journal kernel: logging, run binding, and the subprocess seam.
 
-Every journal line of a task attempt starts with `[run_id]` (Issue #41);
+Every journal line of a task attempt starts with `[run_id]`;
 this module owns the logger that enforces it, the run-id binding the
 filter reads, and the in-flight delivery scene the stop handler reports.
 It also owns the ONE subprocess seam of Article 3.4: ``run_command`` and
@@ -8,7 +8,7 @@ its bounded git network retry.
 
 This module imports nothing from the `orbi` package — it is the lowest
 leaf, so `github` / `gitops` / `progress` / the extracted modules can all
-share one seam and one logger without importing `runner` (Issue #785).
+share one seam and one logger without importing `runner`.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 LOGGER = logging.getLogger("orbi.bootstrap")
 
-# Run correlation (Issue #41): one task attempt generates one run_id and
+# Run correlation: one task attempt generates one run_id and
 # every journal line of the attempt starts with `[run_id]`, so a single
 # grep reconstructs the whole timeline. The filter rewrites the message in
 # place, so every handler (journal, caplog) sees the same prefixed text.
@@ -71,7 +71,7 @@ def issue_context(source_repo: str, number: int) -> str:
 
 
 def log_format() -> str:
-    """Journal log format without a Python timestamp (Issue #40).
+    """Journal log format without a Python timestamp.
 
     systemd journal already provides time, host and process on every
     line; printing `%(asctime)s` again only duplicates information.
@@ -80,7 +80,7 @@ def log_format() -> str:
 
 
 def single_line(value: str) -> str:
-    """Flatten a log value to one journal line (Issue #143).
+    """Flatten a log value to one journal line.
 
     A command argument may carry line breaks (the multi-line progress
     comment body behind `gh api ... --field body=...`); emitted verbatim,
@@ -105,7 +105,7 @@ def quote_value(value: str) -> str:
     return value
 
 
-# The journal event registry (Issue #791): every structured event name the
+# The journal event registry: every structured event name the
 # Runner journal can carry, `kind` -> one-line meaning. `event()` refuses
 # unregistered names (fail fast on a typo), the docs event tables
 # (operations.mdx EN/ZH) must carry exactly this set, and the exporter's
@@ -326,7 +326,7 @@ def event(kind: str, scene: str | None = None, /, *,
           level: int = logging.INFO, **fields: object) -> None:
     """Emit one structured journal event — THE single emission point.
 
-    Every `kind key=value ...` journal line is born here (Issue #791):
+    Every `kind key=value...` journal line is born here:
     the kind must be registered in `JOURNAL_EVENTS` (a typo fails fast,
     never misleads the exporter or the docs), `scene` is the optional
     pre-formatted `key=value ...` continuation (the
@@ -466,7 +466,7 @@ def run_git_network_command(
         time.sleep(delay)
 
 
-# Stop scene (Issue #48): when systemd (or any caller) stops the Runner
+# Stop scene: when systemd (or any caller) stops the Runner
 # with SIGTERM, the journal must show which Issue context was active
 # BEFORE systemd's generic "Stopped" line, and the live Pi child must be
 # shut down (no orphan Pi). The context is bound while a delivery is in
@@ -478,7 +478,7 @@ _ACTIVE_RUN: dict | None = None
 
 
 def set_active_run(issue: int, title: str, branch: str, worktree: str) -> None:
-    """Bind the in-flight delivery scene for the stop handler (Issue #48)."""
+    """Bind the in-flight delivery scene for the stop handler."""
     global _ACTIVE_RUN
     _ACTIVE_RUN = {
         "issue": int(issue),
@@ -490,7 +490,7 @@ def set_active_run(issue: int, title: str, branch: str, worktree: str) -> None:
 
 
 def set_active_pi(process: subprocess.Popen | None) -> None:
-    """Track the live Pi child of the in-flight delivery (Issue #48).
+    """Track the live Pi child of the in-flight delivery.
 
     `stream_pi` calls it after the child is spawned (and again with None
     after the child is reaped), so the stop handler signals exactly the
@@ -502,7 +502,7 @@ def set_active_pi(process: subprocess.Popen | None) -> None:
 
 
 def clear_active_run() -> None:
-    """No delivery in flight anymore (Issue #48)."""
+    """No delivery in flight anymore."""
     global _ACTIVE_RUN
     _ACTIVE_RUN = None
 

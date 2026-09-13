@@ -1,12 +1,12 @@
 # Copy this file to orbi.toml and edit it for your machine.
-# Exactly ONE source repository until multi-repo workspaces ship
-# (Issue #133): multiple entries fail fast at startup.
+# Exactly ONE source repository until multi-repo workspaces ship:
+# multiple entries fail fast at startup.
 source_repos = [
   "OWNER/PILOT-REPO",
 ]
 
 repo_dir = "."
-# Deployment home (Issue #330): the orbi SOURCE checkout — where the
+# Deployment home: the orbi SOURCE checkout — where the
 # editable CLI install comes from, where the systemd/ unit templates and
 # labels.toml live, and where the prompt defaults (prompts/prompt.md,
 # prompts/prompt_review.md) resolve when unset. Default: repo_dir — the
@@ -30,7 +30,7 @@ prompt_review = "prompts/prompt_review.md"
 # Delivery base branch: every task worktree is created from the latest
 # origin/<base_branch> (fetched and frozen at claim time). Default: "main".
 base_branch = "main"
-# Delivery checkout transport (Issue #580): how git data operations
+# Delivery checkout transport: how git data operations
 # (fetch/push, including .github/workflows/*.yml) authenticate on the
 # checkout's single `origin` remote. "ssh" (default): the origin is
 # git@github.com:owner/repo.git and the machine's SSH key authenticates;
@@ -40,7 +40,7 @@ base_branch = "main"
 # sandbox path with no SSH private key. Anything else fails the config
 # load fast.
 # git_transport = "ssh"
-# Engine source update channel (Issue #535): what THIS deploy home
+# Engine source update channel: what THIS deploy home
 # checkout follows at every service start. Host/deploy-only — it never
 # goes into a repository's .github/orbi.toml. Forms:
 #   absent / "main"     -> fast-forward origin/main (the dogfood behavior)
@@ -66,9 +66,9 @@ engine_source_track = "release"
 # line below and fill in the target tag. `tag:` never moves on its own;
 # rolling back is putting the previous tag back.
 # engine_source_track = "tag:v0.4.10"
-# Offline escape hatch for the runner source freshness gate (Issue #525).
+# Offline escape hatch for the runner source freshness gate.
 # Before any slot or claim the Runner proves the code it executes matches
-# the configured engine source channel — engine_source_track (Issue #535),
+# the configured engine source channel — engine_source_track,
 # origin/main by default, never the delivery base_branch (the import
 # checkout's HEAD for an editable install; the installed version vs the
 # channel's release tag for a non-editable one — local git reads only).
@@ -77,7 +77,7 @@ engine_source_track = "release"
 # the start. true downgrades the SAME line to a warning for offline /
 # restricted-network machines — it never skips the check. Default: false.
 # allow_stale_runner = false
-# Human acceptance gate (Issue #763, host/deploy-only). When true, every
+# Human acceptance gate. When true, every
 # delivery posts ONE acceptance checklist to the Issue when its PR opens:
 # column 1 = what the run already verified (the real test result and the
 # covered layer); column 2 = the machine-unverifiable minimum derived
@@ -92,7 +92,7 @@ engine_source_track = "release"
 # delivery passes without the label. Default: false (the pipeline runs
 # with humans out of the loop, exactly as before).
 # human_review_gate = false
-# Claim scope (Issue #139): the active GitHub Milestone title (e.g.
+# Claim scope: the active GitHub Milestone title (e.g.
 # "v0.2.0") that the fresh-claim scans (p0, bug, plain) are restricted
 # to. The milestone:"<title>" qualifier is part of the gh search query,
 # so an Issue of another Milestone (or of no Milestone) never enters the
@@ -107,7 +107,7 @@ engine_source_track = "release"
 # ai-ready + p0 confirmation Issue instead of rewriting this file.
 # Missing keeps the existing automatic-advance behavior.
 # auto_next_milestone = true
-# Hung-model-request threshold (Issue #228): seconds of silence in
+# Hung-model-request threshold: seconds of silence in
 # `model_wait` (the newest COMPLETE Pi session event is a tool result
 # and no new event arrives) after which the Runner declares the model
 # request hung, kills the Pi session and fails fast. This measures
@@ -121,7 +121,7 @@ engine_source_track = "release"
 # CPU-only) survives a 10-minute complete message. Must
 # be a finite positive number; anything else fails the start fast.
 # model_wait_dead_seconds = 1800
-# Swallowed-model-request probe (Issue #233): the model's /slots
+# Swallowed-model-request probe: the model's /slots
 # endpoint (the agent-facing port — the local-llm-kv-cache proxy passes
 # it through from llama.cpp). While Pi is frozen in model_wait the
 # Runner probes it; when EVERY slot reports idle (is_processing=false)
@@ -148,14 +148,14 @@ engine_source_track = "release"
 # Runner exits, however it exits. A Runner that cannot take a slot logs
 # capacity_full and exits without claiming an Issue.
 max_concurrency = 1
-# Per-deployment systemd unit name (Issue #747): the multi-deployment
+# Per-deployment systemd unit name: the multi-deployment
 # runbook field. "core" installs orbi-core@1/2.timer + matching
 # services for THIS config; unset keeps the shared orbi@1/2 names —
 # only ONE deployment per machine may leave it unset. NEVER hand-write
 # unit files: units outside every deployment's managed set are listed
 # by `orbi doctor` under unmanaged_units.
 # unit_name = "core"
-# Task-worktree reclamation (Issue #760): at every tick start the Runner
+# Task-worktree reclamation: at every tick start the Runner
 # removes the registered task worktrees whose Issue is CLOSED and has
 # been closed for at least this many hours (oldest first, at most 25 per
 # tick). Open Issues and in-flight runs are never touched, and a failed
@@ -163,14 +163,14 @@ max_concurrency = 1
 # inspectable for three days before reclamation. Must be a finite
 # positive number of hours; anything else fails the start fast.
 # worktree_retain_hours = 72
-# Optional Pi model selection (Issue #119): passed to EVERY Pi session
+# Optional Pi model selection: passed to EVERY Pi session
 # (implement and review) as --provider/--model/--thinking. Omit a key to
 # keep Pi's own default for that setting; values are passed verbatim and
 # recorded in the journal (non-sensitive model identifiers, never keys).
 # pi_provider = "openai"
 # pi_model = "gpt-5.6-sol"
 # pi_thinking = "medium"
-# Optional provider file (Issue #157): path to a JSON file in Pi's
+# Optional provider file: path to a JSON file in Pi's
 # models.json shape (providers with baseUrl / api / apiKey / models).
 # The file is the ONLY place a provider endpoint (baseUrl) may be
 # configured; the TOML only selects the runtime provider/model above.

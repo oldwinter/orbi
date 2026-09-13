@@ -1,11 +1,11 @@
 """Git data operations: delivery naming, worktrees, fetch, ancestor checks.
 
 One leaf for the git data operations the Runner and the extracted modules
-share (Issue #785): the stable delivery naming (`task_branch`,
+share: the stable delivery naming (`task_branch`,
 `worktree_path`, `latest_run_id`), worktree creation, the base fetch that
 freezes `origin/<base>`, the ancestor checks of the delivery gates, and
 the base-sync lock every fetch that updates the shared remote-tracking
-ref must hold (Issue #171).
+ref must hold.
 
 The only seam is `orbi.journal.run_command` (Article 3.4); this module
 imports no other `orbi` module besides `journal`.
@@ -37,8 +37,8 @@ class BaseSyncLockError(RuntimeError):
     """The base-sync flock could not be taken within the timeout.
 
     The lock orders every writer of the shared remote-tracking ref
-    ``refs/remotes/origin/<base>`` and of the deployment tool env
-    (Issue #171); a timeout means another Runner instance or the
+    ``refs/remotes/origin/<base>`` and of the deployment tool env;
+    a timeout means another Runner instance or the
     ExecStartPre preflight is syncing right now — fail fast, no retry.
     """
 
@@ -75,9 +75,9 @@ def latest_run_id(repo_dir: Path, source_repo: str, number: int) -> str | None:
     """Return the run id of the newest task worktree for the issue.
 
     The worktree directory name carries the run id — the state the
-    release state machine (Issue #98) reuses to resume the same run
+    release state machine reuses to resume the same run
     after a restart. Development runs use the stricter state-file
-    discovery (`worktree_resume_scene`, Issue #219) instead.
+    discovery (`worktree_resume_scene`) instead.
     """
     slug = source_repo.replace("/", "-")
     pattern = f".worktrees/orbi-{slug}-issue-{number}-*"
@@ -125,23 +125,23 @@ def create_worktree(repo_dir: Path, source_repo: str, number: int,
 
     An existing path is reused: only a resumed run (same run id after a
     process restart) reaches that state, and its worktree is the scene
-    the run continues in (Issue #18). `existing` is the VERIFIED resume
-    scene (Issue #219): after a repo rename the scene's path carries
+    the run continues in. `existing` is the VERIFIED resume
+    scene: after a repo rename the scene's path carries
     the OLD slug, so the derived path would miss it and a second
     worktree would be created — the verified scene is returned as-is.
 
     `branch` overrides the stable delivery branch name: an EXTERNAL
-    takeover (Issue #608) checks out the contributor's own head branch,
+    takeover checks out the contributor's own head branch,
     the identity the takeover PR is frozen on. With `existing_branch`
     the named branch is fetched and reused (a local branch is reused
-    with `--force`, never a second `-b` — the exit-255 claim failure of
-    Issue #608; a missing branch is created from `origin/<branch>` with
-    `--force` so the stale missing-but-registered entry a deleted
-    worktree leaves behind cannot block the rebuild, Issue #807);
+    with `--force`, never a second `-b` — the exit-255 claim failure; a
+    missing branch is created from `origin/<branch>` with `--force` so
+    the stale missing-but-registered entry a deleted worktree leaves
+    behind cannot block the rebuild);
     without it the branch is created from the frozen base.
 
     A local branch that already exists (the orphan a SIGKILLed run
-    leaves with no worktree and no remote counterpart, Issue #662) is
+    leaves with no worktree and no remote counterpart) is
     reused as-is rather than re-created with `-b`: git exits 255 on an
     existing branch, which used to burn the re-claimed Issue into
     terminal `ai-blocked`.
@@ -171,7 +171,7 @@ def create_worktree(repo_dir: Path, source_repo: str, number: int,
                 str(path), f"origin/{branch}",
             ], cwd=repo_dir)
     else:
-        # Issue #662 (the #655 incident): a SIGKILLed run can leave the
+        # A SIGKILLed run can leave the
         # stable branch behind with no worktree and no remote counterpart
         # (a pure orphan).  `worktree add -b` cannot re-create it — git
         # exits 255 (`fatal: a branch named ... already exists`) and the
@@ -246,7 +246,7 @@ def base_sync_lock_path(repo_dir: Path) -> Path:
     The lock lives in the shared state dir (next to the slot files),
     never in a per-process temp dir.
 
-    Issue #171 extended the same lock to EVERY fetch that updates the
+    The same lock covers EVERY fetch that updates the
     shared remote-tracking ref ``refs/remotes/origin/<base>``: task
     worktrees share the deployment checkout's common dir, so an
     unlocked concurrent fetch (Runner verify/gate/confirm, the Pi
@@ -287,7 +287,7 @@ def fetch_base_ref(repo_dir: Path, base_branch: str,
                    lock_timeout_seconds: float = 300.0,
                    command_runner: Callable[[list[str]], str] | None = None,
                    ) -> None:
-    """Fetch ``origin/<base>`` under the base-sync lock (Issue #171).
+    """Fetch ``origin/<base>`` under the base-sync lock.
 
     Every command that updates the shared remote-tracking ref
     ``refs/remotes/origin/<base>`` must run under the SAME lock in the
@@ -319,7 +319,7 @@ def fetch_base_ref(repo_dir: Path, base_branch: str,
 def freeze_base(repo_dir: Path, base_branch: str) -> str:
     """Fetch the remote and freeze the exact SHA of origin/<base_branch>.
 
-    The fetch runs under the base-sync lock (Issue #171): it updates
+    The fetch runs under the base-sync lock: it updates
     the shared remote-tracking ref, so it must not race the other
     Runner/Pi fetches on that ref.
     """
