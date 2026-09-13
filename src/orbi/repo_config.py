@@ -100,7 +100,6 @@ HOST_ONLY_KEYS = frozenset({
     "auto_next_milestone",
     "allow_stale_runner",
     "release_ci_wait_seconds",
-    "mergeable_wait_seconds",
     "release_deliveries_wait_seconds",
     "health_alert_repo",
 })

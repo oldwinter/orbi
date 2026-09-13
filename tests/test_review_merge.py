@@ -602,78 +602,43 @@ def test_merge_gate_rejects_failed_status_context(monkeypatch, tmp_path):
         )
 
 
-def test_review_ci_gate_passes_success_neutral_and_skipped(monkeypatch):
-    calls = []
-    monkeypatch.setattr(seam, "run_command",
-        lambda command, **kwargs: calls.append(command) or json.dumps([
-            {"name": "tests", "status": "completed", "conclusion": "success"},
-            {"name": "docs", "status": "completed", "conclusion": "neutral"},
-            {"name": "deploy", "status": "completed", "conclusion": "skipped"},
-        ]),
-    )
-    assert runner.check_review_ci("owner/repo", "head-green", wait_seconds=10) == (
-        "CI on review head head-green: 3 check(s) all success/neutral/skipped"
-    )
-    assert calls[0][2] == "repos/owner/repo/commits/head-green/check-runs"
-
-
-def test_review_ci_gate_fails_with_run_reference(monkeypatch):
-    monkeypatch.setattr(seam, "run_command",
-        lambda command, **kwargs: json.dumps([{
-            "name": "tests", "status": "completed", "conclusion": "failure",
-            "html_url": "https://github.com/owner/repo/actions/runs/42",
-        }]),
-    )
-    with pytest.raises(RuntimeError, match="actions/runs/42"):
-        runner.check_review_ci("owner/repo", "head-red", wait_seconds=10)
-
-
-@pytest.mark.parametrize("reference", [
-    {"details_url": "https://github.com/owner/repo/actions/runs/43"},
-    {},
-])
-def test_review_ci_gate_reports_any_failure_reference(monkeypatch, reference):
-    monkeypatch.setattr(seam, "run_command",
-        lambda command, **kwargs: json.dumps([{
-            "name": "tests", "status": "completed", "conclusion": "failure",
-            **reference,
-        }]),
-    )
-    with pytest.raises(RuntimeError) as error:
-        runner.check_review_ci("owner/repo", "head-red", wait_seconds=10)
-    assert (reference.get("details_url") or "no run URL") in str(error.value)
-
-
-def test_review_ci_gate_times_out_pending_checks(monkeypatch):
-    monkeypatch.setattr(seam, "run_command",
-        lambda command, **kwargs: json.dumps([{
-            "name": "tests", "status": "in_progress", "conclusion": None,
-        }]),
-    )
-    monkeypatch.setattr(runner, "time", Mock(sleep=Mock()))
-    with pytest.raises(RuntimeError, match="timed out"):
-        runner.check_review_ci("owner/repo", "head-pending", wait_seconds=0)
-
-
-def test_review_ci_gate_allows_no_checks_with_evidence(monkeypatch):
-    monkeypatch.setattr(seam, "run_command", lambda *a, **k: "[]")
-    assert runner.check_review_ci("owner/repo", "head-none", wait_seconds=10) == (
-        "CI on review head head-none: no check runs (nothing to gate)"
-    )
-
-
-def test_review_ci_gate_polls_the_current_head(monkeypatch):
-    heads = iter([
-        [{"name": "tests", "status": "in_progress", "conclusion": None}],
-        [{"name": "tests", "status": "completed", "conclusion": "success"}],
+def test_classify_rollup_sorts_pending_and_failed_checks():
+    """Issue #788: one pure classifier serves the pre-review CI gate and
+    the merge gate — a non-final status is pending, a completed check
+    with a non-passing conclusion (or a legacy FAILURE/ERROR context)
+    is failed."""
+    pending, failed = runner._classify_rollup([
+        {"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"name": "docs", "status": "COMPLETED", "conclusion": "neutral"},
+        {"name": "deploy", "status": "COMPLETED", "conclusion": "skipped"},
+        {"name": "build", "status": "IN_PROGRESS", "conclusion": None},
+        {"name": "lint", "status": "QUEUED", "conclusion": None},
+        {"name": "e2e", "status": "COMPLETED", "conclusion": "FAILURE"},
+        {"context": "status", "state": "ERROR"},
     ])
-    seen = []
-    monkeypatch.setattr(seam, "run_command",
-        lambda command, **kwargs: seen.append(command) or json.dumps(next(heads)),
-    )
-    monkeypatch.setattr(runner.time, "sleep", lambda seconds: None)
-    runner.check_review_ci("owner/repo", "new-head", wait_seconds=30)
-    assert all(any("new-head" in item for item in command) for command in seen)
+    assert pending == ["check 'build' is IN_PROGRESS", "check 'lint' is QUEUED"]
+    assert failed == [
+        "check 'e2e' is COMPLETED/FAILURE", "check 'status' is ERROR",
+    ]
+
+
+def test_classify_rollup_reads_a_missing_status_as_pending():
+    pending, failed = runner._classify_rollup([
+        {"name": "ghost", "status": "", "conclusion": ""},
+    ])
+    assert pending == ["check 'ghost' is UNKNOWN"]
+    assert failed == []
+
+
+def test_merge_gate_merges_after_green_ci(monkeypatch, tmp_path):
+    monkeypatch.setattr(seam, "run_command", _merge_gate_fake(check_runs=[{
+        "name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS",
+    }]))
+    result = runner.merge_gate(tmp_path, {"number": 4, "url": "u",
+                                          "base_ref": "main", "base_oid": "b1",
+                                          "head_ref": "h", "head_oid": "h1"},
+                               "main", repo_dir=tmp_path)
+    assert result["merged"] is True
 
 
 def test_preexisting_ci_triage_lookup_is_best_effort(monkeypatch):
@@ -701,29 +666,31 @@ def test_preexisting_ci_check_skips_base_lookup_without_base(monkeypatch):
     runner._raise_if_preexisting_ci_failure("owner/repo", ["tests"], None)
 
 
-def test_merge_gate_waits_for_pending_github_ci_then_merges(
-        monkeypatch, tmp_path):
-    pages = [
-        [{"name": "tests", "status": "IN_PROGRESS", "conclusion": None}],
-        [{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}],
-    ]
+def test_merge_gate_reads_the_state_once(monkeypatch, tmp_path):
+    """Issue #788: the gate reads the PR state ONCE — pending checks
+    defer (DeliveryDeferred) instead of polling, and no merge command
+    runs against an unconcluded head."""
+    views = []
 
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and "view" in command:
+            views.append(command)
             return json.dumps({
                 "state": "OPEN", "mergeable": "MERGEABLE", "headRefOid": "h1",
-                "statusCheckRollup": pages.pop(0),
+                "statusCheckRollup": [{
+                    "name": "tests", "status": "IN_PROGRESS",
+                    "conclusion": None,
+                }],
             })
         return ""
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
-    result = runner.merge_gate(tmp_path, {"number": 4, "url": "u",
-                                          "base_ref": "main", "base_oid": "b1",
-                                          "head_ref": "h", "head_oid": "h1"},
-                               "main", repo_dir=tmp_path,
-                               ci_wait_seconds=30)
-    assert result["merged"] is True
+    with pytest.raises(runner.DeliveryDeferred):
+        runner.merge_gate(tmp_path, {"number": 4, "url": "u",
+                                     "base_ref": "main", "base_oid": "b1",
+                                     "head_ref": "h", "head_oid": "h1"},
+                          "main", repo_dir=tmp_path)
+    assert len(views) == 1
 
 
 def test_merge_gate_without_ci_proceeds_to_mergeable_gate(monkeypatch, tmp_path):
@@ -735,19 +702,6 @@ def test_merge_gate_without_ci_proceeds_to_mergeable_gate(monkeypatch, tmp_path)
                                           "head_ref": "h", "head_oid": "h1"},
                                "main", repo_dir=tmp_path)
     assert result["merged"] is True
-
-
-def test_merge_gate_times_out_pending_github_ci(monkeypatch, tmp_path):
-    monkeypatch.setattr(seam, "run_command",
-        _merge_gate_fake(check_runs=[{
-            "name": "tests", "status": "QUEUED", "conclusion": None,
-        }]),
-    )
-    with pytest.raises(RuntimeError, match="waiting for CI.*timed out"):
-        runner.merge_gate(tmp_path, {"number": 4, "url": "u",
-                                     "base_ref": "main", "base_oid": "b1",
-                                     "head_ref": "h", "head_oid": "h1"},
-                          "main", repo_dir=tmp_path, ci_wait_seconds=0)
 
 
 def test_merge_gate_merges_reviewed_head_with_match_head_commit(monkeypatch, tmp_path):
@@ -839,49 +793,34 @@ def test_merge_gate_rejects_head_behind_latest_base(monkeypatch, tmp_path, caplo
     assert "base_branch=main" in caplog.text
 
 
-def test_merge_gate_polls_unknown_until_mergeable(monkeypatch, tmp_path):
-    states = ["UNKNOWN", "UNKNOWN", "MERGEABLE"]
-    sleeps = []
-
-    def fake_run(command, **kwargs):
-        if command[:2] == ["gh", "pr"] and "view" in command:
-            return json.dumps({"state": "OPEN", "mergeable": states.pop(0),
-                               "headRefOid": "h1", "statusCheckRollup": []})
-        return ""
-
-    monkeypatch.setattr(seam, "run_command", fake_run)
-    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
-    result = runner.merge_gate(
-        tmp_path, {"number": 4, "url": "u", "base_ref": "main",
-                   "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
-        "main", repo_dir=tmp_path, mergeable_wait_seconds=20,
-    )
-    assert result["merged"] is True
-    assert sleeps == [runner.MERGEABLE_POLL_INTERVAL] * 2
+def test_merge_gate_defers_when_ci_pending(monkeypatch, tmp_path, caplog):
+    """Issue #788: pending checks on the reviewed head are an intermediate
+    state, never a failure — the gate raises `DeliveryDeferred`, merges
+    nothing, and the caller returns so the next tick re-reads."""
+    monkeypatch.setattr(seam, "run_command", _merge_gate_fake(check_runs=[{
+        "name": "tests", "status": "QUEUED", "conclusion": None,
+    }]))
+    with caplog.at_level("INFO"), pytest.raises(runner.DeliveryDeferred):
+        runner.merge_gate(
+            tmp_path, {"number": 4, "url": "u", "base_ref": "main",
+                       "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
+            "main", repo_dir=tmp_path,
+        )
+    assert "merge_gate_ci_pending" in caplog.text
 
 
-def test_merge_gate_mergeable_timeout_fails_fast(monkeypatch, tmp_path):
+def test_merge_gate_defers_when_mergeable_unknown(monkeypatch, tmp_path, caplog):
+    """Issue #788: a still-UNKNOWN mergeability (GitHub recomputes it
+    asynchronously) defers the merge to the next tick — no poll, no
+    failure, one journal line."""
     monkeypatch.setattr(seam, "run_command", _merge_gate_fake(pr_state="UNKNOWN"))
-    with pytest.raises(runner.RecoverableMergeGateError, match="mergeable.*timed out"):
+    with caplog.at_level("INFO"), pytest.raises(runner.DeliveryDeferred):
         runner.merge_gate(
             tmp_path, {"number": 4, "url": "u", "base_ref": "main",
                        "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
-            "main", repo_dir=tmp_path, mergeable_wait_seconds=0,
+            "main", repo_dir=tmp_path,
         )
-
-
-def test_merge_gate_continuous_unknown_times_out_after_polling(monkeypatch, tmp_path):
-    sleeps = []
-    monkeypatch.setattr(seam, "run_command", _merge_gate_fake(pr_state="UNKNOWN"),
-    )
-    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
-    with pytest.raises(runner.RecoverableMergeGateError, match="mergeable.*timed out"):
-        runner.merge_gate(
-            tmp_path, {"number": 4, "url": "u", "base_ref": "main",
-                       "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
-            "main", repo_dir=tmp_path, mergeable_wait_seconds=10,
-        )
-    assert sleeps == [runner.MERGEABLE_POLL_INTERVAL] * 2
+    assert "merge_gate_mergeable_unknown" in caplog.text
 
 
 def test_merge_gate_rejects_non_mergeable_pr(monkeypatch, tmp_path):
@@ -1521,7 +1460,7 @@ def test_fetch_base_ref_releases_the_lock_on_fetch_failure(
 
 
 # ---------------------------------------------------------------------------
-# review_and_merge_if_clean (the wait-loop review step)
+# review_and_merge_if_clean (the delivery step's review round)
 # ---------------------------------------------------------------------------
 
 def _pass_verdict_text(head="h1"):
@@ -1546,6 +1485,34 @@ def _pr():
 
 def _review_merge_config(tmp_path):
     return runner.RunnerConfig(repo_dir=tmp_path, base_branch="main", base_sha="b1", run_id="a1b2c3d4")
+
+
+def _scene(**overrides):
+    """The recovered resume scene the round budget reads (Issue #788).
+
+    `review_round` counts the COMPLETED rounds; `scene_at` is the
+    scene comment's `createdAt` the #483 human-recovery reset compares.
+    """
+    recovered = {
+        "run_id": "a1b2c3d4", "base_branch": "main", "base_sha": "b1",
+        "pr_url": "u", "external": "", "review_round": 0,
+        "scene_at": "2026-09-13T00:00:00Z",
+    }
+    recovered.update(overrides)
+    return recovered
+
+
+@pytest.fixture()
+def budget_review_env(monkeypatch):
+    """freeze/run_review stubs shared by the scene-budget tests (Issue
+    #788): one patch site, a mutable cell per test — tests set
+    `env["verdict"]` before acting."""
+    env = {"frozen": _pr(), "verdict": _pass_verdict_text()}
+    monkeypatch.setattr(runner, "freeze_pr", lambda *a, **k: env["frozen"])
+    monkeypatch.setattr(runner, "run_review",
+                        lambda *a, **k: env["verdict"])
+    make_fake_gh(monkeypatch)
+    return env
 
 
 def test_review_and_merge_clean_verdict_merges_and_labels_merged(
@@ -1579,6 +1546,7 @@ def test_review_and_merge_clean_verdict_merges_and_labels_merged(
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task",
         priority="normal",
+        scene=_scene(),
     )
     assert merged is True
     assert "sync" in calls
@@ -1634,6 +1602,7 @@ def test_review_and_merge_skips_checkout_sync_for_a_locked_engine_source(
         tmp_path, "branch", "main", config,
         "owner/repo", 4, title="Review task",
         priority="normal",
+        scene=_scene(),
     )
     assert merged is True
     assert "sync" not in calls
@@ -1664,6 +1633,7 @@ def test_review_and_merge_fix_round_clears_live_delivery_labels(
     assert runner.review_and_merge_if_clean(
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task", priority="normal",
+    scene=_scene(),
     ) is True
     assert calls == [
         {"repo": "owner/repo", "add": "ai-merged",
@@ -1716,6 +1686,7 @@ def test_review_and_merge_refreezes_head_after_in_session_fix(
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task",
         priority="normal",
+        scene=_scene(),
     )
     assert merged is True
     # The merge gate ran against the RE-FROZEN (fixed) head... with the
@@ -1749,6 +1720,7 @@ def test_review_and_merge_verdict_head_mismatch_fails_before_merge(
             tmp_path, "branch", "main", _review_merge_config(tmp_path),
             "owner/repo", 4, title="Review task",
             priority="normal",
+            scene=_scene(),
         )
     assert gate.called is False
 
@@ -1782,6 +1754,7 @@ def test_review_and_merge_clean_verdict_without_head_advance_keeps_frozen_head(
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task",
         priority="normal",
+        scene=_scene(),
     )
     assert merged is True
     # ...with the deployment checkout as the lock location (Issue #171).
@@ -1818,6 +1791,7 @@ def test_review_and_merge_keeps_merged_when_checkout_sync_fails(
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task",
         priority="normal",
+        scene=_scene(),
     )
     assert merged is True
     assert ("edit", {"repo": "owner/repo", "add": "ai-merged",
@@ -1856,6 +1830,7 @@ def test_review_and_merge_findings_labels_fix_needed_and_comments(
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task",
         priority="normal",
+        scene=_scene(),
     )
     assert merged is False
     # The findings are recorded on Issue and PR with the run marker...
@@ -1898,6 +1873,7 @@ def test_review_and_merge_behind_base_labels_fix_needed(monkeypatch, tmp_path):
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task",
         priority="normal",
+        scene=_scene(),
     )
     assert merged is False
     # A behind head is never merged: the fixer absorbs the latest base.
@@ -1911,11 +1887,13 @@ def test_review_and_merge_ci_failure_labels_fix_needed(monkeypatch, tmp_path):
     monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
     monkeypatch.setattr(runner, "freeze_pr", lambda *a, **k: _pr())
     monkeypatch.setattr(runner, "run_review", lambda *a, **k: _pass_verdict_text())
+    # Issue #788: the merge gate's one-shot CI read is the only gate —
+    # a red check raises the classified "delivery gate: CI" RuntimeError.
     monkeypatch.setattr(
-        runner, "check_review_ci",
+        runner, "merge_gate",
         lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError(
-                "review gate: CI check 'tests' failed "
+                "delivery gate: CI check 'tests' failed on PR #4 "
                 "(https://github.com/owner/repo/actions/runs/42)"
             ),
         ),
@@ -1932,6 +1910,7 @@ def test_review_and_merge_ci_failure_labels_fix_needed(monkeypatch, tmp_path):
     assert runner.review_and_merge_if_clean(
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task", priority="normal",
+        scene=_scene(),
     ) is False
     assert "CI merge gate blocked" in calls[0][1]
     assert "actions/runs/42" in calls[0][1]
@@ -1945,20 +1924,20 @@ def test_review_and_merge_ci_failure_comment_counts_toward_round_budget(
     """Issue #588: a clean verdict + a red CI must consume review budget.
 
     The gate-blocked comment carries the `Orbi review round N for PR #M:`
-    prefix — the only line shape `review_rounds_so_far` counts — so a
-    persistently red CI exhausts MAX_REVIEW_ROUNDS and escalates to a
-    human (`ReviewRoundsExhausted` -> ai-blocked) instead of re-running
-    review sessions forever while holding the slot.
+    prefix AND the updated scene block (Issue #788) — the scene is the
+    budget's counter — so a persistently red CI exhausts MAX_REVIEW_ROUNDS
+    and escalates to a human (`ReviewRoundsExhausted` -> ai-blocked)
+    instead of re-running review sessions forever.
     """
     calls = []
     monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
     monkeypatch.setattr(runner, "freeze_pr", lambda *a, **k: _pr())
     monkeypatch.setattr(runner, "run_review", lambda *a, **k: _pass_verdict_text())
     monkeypatch.setattr(
-        runner, "check_review_ci",
+        runner, "merge_gate",
         lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError(
-                "review gate: CI check 'tests' failed "
+                "delivery gate: CI check 'tests' failed on PR #4 "
                 "(https://github.com/owner/repo/actions/runs/42)"
             ),
         ),
@@ -1975,6 +1954,7 @@ def test_review_and_merge_ci_failure_comment_counts_toward_round_budget(
     assert runner.review_and_merge_if_clean(
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task", priority="normal",
+        scene=_scene(),
     ) is False
     # The evidence keeps the CI scene (Issue #79 bypass semantics unchanged)
     # and now opens with the counted round prefix.
@@ -1986,8 +1966,123 @@ def test_review_and_merge_ci_failure_comment_counts_toward_round_budget(
         [{"body": calls[0][1], "authorAssociation": "OWNER"}],
         run_id="a1b2c3d4",
     ) == 1
+    # ...and the comment carries the updated scene: the next resume
+    # reads review_round=1 from it (the budget's new carrier, #788).
+    assert "orbi:scene:v1" in calls[0][1]
+    assert '"review_round": 1' in calls[0][1]
     assert calls[2] == ("edit", {"repo": "owner/repo", "add": "ai-fix-needed",
                                  "remove": "ai-pr-opened"})
+
+
+def test_review_and_merge_deferred_gate_writes_nothing(
+        budget_review_env, monkeypatch, tmp_path):
+    """Issue #788: an intermediate gate state (pending CI / UNKNOWN
+    mergeability) defers the delivery — no comment, no label change,
+    no round consumed. The next tick re-reads the state."""
+    calls = []
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(
+        runner, "merge_gate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            runner.DeliveryDeferred(
+                "PR #4 CI is still running; the merge is deferred",
+            ),
+        ),
+    )
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda *a, **k: calls.append(("issue", k.get("body"))),
+    )
+    monkeypatch.setattr(seam, "edit_issue",
+        lambda *a, **k: calls.append(("edit", k)),
+    )
+    make_fake_gh(monkeypatch)
+    assert runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", _review_merge_config(tmp_path),
+        "owner/repo", 4, title="Review task", priority="normal",
+        scene=_scene(),
+    ) is False
+    assert calls == []
+
+
+def test_review_budget_reads_the_scene_round(
+        budget_review_env, monkeypatch, tmp_path, caplog):
+    """Issue #788: the budget counter lives in the scene, not in the
+    comment lines. review_round=2 runs round 3; review_round=5 exhausts
+    WITHOUT reading any comment or freezing anything."""
+    calls = []
+    budget_review_env["verdict"] = _findings_verdict_text()
+    monkeypatch.setattr(seam, "issue_comments",
+        lambda *a, **k: calls.append("comments") or [],
+    )
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda *a, **k: calls.append(("issue", k.get("body"))),
+    )
+    monkeypatch.setattr(seam, "edit_issue", lambda *a, **k: None)
+    # Two completed rounds: the next round is 3.
+    assert runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", _review_merge_config(tmp_path),
+        "owner/repo", 4, title="Review task", priority="normal",
+        scene=_scene(review_round=2),
+    ) is False
+    issue_comment = next(
+        c for c in calls if isinstance(c, tuple) and c[0] == "issue"
+    )
+    assert "Orbi review round 3 for PR #4" in issue_comment[1]
+    # ...and the scene in the comment advances to 3.
+    assert '"review_round": 3' in issue_comment[1]
+    # Five completed rounds: exhausted BEFORE any comment read or freeze.
+    with caplog.at_level("ERROR"), pytest.raises(
+        RuntimeError, match="exhausted after",
+    ):
+        runner.review_and_merge_if_clean(
+            tmp_path, "branch", "main", _review_merge_config(tmp_path),
+            "owner/repo", 4, title="Review task", priority="normal",
+            scene=_scene(review_round=runner.MAX_REVIEW_ROUNDS),
+        )
+    assert "review_rounds_exhausted" in caplog.text
+    # No further comment read happened after the two rounds above: the
+    # budget came from the scene, not from `issue_comments`.
+    assert calls.count("comments") == 0
+
+
+def test_human_recovery_after_the_scene_resets_the_budget(
+        budget_review_env, monkeypatch, tmp_path):
+    """Issue #483 on the scene budget: a maintainer's explicit
+    blocked -> fix-needed transition AFTER the recovered scene starts a
+    fresh budget; a transition BEFORE it does not (the scene already
+    carries the post-recovery count, and the exhaustion stands)."""
+    budget_review_env["verdict"] = _findings_verdict_text()
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(seam, "comment_issue", lambda *a, **k: None)
+    monkeypatch.setattr(seam, "edit_issue", lambda *a, **k: None)
+    # Recovery AFTER the scene: fresh budget, the round runs. One
+    # mutable-cell patch serves all three recovery scenes below.
+    recovery = {"at": "2026-09-13T01:00:00Z"}
+    monkeypatch.setattr(
+        runner, "human_review_recovery_at", lambda *a: recovery["at"],
+    )
+    assert runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", _review_merge_config(tmp_path),
+        "owner/repo", 4, title="Review task", priority="normal",
+        scene=_scene(review_round=runner.MAX_REVIEW_ROUNDS),
+    ) is False
+    # Recovery BEFORE the scene: the scene's count is the authority and
+    # the budget stays exhausted.
+    recovery["at"] = "2026-09-12T23:00:00Z"
+    with pytest.raises(RuntimeError, match="exhausted after"):
+        runner.review_and_merge_if_clean(
+            tmp_path, "branch", "main", _review_merge_config(tmp_path),
+            "owner/repo", 4, title="Review task", priority="normal",
+            scene=_scene(review_round=runner.MAX_REVIEW_ROUNDS),
+        )
+    # A scene with NO timestamp stamp (a hand-built projection): the
+    # recovery still wins — fresh budget, the round runs.
+    recovery["at"] = "2026-09-13T01:00:00Z"
+    assert runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", _review_merge_config(tmp_path),
+        "owner/repo", 4, title="Review task", priority="normal",
+        scene=_scene(review_round=runner.MAX_REVIEW_ROUNDS, scene_at=None),
+    ) is False
 
 
 def test_review_and_merge_conflict_labels_fix_needed(monkeypatch, tmp_path):
@@ -2020,6 +2115,7 @@ def test_review_and_merge_conflict_labels_fix_needed(monkeypatch, tmp_path):
         tmp_path, "branch", "main", _review_merge_config(tmp_path),
         "owner/repo", 4, title="Review task",
         priority="normal",
+        scene=_scene(),
     )
     assert merged is False
     assert "merge conflict" in calls[0][1] or "not mergeable" in calls[0][1]
@@ -2046,6 +2142,7 @@ def test_review_and_merge_reraises_non_fixable_gate_error(monkeypatch, tmp_path)
             tmp_path, "branch", "main", _review_merge_config(tmp_path),
             "owner/repo", 4, title="Review task",
             priority="normal",
+            scene=_scene(),
         )
 
 
@@ -2061,18 +2158,13 @@ def test_review_and_merge_missing_verdict_raises(monkeypatch, tmp_path):
             tmp_path, "branch", "main", _review_merge_config(tmp_path),
             "owner/repo", 4, title="Review task",
             priority="normal",
+            scene=_scene(),
         )
 
 
 def test_review_and_merge_exhausted_rounds_raises(monkeypatch, tmp_path, caplog):
-    comments = [
-        {"body": f"<!-- orbi:run=a1b2c3d4 -->\n"
-                 f"Orbi review round {i} for PR #4: 1 blocker(s), "
-                 "0 major(s). Findings: []",
-         "authorAssociation": "OWNER"}
-        for i in range(1, runner.MAX_REVIEW_ROUNDS + 1)
-    ]
-    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: comments)
+    """The exhausted budget is judged from the scene's round counter
+    (Issue #788): review_round=5 raises before any freeze or review."""
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError,
         match=f"exhausted after {runner.MAX_REVIEW_ROUNDS} rounds",
@@ -2082,5 +2174,6 @@ def test_review_and_merge_exhausted_rounds_raises(monkeypatch, tmp_path, caplog)
             tmp_path, "branch", "main", _review_merge_config(tmp_path),
             "owner/repo", 4, title="Review task",
             priority="normal",
+            scene=_scene(review_round=runner.MAX_REVIEW_ROUNDS),
         )
     assert "review_rounds_exhausted" in caplog.text

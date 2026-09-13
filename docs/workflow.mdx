@@ -39,14 +39,22 @@ ai-ready                a task is dispatched (orbi add, or a human
                         comments only, capped by issue_comments_limit with
                         a visible omission note)
   -> ai-pr-opened       the PR passes verification (base freshness, run
-                        marker, Fixes #N); the delivery now awaits review
-  -> review             an independent Pi session reviews the exact
-                        base/head SHAs and FIXES findings in-session
-                        (code, full test suite, tiered coverage gate
-                        (Issue #234), push only the task branch), then
-                        emits a REVIEW_VERDICT (its prompt carries the
-                        same trusted-comment timeline of the linked
-                        Issue — the decision history, Issue #745)
+                        marker, Fixes #N); the tick then ENDS and
+                        releases the slot (Issue #788) — the delivery
+                        awaits its review tick
+  -> review             one tick, one step: the resumable scan
+                        classifies the opened-PR delivery RESUME_REVIEW;
+                        if the PR head's CI is still pending the tick
+                        journals it and returns (no sleep); otherwise an
+                        independent Pi session — the ONLY blocking phase,
+                        so the slot is held for exactly the Pi run —
+                        reviews the exact base/head SHAs and FIXES
+                        findings in-session (code, full test suite,
+                        tiered coverage gate (Issue #234), push only the
+                        task branch), then emits a REVIEW_VERDICT (its
+                        prompt carries the same trusted-comment timeline
+                        of the linked Issue — the decision history,
+                        Issue #745)
   -> ai-fix-needed      a finding could not be fixed in-session, the PR is
                         behind the latest base / has a merge conflict, or
                         an AI-recoverable failure of the existing run/PR
@@ -60,8 +68,10 @@ ai-ready                a task is dispatched (orbi add, or a human
                         worktree and PR
   -> merge              clean verdict (its head field equals the PR
                         head, Issue #591) + merge gate (head contains
-                        the latest base, PR mergeable, remote head
-                        unchanged)
+                        the latest base, CI concluded, PR mergeable,
+                        remote head unchanged — each read ONCE: pending
+                        CI or an UNKNOWN mergeability defers the merge
+                        to the next tick, Issue #788)
   -> ai-merged          success terminal state; the PR body's Fixes #N
                         closes the Issue natively
 ```
@@ -91,10 +101,21 @@ Rules of the chain:
   `ai-in-progress` label is still picked up (Issue #178: a runner killed
   during review leaves it behind — the positive opened-PR qualifier
   already keeps implement-phase Issues out of the scan).
-- The review/fix loop is bounded (5 rounds). Exhausting rounds with
-  findings marks the Issue `ai-blocked` (the bounded loop is a human
-  decision); a recoverable failure (Issue #50) keeps it `ai-fix-needed`.
-  Either way the PR, branch and worktree stay intact.
+- The review/fix loop is bounded (5 rounds). The completed-round count
+  lives in the trusted scene (`review_round`, Issue #788): every round
+  comment carries the updated scene block, so the next tick reads the
+  advanced count from it (a human's blocked -> ai-fix-needed recovery
+  after the scene still starts a fresh budget, Issue #483). Exhausting
+  rounds with findings marks the Issue `ai-blocked` (the bounded loop is
+  a human decision); a recoverable failure (Issue #50) keeps it
+  `ai-fix-needed`. Either way the PR, branch and worktree stay intact.
+- No in-tick waiting (Issue #788): the old in-process wait loop
+  (`wait_for_delivery`, CI/mergeability polling with
+  `release_ci_wait_seconds` / `mergeable_wait_seconds`) is gone. Every
+  wait is the waiting primitive — write the state, return, release the
+  slot, and the next tick re-reads (`delivery_ci_pending`,
+  `merge_gate_ci_pending`, `merge_gate_mergeable_unknown`). The
+  crash-recovery path IS the path.
 - Base advances are absorbed by a plain `git merge` of the latest
   `origin/<base>` on the task branch (conflicts resolved manually),
   followed by a full test rerun. No force push, no auto conflict

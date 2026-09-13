@@ -20,6 +20,7 @@ import orbi.runner as runner
 from orbi import progress
 from orbi import scene as scene_mod
 from tests.test_progress_wiring import make_fake_gh
+from tests.fakes.github import FakeGh
 from seam import seam
 import orbi.journal as journal
 import orbi.github as github
@@ -57,12 +58,17 @@ def scene_for() -> dict:
     # derives them from its own config, the Issue number and the run id.
     # `external` is the Issue #608 external-takeover marker — empty for
     # a Runner-owned PR, `true` for a contributor-PR takeover.
+    # `review_round` travels with the scene (Issue #788): the round
+    # budget's counter, 0 when the PR opens. (`resume_scene` additionally
+    # stamps `scene_at` — the scene comment's `createdAt` — which this
+    # parse-level projection does not carry.)
     return {
         "run_id": FAKE_RUN_ID,
         "base_branch": "main",
         "base_sha": "abc123def456",
         "pr_url": FAKE_PR_URL,
         "external": "",
+        "review_round": 0,
     }
 
 
@@ -800,7 +806,9 @@ def test_pick_resumable_delivery_resumes_from_the_v1_scene_block(
         "owner/repo", tmp_path / "slots", 1,
     )
     assert issue["number"] == 9
-    assert scene == scene_for()
+    # The scan's scene carries the `scene_at` stamp (the fake comment
+    # payload has no createdAt, so it is None here).
+    assert scene == {**scene_for(), "scene_at": None}
 
 
 def test_pick_resumable_delivery_blocks_on_a_corrupted_v1_block(
@@ -1221,7 +1229,7 @@ def test_main_resumes_resumable_delivery_before_claiming_new(monkeypatch, tmp_pa
     # The dispatch test must not run the real delivery-wait loop (it would
     # call `gh` against the real PR number of the verified URL).
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *a, **k: waits.append((a, k)) or None,
     )
     assert runner.main(["--config", str(config)]) == 0
@@ -1255,7 +1263,7 @@ def test_main_still_claims_new_issue_when_no_resumable(monkeypatch, tmp_path):
     )
     # The dispatch test must not run the real delivery-wait loop (it would
     # call `gh` against the real PR number of FAKE_PR_URL).
-    monkeypatch.setattr(runner, "wait_for_delivery", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "delivery_step", lambda *a, **k: None)
     assert runner.main(["--config", str(config)]) == 0
     assert len(processed) == 1
     assert processed[0][0] is issue
@@ -1314,7 +1322,7 @@ def test_main_continues_to_ready_delivery_after_scene_failure(
         lambda *args, **kwargs: processed.append(args)
         or runner.IssueResult("pr", FAKE_PR_URL),
     )
-    monkeypatch.setattr(runner, "wait_for_delivery", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "delivery_step", lambda *a, **k: None)
     assert runner.main(["--config", str(config)]) == 0
     # The corrupted Issue was scoped to a single-ticket block...
     assert edits == [[
@@ -1368,7 +1376,7 @@ def test_main_ends_cleanly_after_handled_resume_scene_failure(
         ),
     )
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *a, **k: pytest.fail("stale resume must not enter delivery wait"),
     )
     assert runner.main(["--config", str(config_path)]) == 0
@@ -2047,6 +2055,187 @@ def test_verify_resumed_pr_pr_url_mismatch_stays_fix_needed(
     fix_needed = patches[-1][patches[-1].index("--field") + 1][len("body="):]
     assert "Orbi fix needed" in fix_needed
     assert "next step:" in fix_needed
+    assert "resume_pr_verification_failed" in caplog.text
+
+
+def _closed_scene_gh(monkeypatch):
+    """The FakeGh wired into the ONE subprocess seam beside the two
+    local git reads the resume verification makes (the branch and HEAD
+    of the derived worktree). The git dispatch indexes single argv
+    elements — no argv-shape asserts (Issue #789)."""
+    fake = FakeGh("owner/repo")
+    git_reads = {"branch": FAKE_BRANCH, "rev-parse": "head"}
+
+    def run(command, **kwargs):
+        if command[0] == "git":
+            return git_reads[command[1]]
+        return fake(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", run)
+    return fake
+
+
+def _closed_scene(external: bool, pr_url: str = FAKE_PR_URL) -> dict:
+    scene = make_resume_scene(pr_url=pr_url)
+    if external:
+        scene["external"] = "true"
+    return scene
+
+
+def test_verify_pr_zero_open_prs_raises_typed_closed_scene_error(
+    monkeypatch, tmp_path,
+):
+    """Issue #788: the zero-open-PR scene carries the scene PR's GitHub
+    state on a TYPED error (`ResumePrClosedError`, still an
+    `UnrecoverableDeliveryError`), so the resume handler can route the
+    already-decided fact (delivered / withdrawn) instead of blocking
+    every closed or merged scene alike."""
+    fake = _closed_scene_gh(monkeypatch)
+    fake.add_issue(9, labels=("ai-pr-opened",))
+    fake.add_pr(9, head=FAKE_BRANCH, state="MERGED",
+                merged_at="2026-09-13T00:00:00Z")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    with pytest.raises(runner.ResumePrClosedError) as excinfo:
+        runner.verify_pr(
+            worktree, FAKE_BRANCH, "main", FAKE_RUN_ID, issue=9,
+            repo_dir=tmp_path, pr_repo="owner/repo",
+            expected_url=FAKE_PR_URL, require_latest_base=False,
+        )
+    assert excinfo.value.scene_pr_state == "MERGED"
+    assert isinstance(excinfo.value, runner.UnrecoverableDeliveryError)
+    assert "scene_pr_state=MERGED" in str(excinfo.value)
+
+
+def test_verify_resumed_pr_scene_pr_merged_between_ticks_does_not_block(
+    monkeypatch, tmp_path, caplog,
+):
+    """Issue #788: the resumed path IS the path, so a scene PR merged
+    between ticks is a NORMAL state, not a crash leftover. The `Fixes
+    #N` keyword closed the Issue natively when the merge landed — the
+    runner journals the fact and stops; blocking a DELIVERED Issue as
+    `ai-blocked` (a human must decide) writes noise on a decided fact
+    and is gone."""
+    fake = _closed_scene_gh(monkeypatch)
+    fake.add_issue(9, labels=("ai-pr-opened",))
+    fake.add_pr(9, head=FAKE_BRANCH, state="MERGED",
+                merged_at="2026-09-13T00:00:00Z")
+    expected_resume_worktree(tmp_path).mkdir(parents=True)
+    monkeypatch.setattr(journal, "_CURRENT_RUN_ID", FAKE_RUN_ID)
+    caplog.set_level("INFO")
+    with pytest.raises(runner.ResumePrClosedError):
+        runner.verify_resumed_pr(
+            _closed_scene(external=False), make_resume_issue(),
+            make_resume_config(tmp_path), "owner/repo",
+        )
+    # No label change, no comment: the native Fixes #N close owns the
+    # delivered Issue; only the journal records the observation.
+    assert fake.issues[9]["labels"] == ["ai-pr-opened"]
+    assert fake.issues[9]["comments"] == []
+    assert fake.prs[9]["comments"] == []
+    assert "delivery_merged" in caplog.text
+
+
+def test_verify_resumed_pr_external_pr_closed_between_ticks_requeues(
+    monkeypatch, tmp_path,
+):
+    """Issue #608 + #788: the takeover delivery's PR was closed without
+    a merge between ticks (the contributor withdrew it). The requeue —
+    `ai-ready` for an internal redo, the supersession explained on the
+    closed PR thread — was the old wait loop's in-process branch; the
+    resume path is now the ONLY path, so the verify seam must keep it
+    reachable instead of blocking the triage Issue."""
+    fake = _closed_scene_gh(monkeypatch)
+    fake.add_issue(9, labels=("ai-pr-opened",))
+    fake.add_pr(592, head=FAKE_BRANCH, state="CLOSED")
+    expected_resume_worktree(tmp_path).mkdir(parents=True)
+    monkeypatch.setattr(journal, "_CURRENT_RUN_ID", FAKE_RUN_ID)
+    external_url = "https://github.com/owner/repo/pull/592"
+    with pytest.raises(runner.ResumePrClosedError):
+        runner.verify_resumed_pr(
+            _closed_scene(external=True, pr_url=external_url),
+            make_resume_issue(),
+            make_resume_config(tmp_path), "owner/repo",
+        )
+    # The requeue: the triage Issue returns to the ready queue.
+    assert fake.issues[9]["labels"] == ["ai-ready"]
+    # The supersession story on the triage Issue ...
+    assert len(fake.issues[9]["comments"]) == 1
+    body = fake.issues[9]["comments"][0]["body"]
+    assert "closed without" in body and "internal" in body
+    assert run_marker_body() in body
+    # ... and on the closed PR thread the contributor watches.
+    assert len(fake.prs[592]["comments"]) == 1
+    assert "closed without" in fake.prs[592]["comments"][0]["body"]
+
+
+def test_verify_resumed_pr_external_pr_merged_between_ticks_closes_triage(
+    monkeypatch, tmp_path,
+):
+    """Issue #608/#726 + #788: the takeover delivery's PR was MERGED
+    between ticks (a maintainer clicked merge). The contribution
+    delivered the fix — the triage Issue closes as delivered, exactly
+    like the merged-poll branch; blocking it as `ai-blocked` would deny
+    a landed contribution."""
+    fake = _closed_scene_gh(monkeypatch)
+    fake.add_issue(9, labels=("ai-pr-opened",))
+    fake.add_pr(592, head=FAKE_BRANCH, state="MERGED",
+                merged_at="2026-09-13T00:00:00Z")
+    expected_resume_worktree(tmp_path).mkdir(parents=True)
+    monkeypatch.setattr(journal, "_CURRENT_RUN_ID", FAKE_RUN_ID)
+    external_url = "https://github.com/owner/repo/pull/592"
+    with pytest.raises(runner.ResumePrClosedError):
+        runner.verify_resumed_pr(
+            _closed_scene(external=True, pr_url=external_url),
+            make_resume_issue(),
+            make_resume_config(tmp_path), "owner/repo",
+        )
+    # The triage Issue closes as delivered — never requeued, never
+    # blocked.
+    assert fake.issues[9]["labels"] == ["ai-pr-opened"]
+    assert fake.issues[9]["state"] == "closed"
+    assert len(fake.issues[9]["comments"]) == 1
+    assert "closing" in fake.issues[9]["comments"][0]["body"]
+    assert "triage Issue" in fake.issues[9]["comments"][0]["body"]
+
+
+def test_verify_resumed_pr_scene_pr_closed_between_ticks_still_blocks(
+    monkeypatch, tmp_path, caplog,
+):
+    """Issue #494 + #788: an INTERNAL delivery whose PR was closed
+    without a merge between ticks keeps its terminal contract —
+    `ai-blocked` ALONE with the explicit reason (a human decides
+    whether to reopen or start a fresh delivery)."""
+    captured, reporting_fake = make_resume_failure_fake(monkeypatch)
+    git_reads = {"branch": FAKE_BRANCH, "rev-parse": "head"}
+    pr_reads = {
+        "list": "[]",
+        "view": json.dumps({"state": "CLOSED", "mergedAt": None}),
+    }
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return git_reads[command[1]]
+        if command[1] == "pr":
+            return pr_reads[command[2]]
+        return reporting_fake(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    expected_resume_worktree(tmp_path).mkdir(parents=True)
+    monkeypatch.setattr(journal, "_CURRENT_RUN_ID", FAKE_RUN_ID)
+    caplog.set_level("INFO")
+    with pytest.raises(runner.UnrecoverableDeliveryError):
+        runner.verify_resumed_pr(
+            _closed_scene(external=False), make_resume_issue(),
+            make_resume_config(tmp_path), "owner/repo",
+        )
+    assert captured["edits"] == [
+        ((9,), {"repo": "owner/repo", "add": "ai-blocked",
+                "remove": "ai-pr-opened"}),
+    ]
+    assert len(captured["comments"]) == 1
+    assert "Orbi failed:" in captured["comments"][0][1]["body"]
+    assert "scene_pr_state=CLOSED" in captured["comments"][0][1]["body"]
     assert "resume_pr_verification_failed" in caplog.text
 
 

@@ -774,18 +774,9 @@ def _pr_number(pr_url: str) -> int:
     return int(pr_url.rstrip("/").rsplit("/", 1)[-1])
 
 
-def pr_delivery_status(pr_url: str, source_repo: str) -> tuple[str, list[str]]:
-    """Return PR state and CI summaries for delivery-wait evidence."""
-    number = _pr_number(pr_url)
-    data = pr_view(number, "state,statusCheckRollup", repo=source_repo)
-    state = data.get("state")
-    if state not in ("OPEN", "MERGED", "CLOSED"):
-        raise ValueError(f"unexpected PR state: {state!r}")
-    rollup = data.get("statusCheckRollup")
-    if rollup is None:
-        rollup = []
-    if not isinstance(rollup, list):
-        raise ValueError("pr statusCheckRollup must be a JSON array")
+def _check_summaries(rollup: list) -> list[str]:
+    """Render one status check rollup as compact `name=STATUS[/CONCLUSION]`
+    strings (delivery-journal evidence)."""
     summaries = []
     for check in rollup:
         if not isinstance(check, dict):
@@ -797,7 +788,32 @@ def pr_delivery_status(pr_url: str, source_repo: str) -> tuple[str, list[str]]:
         if conclusion:
             detail += f"/{conclusion}"
         summaries.append(f"{name}={detail}")
-    return state, summaries
+    return summaries
+
+
+def pr_delivery_rollup(pr_url: str, source_repo: str) -> tuple[str, list]:
+    """Return PR state and the raw status check rollup (ONE read, Issue #788).
+
+    The delivery step classifies this rollup once per tick: pending
+    checks defer the delivery to the next tick instead of sleeping.
+    """
+    number = _pr_number(pr_url)
+    data = pr_view(number, "state,statusCheckRollup", repo=source_repo)
+    state = data.get("state")
+    if state not in ("OPEN", "MERGED", "CLOSED"):
+        raise ValueError(f"unexpected PR state: {state!r}")
+    rollup = data.get("statusCheckRollup")
+    if rollup is None:
+        rollup = []
+    if not isinstance(rollup, list):
+        raise ValueError("pr statusCheckRollup must be a JSON array")
+    return state, rollup
+
+
+def pr_delivery_status(pr_url: str, source_repo: str) -> tuple[str, list[str]]:
+    """Return PR state and CI summaries for delivery-wait evidence."""
+    state, rollup = pr_delivery_rollup(pr_url, source_repo)
+    return state, _check_summaries(rollup)
 
 
 def pr_state(pr_url: str, source_repo: str) -> str:

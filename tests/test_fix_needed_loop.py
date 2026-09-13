@@ -48,7 +48,7 @@ def _scene_comments():
 
 def make_wait_failure_fake(monkeypatch, *, labels=("ai-pr-opened",),
                            progress_comments=None, scene=None):
-    """Shared `run_command` fake for the `wait_for_delivery` failure
+    """Shared `run_command` fake for the `delivery_step` failure
     tests: one OPEN PR poll, the progress API (GET/POST/PATCH), the
     label read, the comment-history read (scene + review rounds).
     `review_and_merge_if_clean` is monkeypatched separately by the
@@ -201,7 +201,7 @@ def test_snapshot_or_placeholder_logs_a_failed_read(
     assert "activity scene failed" in caplog.text
 
 
-# ------------------------------------------------- wait_for_delivery: recoverable
+# ------------------------------------------------- delivery_step: recoverable
 
 
 @pytest.mark.parametrize("exc", [
@@ -217,7 +217,7 @@ def test_snapshot_or_placeholder_logs_a_failed_read(
     # Missing worktree.
     RuntimeError(f"worktree missing: {WORKTREE}"),
 ])
-def test_wait_for_delivery_recoverable_review_failure_stays_fix_needed(
+def test_delivery_step_recoverable_review_failure_stays_fix_needed(
         monkeypatch, caplog, tmp_path, exc,
 ):
     """Issue #50: a recoverable review failure (Pi execution failure,
@@ -255,7 +255,7 @@ def test_wait_for_delivery_recoverable_review_failure_stays_fix_needed(
     caplog.set_level("INFO")
     # The wait returns (the slot is released by the caller); the next
     # timer picks the ai-fix-needed Issue up on the same run/PR.
-    runner.wait_for_delivery(PR_URL, _issue(), _config(tmp_path), "owner/repo")
+    runner.delivery_step(PR_URL, _issue(), _config(tmp_path), "owner/repo")
 
     # One review attempt, then the fix-needed transition.
     assert len(reviews) == 1
@@ -316,7 +316,7 @@ def test_wait_for_delivery_recoverable_review_failure_stays_fix_needed(
     assert "delivery_review_failed" in caplog.text
 
 
-def test_wait_for_delivery_recoverable_failure_while_fix_needed_keeps_label(
+def test_delivery_step_recoverable_failure_while_fix_needed_keeps_label(
         monkeypatch, tmp_path,
 ):
     """Issue #50 + #82: a recoverable failure while the Issue is ALREADY
@@ -340,7 +340,7 @@ def test_wait_for_delivery_recoverable_failure_while_fix_needed_keeps_label(
 
     monkeypatch.setattr(runner, "review_and_merge_if_clean", failing_review)
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", RUN_ID)
-    runner.wait_for_delivery(PR_URL, _issue(), _config(tmp_path), "owner/repo")
+    runner.delivery_step(PR_URL, _issue(), _config(tmp_path), "owner/repo")
     # The current label set contains only ai-fix-needed, so the
     # idempotent transition adds it without inventing a remove for the
     # absent ai-pr-opened label.
@@ -359,7 +359,7 @@ def _write_session(worktree_dir, session_id="sess-1"):
     )
 
 
-def test_wait_for_delivery_recoverable_failure_with_session_file_includes_session_scene(
+def test_delivery_step_recoverable_failure_with_session_file_includes_session_scene(
         monkeypatch, tmp_path,
 ):
     """Issue #50: when the worktree carries a session file, the
@@ -384,13 +384,13 @@ def test_wait_for_delivery_recoverable_failure_with_session_file_includes_sessio
 
     monkeypatch.setattr(runner, "review_and_merge_if_clean", failing_review)
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", RUN_ID)
-    runner.wait_for_delivery(PR_URL, _issue(), _config(tmp_path), "owner/repo")
+    runner.delivery_step(PR_URL, _issue(), _config(tmp_path), "owner/repo")
     body = issue_comments[0][1]["body"]
     assert "session=sess-1" in body
     assert f"session_file={worktree / '.pi-session' / 'sess.jsonl'}" in body
 
 
-def test_wait_for_delivery_recoverable_failure_scene_snapshot_failure_is_logged(
+def test_delivery_step_recoverable_failure_scene_snapshot_failure_is_logged(
         monkeypatch, caplog, tmp_path,
 ):
     """Issue #50: a failing session-file read is best-effort
@@ -423,7 +423,7 @@ def test_wait_for_delivery_recoverable_failure_scene_snapshot_failure_is_logged(
     monkeypatch.setattr(runner, "activity_snapshot", failing_snapshot)
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", RUN_ID)
     caplog.set_level("INFO")
-    runner.wait_for_delivery(PR_URL, _issue(), _config(tmp_path), "owner/repo")
+    runner.delivery_step(PR_URL, _issue(), _config(tmp_path), "owner/repo")
     assert "activity scene failed" in caplog.text
     body = issue_comments[0][1]["body"]
     assert "Orbi needs a fix:" in body
@@ -434,10 +434,10 @@ def test_wait_for_delivery_recoverable_failure_scene_snapshot_failure_is_logged(
     ]
 
 
-# ------------------------------------------- wait_for_delivery: unrecoverable
+# ------------------------------------------- delivery_step: unrecoverable
 
 
-def test_wait_for_delivery_recoverable_failure_without_bound_run_id(
+def test_delivery_step_recoverable_failure_without_bound_run_id(
         monkeypatch, tmp_path,
 ):
     """Issue #50: a RECOVERABLE review failure with no bound run id
@@ -465,7 +465,7 @@ def test_wait_for_delivery_recoverable_failure_without_bound_run_id(
     monkeypatch.setattr(runner, "review_and_merge_if_clean", failing_review)
     # The autouse fixture resets the run id to None; do not re-bind it.
     assert runner.current_run_id() is None
-    runner.wait_for_delivery(PR_URL, _issue(), _config(tmp_path), "owner/repo")
+    runner.delivery_step(PR_URL, _issue(), _config(tmp_path), "owner/repo")
     assert edits == [
         ((39,), {"repo": "owner/repo", "add": "ai-fix-needed",
                  "remove": "ai-pr-opened"}),
@@ -478,7 +478,7 @@ def test_wait_for_delivery_recoverable_failure_without_bound_run_id(
     assert api_calls == []
 
 
-def test_wait_for_delivery_unrecoverable_failure_marks_blocked_with_reason(
+def test_delivery_step_unrecoverable_failure_marks_blocked_with_reason(
         monkeypatch, caplog, tmp_path,
 ):
     """Issue #50: an explicit UnrecoverableDeliveryError (an external
@@ -510,7 +510,7 @@ def test_wait_for_delivery_unrecoverable_failure_marks_blocked_with_reason(
     monkeypatch.setattr(runner, "review_and_merge_if_clean", failing_review)
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", RUN_ID)
     caplog.set_level("INFO")
-    runner.wait_for_delivery(PR_URL, _issue(), _config(tmp_path), "owner/repo")
+    runner.delivery_step(PR_URL, _issue(), _config(tmp_path), "owner/repo")
 
     # The terminal state is ai-blocked ALONE ...
     assert edits == [
@@ -549,7 +549,7 @@ def test_wait_for_delivery_unrecoverable_failure_marks_blocked_with_reason(
     assert "delivery_review_failed" not in caplog.text
 
 
-def test_wait_for_delivery_real_unrecoverable_failure_keeps_traceback(
+def test_delivery_step_real_unrecoverable_failure_keeps_traceback(
         monkeypatch, caplog, tmp_path,
 ):
     """Unexpected unrecoverable failures remain visible as failures."""
@@ -566,13 +566,13 @@ def test_wait_for_delivery_real_unrecoverable_failure_keeps_traceback(
     monkeypatch.setattr(runner, "review_and_merge_if_clean", failing_review)
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", RUN_ID)
     caplog.set_level("ERROR")
-    runner.wait_for_delivery(PR_URL, _issue(), _config(tmp_path), "owner/repo")
+    runner.delivery_step(PR_URL, _issue(), _config(tmp_path), "owner/repo")
 
     assert "delivery_review_failed" in caplog.text
     assert "Traceback (most recent call last)" in caplog.text
 
 
-def test_wait_for_delivery_base_branch_mismatch_marks_blocked_with_reason(
+def test_delivery_step_base_branch_mismatch_marks_blocked_with_reason(
         monkeypatch, caplog, tmp_path,
 ):
     """Issue #50 + #91: a resume scene frozen on another base branch
@@ -610,7 +610,7 @@ def test_wait_for_delivery_base_branch_mismatch_marks_blocked_with_reason(
     )
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", RUN_ID)
     caplog.set_level("INFO")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, _issue(),
         runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"), "owner/repo",
     )
@@ -1073,14 +1073,10 @@ def test_log_recovery_ci_status_logs_only_check_summary(monkeypatch, caplog):
 def test_exhausted_review_enters_new_budget_after_human_recovery(
     monkeypatch, tmp_path,
 ):
+    """Issue #483 on the scene budget (Issue #788): the human recovery
+    transition AFTER the recovered scene starts a fresh budget — the
+    round runs (the freeze proves it)."""
     from tests.test_resume_pr import FAKE_RUN_ID
-    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [
-        {"body": f"<!-- orbi:run=a1b2c3d4 -->\n"
-                 f"Orbi review round {i} for PR #46: findings",
-         "authorAssociation": "OWNER",
-         "createdAt": "2026-01-01T00:00:00Z"}
-        for i in range(1, 6)
-    ])
     monkeypatch.setattr(runner, "human_review_recovery_at",
                         lambda *a: "2026-02-01T00:00:00Z")
     frozen = {"number": 46, "url": PR_URL, "base_ref": "main",
@@ -1099,6 +1095,13 @@ def test_exhausted_review_enters_new_budget_after_human_recovery(
         runner.review_and_merge_if_clean(
             tmp_path, "branch", "main", config, "owner/repo", 39,
             title="task", priority="normal",
+            # Five completed rounds in the scene, but the recovery
+            # (2026-02-01) postdates the scene comment (2026-01-01).
+            scene={
+                "run_id": FAKE_RUN_ID, "base_branch": "main",
+                "base_sha": "abc", "pr_url": PR_URL, "external": "",
+                "review_round": 5, "scene_at": "2026-01-01T00:00:00Z",
+            },
         )
     assert freezes == [1]
 
@@ -1108,26 +1111,18 @@ def test_review_rounds_exhausted_raises_unrecoverable(monkeypatch, tmp_path):
     without a clean verdict is a human decision, not a recoverable
     failure: `review_and_merge_if_clean` raises
     UnrecoverableDeliveryError (the caller marks the Issue ai-blocked
-    with the reason)."""
+    with the reason). Issue #788: the budget is the scene's round
+    counter — exhausted BEFORE any freeze or review."""
     monkeypatch.setattr(runner, "human_review_recovery_at", lambda *a: None)
     from tests.test_resume_pr import FAKE_RUN_ID
 
-    monkeypatch.setattr(seam, "issue_comments",
-        lambda number, repo: [
-            {
-                "body": (
-                    f"<!-- orbi:run={FAKE_RUN_ID} -->\n"
-                    f"Orbi review round {i} for PR #46: findings"
-                ),
-                "authorAssociation": "OWNER",
-            }
-            for i in range(1, 6)
-        ],
-    )
-    monkeypatch.setattr(runner, "freeze_pr", lambda *a, **k: {
-        "number": 46, "url": PR_URL, "base_ref": "main",
-        "base_oid": "abc", "head_ref": "b", "head_oid": "def",
-    })
+    freezes = []
+    monkeypatch.setattr(runner, "freeze_pr",
+                        lambda *a, **k: freezes.append(1) or {
+                            "number": 46, "url": PR_URL, "base_ref": "main",
+                            "base_oid": "abc", "head_ref": "b",
+                            "head_oid": "def",
+                        })
     config = runner.RunnerConfig(run_id=FAKE_RUN_ID, base_branch="main", repo_dir=tmp_path)
     with pytest.raises(
         runner.UnrecoverableDeliveryError, match="exhausted",
@@ -1135,7 +1130,13 @@ def test_review_rounds_exhausted_raises_unrecoverable(monkeypatch, tmp_path):
         runner.review_and_merge_if_clean(
             tmp_path, "branch", "main", config, "owner/repo", 39,
             title="task", priority="normal",
+            scene={
+                "run_id": FAKE_RUN_ID, "base_branch": "main",
+                "base_sha": "abc", "pr_url": PR_URL, "external": "",
+                "review_round": 5, "scene_at": "2026-01-01T00:00:00Z",
+            },
         )
+    assert freezes == []
 
 
 # -------------------------------------------------------------------- prompt

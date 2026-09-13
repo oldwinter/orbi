@@ -498,6 +498,10 @@ def test_e2e_base_advances_and_review_fixes_the_same_pr_in_session(
         "base_sha": base_sha,
         "pr_url": PR_URL,
         "external": "",
+        # Issue #788: the scene carries the review-round counter (0 when
+        # the PR opens) and the scene comment's createdAt stamp.
+        "review_round": 0,
+        "scene_at": None,
     }
     assert runner.task_branch(REPO, ISSUE_NUMBER, run_id) == branch
     assert runner.worktree_path(
@@ -515,9 +519,10 @@ def test_e2e_base_advances_and_review_fixes_the_same_pr_in_session(
     merged = runner.review_and_merge_if_clean(
         worktree, branch, "main", review_config, REPO, ISSUE_NUMBER,
         title=issue()["title"],
-        # Issue #101: the wait loop derives the priority from the
-        # scanned issue's labels (no extra gh call).
+        # Issue #101: the step derives the priority from the scanned
+        # issue's labels (no extra gh call).
         priority=runner.issue_priority(issue()),
+        scene=scene,
     )
     assert merged is True
     assert pr["merged"] is True
@@ -686,7 +691,7 @@ def test_e2e_pr_opened_without_fix_needed_never_starts_a_fixer(
     # stubbed.
     waits = []
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *args, **kwargs: waits.append((args, kwargs)),
     )
     prompt = write_prompt(tmp_path)
@@ -807,9 +812,7 @@ def test_e2e_review_failure_keeps_pr_and_stays_fix_needed(
     # wait keeps the Issue in the automatic fix loop (ai-fix-needed).
     install_fake_pi(monkeypatch, tmp_path, FAKE_PI_REVIEW_FAILING)
     runner.set_run_id(run_id)
-    runner.wait_for_delivery(
-        result.url, issue(), config, REPO, poll_interval=0.01,
-    )
+    runner.delivery_step(result.url, issue(), config, REPO)
 
     # The Issue is marked ai-fix-needed (leaving the opened-PR state)
     # — never ai-blocked (Issue #50) ...
@@ -867,9 +870,7 @@ def test_e2e_pr_closed_while_fix_needed_removes_leftover_label(
     pr["state"] = "CLOSED"
 
     runner.set_run_id(run_id)
-    runner.wait_for_delivery(
-        result.url, issue(), config, REPO, poll_interval=0.01,
-    )
+    runner.delivery_step(result.url, issue(), config, REPO)
 
     # The Issue is marked ai-blocked; the blocked patch clears every
     # delivery-state label that is present — here only `ai-fix-needed`
@@ -926,7 +927,7 @@ def test_e2e_human_review_gate_posts_the_checklist_once_and_holds(
 
     # The delivery wait holds at the gate: one label read, the waiting
     # patch, no review session, the slot released.
-    runner.wait_for_delivery(result.url, issue(), config, REPO)
+    runner.delivery_step(result.url, issue(), config, REPO)
     assert set(labels) == {"ai-pr-opened", "ai-ready"}
     assert "ai-fix-needed" not in labels
     assert pr["merged"] is False
