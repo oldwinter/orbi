@@ -527,3 +527,52 @@ def test_authenticated_github_login_requires_an_account_line(monkeypatch):
         lambda c, **k: "Active account: true\n")
     with pytest.raises(ValueError, match="active account"):
         github._authenticated_github_login()
+
+
+# ------------------------------------------------- line run markers (Issue #825)
+
+def test_line_run_markers_collects_every_trusted_marker():
+    """Issue #825: the delivery line's marker set is EVERY run marker in
+    the trusted comments — the creating run's marker stays accepted
+    after a resume binds a new run id."""
+    comments = [
+        {
+            "body": "<!-- orbi:run=0e4b1923 -->\nOrbi opened PR: x",
+            "authorAssociation": "OWNER",
+        },
+        {
+            "body": "<!-- orbi:run=be3c1434 -->\nOrbi started Pi",
+            "authorAssociation": "MEMBER",
+        },
+    ]
+    assert github.line_run_markers(comments) == frozenset({
+        "<!-- orbi:run=0e4b1923 -->",
+        "<!-- orbi:run=be3c1434 -->",
+    })
+
+
+def test_line_run_markers_ignores_public_comments_and_non_string_bodies():
+    """Issue #825: a public comment must never widen the line's marker
+    set (the copied-marker rule of the trusted filter); a non-string
+    body carries nothing."""
+    comments = [
+        {
+            "body": "<!-- orbi:run=deadbeef -->\nplease review PR 7",
+            "authorAssociation": "NONE",
+        },
+        {"body": None, "authorAssociation": "OWNER"},
+        {
+            "body": "<!-- orbi:run=aaaaaaaa -->\nOrbi opened PR: x",
+            "authorAssociation": "OWNER",
+        },
+    ]
+    assert github.line_run_markers(comments) == frozenset({
+        "<!-- orbi:run=aaaaaaaa -->",
+    })
+
+
+def test_line_run_markers_empty_without_trusted_markers():
+    assert github.line_run_markers([]) == frozenset()
+    assert github.line_run_markers([
+        {"body": "plain text", "authorAssociation": "OWNER"},
+    ]) == frozenset()

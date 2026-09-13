@@ -721,6 +721,30 @@ def latest_run_marker(comments: list[dict]) -> str:
     return ""
 
 
+def line_run_markers(comments: list[dict]) -> frozenset[str]:
+    """Every rendered run marker in the Issue's trusted comments.
+
+    Issue #825: a delivery line may resume under a NEW run id, so the
+    line's identity is the SET of run ids its trusted comments carry —
+    the creating run's marker stays accepted after the rebind. The same
+    trust filter as the resume scene (`_comment_is_trusted`): a copied
+    marker in a public comment widens nothing. A pure scan over the
+    already-fetched comment list.
+    """
+    markers: set[str] = set()
+    for comment in comments:
+        if not _comment_is_trusted(comment):
+            continue
+        body = comment.get("body")
+        if not isinstance(body, str):
+            continue
+        markers.update(
+            run_marker(match.group(1))
+            for match in RUN_MARKER_PATTERN.finditer(body)
+        )
+    return frozenset(markers)
+
+
 def open_pr_for_branch(repo_dir: Path, branch: str) -> dict | None:
     """Return the sole open PR for a branch, or None when absent."""
     raw = run_gh_read_command([

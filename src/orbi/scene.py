@@ -84,6 +84,17 @@ def render(record: Scene) -> str:
     return SCENE_BLOCK_TEMPLATE.format(payload=payload)
 
 
+def carries_scene_block(body: object) -> bool:
+    """True when the body carries a v1 scene block.
+
+    The #825 dead-loop guard reads this as "the delivery line
+    advanced" (an opened PR, a completed review round): such a comment
+    ends a repeated-failure streak. The parser's own regex decides, so
+    a corrupted block still counts as present.
+    """
+    return isinstance(body, str) and bool(_SCENE_BLOCK_RE.search(body))
+
+
 def parse(body: object) -> Scene | None:
     """Parse the scene from one comment body.
 

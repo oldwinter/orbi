@@ -143,6 +143,23 @@ def run_marker(run_id: object) -> str:
     return RUN_MARKER_TEMPLATE.format(run_id=validate_run_id(run_id))
 
 
+# One hidden marker per FAILURE FINGERPRINT (Issue #825): rides under
+# the run marker on a recoverable failure comment and is the key the
+# comment-dedup and the dead-loop streak scan match on.
+FAILURE_MARKER_PATTERN = re.compile(r"<!-- orbi:fail=([0-9a-f]{16}) -->")
+FAILURE_MARKER_TEMPLATE = "<!-- orbi:fail={fingerprint} -->"
+
+
+def failure_marker(fingerprint: str) -> str:
+    """Return the hidden marker for one failure fingerprint."""
+    if not isinstance(fingerprint, str) or not re.fullmatch(
+            r"[0-9a-f]{16}", fingerprint):
+        raise ValueError(
+            f"invalid failure fingerprint: {fingerprint!r}"
+        )
+    return FAILURE_MARKER_TEMPLATE.format(fingerprint=fingerprint)
+
+
 def find_run_comment(comments: list[dict], run_id: str) -> dict | None:
     """Return the first comment carrying this run's marker, or None."""
     marker = run_marker(run_id)

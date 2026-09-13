@@ -12,10 +12,12 @@ comment states the explicit reason why automatic recovery is impossible.
 """
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 import orbi.runner as runner
+import orbi.runner_health as runner_health
 from orbi import scene
 from seam import seam
 import orbi.journal as journal
@@ -1154,3 +1156,258 @@ def test_prompt_review_covers_unpushed_local_commit():
     assert "local head" in text
     assert "ahead of the frozen" in text
     assert "push" in text
+
+
+# --------------------------------- dead-loop cap + comment dedup (Issue #825)
+
+def _failure_exc():
+    return RuntimeError("the resume verification of PR x failed: boom")
+
+
+def _failure_history(count, fp, *, run_id=RUN_ID, marker=None):
+    """`count` identical trusted failure comments (run marker + hidden
+    fingerprint marker) — the repeated-dead-end history."""
+    marker = marker or f"<!-- orbi:run={run_id} -->"
+    return [
+        {
+            "body": (
+                f"{marker}\n<!-- orbi:fail={fp} -->\n"
+                "Orbi needs a fix: the resume verification failed: boom"
+            ),
+            "authorAssociation": "OWNER",
+        }
+        for _ in range(count)
+    ]
+
+
+def make_report_fake(monkeypatch, *, history=None, labels=("ai-fix-needed",),
+                     failing_history_read=False):
+    """Shared fake for the direct `report_delivery_failure` tests
+    (Issue #825): the comment-history read answers `history`, the label
+    read `labels`; failure comments and label edits are captured."""
+    history = [] if history is None else history
+    captured = {"comments": [], "pr_comments": [], "edits": []}
+
+    def fake_run(command, **kwargs):
+        # Single-element dispatch — no argv-shape asserts (Issue #789).
+        if command[0] == "gh" and command[1] == "api":
+            # The progress publisher (pure bypass): GET answers no
+            # tracked comment, POST/PATCH answer success shapes.
+            if "--method" not in command:
+                return json.dumps([])
+            return json.dumps({"id": 91, "body": "x", "url": "u"})
+        if command[-1] == "comments":
+            if failing_history_read:
+                raise RuntimeError("history read unavailable")
+            return json.dumps({"comments": history})
+        if command[-1] == "labels":
+            return json.dumps({"labels": [{"name": name}
+                                          for name in labels]})
+        raise AssertionError(command)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda number, *, repo, body:
+            captured["comments"].append(body))
+    monkeypatch.setattr(seam, "comment_pr",
+        lambda number, *, repo, body:
+            captured["pr_comments"].append(body))
+    monkeypatch.setattr(seam, "edit_issue",
+        lambda number, *, repo, add=None, remove=None:
+            captured["edits"].append((add, remove)))
+    return captured
+
+
+def _report(exc, monkeypatch_unused=None, **kwargs):
+    """One classified recoverable report of the resume-verify failure."""
+    runner.report_delivery_failure(
+        exc, issue={"number": 39, "title": "task", "body": ""},
+        source_repo="owner/repo", run_id=RUN_ID, pr_url=PR_URL,
+        worktree=Path("/nonexistent"), branch=BRANCH,
+        role=runner.ROLE_REVIEW,
+        cause=f"the resume verification of PR {PR_URL} failed: {exc}",
+        **kwargs,
+    )
+
+
+def test_report_failure_comment_carries_the_fingerprint_marker(
+        monkeypatch, tmp_path):
+    """Issue #825 (defect 3): every recoverable failure comment carries
+    the hidden `orbi:fail` fingerprint marker — the key the dedup and
+    the dead-loop streak scan match on."""
+    captured = make_report_fake(monkeypatch)
+    exc = _failure_exc()
+    _report(exc)
+    fp = runner_health.failure_fingerprint(exc)
+    assert captured["comments"], "the first failure is reported"
+    assert captured["comments"][0].startswith(
+        f"{MARKER}\n<!-- orbi:fail={fp} -->\n"
+    )
+    # Recoverable: the PR thread carries the same failure once.
+    assert len(captured["pr_comments"]) == 1
+
+
+def test_report_failure_dedupes_the_identical_failure_comment(
+        monkeypatch, tmp_path, caplog):
+    """Issue #825 (defect 3): a repeated identical failure of the same
+    run (same fingerprint) writes the journal only — no second Issue
+    comment, no second PR comment. 82 identical comments became one."""
+    exc = _failure_exc()
+    fp = runner_health.failure_fingerprint(exc)
+    captured = make_report_fake(
+        monkeypatch, history=_failure_history(1, fp),
+    )
+    caplog.set_level("INFO")
+    _report(exc)
+    assert captured["comments"] == []
+    assert captured["pr_comments"] == []
+    assert "failure_comment_deduplicated" in caplog.text
+
+
+def test_report_failure_third_identical_failure_blocks_the_dead_loop(
+        monkeypatch, tmp_path, caplog):
+    """Issue #825 (defect 2): the same failure of the same run
+    recurring to the limit is a dead loop, not a transient error — the
+    third consecutive occurrence escalates to `ai-blocked` ALONE with
+    the explicit count and the unchanged-precondition verdict."""
+    exc = _failure_exc()
+    fp = runner_health.failure_fingerprint(exc)
+    captured = make_report_fake(
+        monkeypatch, history=_failure_history(2, fp),
+    )
+    caplog.set_level("INFO")
+    _report(exc)
+    assert captured["edits"] == [("ai-blocked", "ai-fix-needed")]
+    assert len(captured["comments"]) == 1
+    body = captured["comments"][0]
+    assert "3 consecutive times" in body
+    assert "dead loop" in body
+    assert "Orbi failed:" in body
+    # Terminal: Issue only — the PR thread gets no comment.
+    assert captured["pr_comments"] == []
+    assert "failure_streak_escalated" in caplog.text
+
+
+def test_report_failure_scene_block_breaks_the_streak(
+        monkeypatch, tmp_path):
+    """Issue #825 (defect 2): a scene block (an opened PR, a completed
+    review round) means the delivery line ADVANCED — it ends the
+    identical-failure streak, so a following identical failure stays in
+    the recoverable fix loop (the round budget is the bound there),
+    never escalated on stale history. The dedup is independent of the
+    streak: the comment exists once, repeats journal only."""
+    exc = _failure_exc()
+    fp = runner_health.failure_fingerprint(exc)
+    history = [
+        {
+            "body": (
+                f"{MARKER}\nOrbi review round 1 for PR #46\n"
+                '<!-- orbi:scene:v1 {"base_branch": "main", "schema": 1, '
+                '"run_id": "%s", "review_round": 1} -->' % RUN_ID
+            ),
+            "authorAssociation": "OWNER",
+        },
+        *_failure_history(1, fp),
+    ]
+    captured = make_report_fake(monkeypatch, history=history)
+    _report(exc)
+    # The streak reset: still recoverable (no escalation) ...
+    assert captured["edits"] == [("ai-fix-needed", None)]
+    # ... and the dedup holds: the identical failure was already
+    # reported, the journal is the only new record.
+    assert captured["comments"] == []
+    assert captured["pr_comments"] == []
+
+
+def test_report_failure_different_fingerprint_breaks_the_streak(
+        monkeypatch, tmp_path):
+    """Issue #825 (defect 2): a different failure of the same run is a
+    NEW dead-end candidate — it neither continues the old streak nor is
+    deduped against it."""
+    exc = _failure_exc()
+    other = {
+        "body": (
+            f"{MARKER}\n<!-- orbi:fail={'0' * 16} -->\n"
+            "Orbi needs a fix: something else"
+        ),
+        "authorAssociation": "OWNER",
+    }
+    captured = make_report_fake(monkeypatch, history=[other])
+    _report(exc)
+    assert len(captured["comments"]) == 1
+    assert "Orbi needs a fix:" in captured["comments"][0]
+
+
+def test_report_failure_history_read_failure_degrades_fail_open(
+        monkeypatch, tmp_path, caplog):
+    """Issue #825: a failed history read must never break the failure
+    report itself — the report degrades to the plain recoverable path
+    (one comment, fix-needed) and the read failure is journaled."""
+    captured = make_report_fake(
+        monkeypatch, failing_history_read=True,
+    )
+    caplog.set_level("INFO")
+    _report(_failure_exc())
+    assert len(captured["comments"]) == 1
+    assert "Orbi needs a fix:" in captured["comments"][0]
+    assert "failure_history_read_failed" in caplog.text
+
+
+def test_report_failure_without_run_id_keeps_the_plain_path(
+        monkeypatch, tmp_path):
+    """Issue #825: without a bound run id there is nothing to
+    correlate — no fingerprint marker, no dedup, no streak; the report
+    still goes out once."""
+    captured = make_report_fake(monkeypatch)
+    runner.report_delivery_failure(
+        _failure_exc(), issue={"number": 39, "title": "task", "body": ""},
+        source_repo="owner/repo", run_id=None, pr_url=PR_URL,
+        worktree=Path("/nonexistent"), branch=BRANCH,
+        role=runner.ROLE_REVIEW,
+        cause="the resume verification of PR x failed: boom",
+    )
+    assert len(captured["comments"]) == 1
+    assert "orbi:fail=" not in captured["comments"][0]
+
+
+def test_streak_and_dedup_scans_skip_non_failure_noise(
+        monkeypatch, tmp_path):
+    """Issue #825: the pure scans read TRUSTED comments only — a public
+    comment (even one carrying a copied fail marker) neither extends
+    nor breaks the streak and never satisfies the dedup; a non-string
+    body is skipped alike. Publisher milestones in between change no
+    premise, so the streak survives them."""
+    exc = _failure_exc()
+    fp = runner_health.failure_fingerprint(exc)
+    failure_body = (
+        f"{MARKER}\n<!-- orbi:fail={fp} -->\n"
+        "Orbi needs a fix: the resume verification failed: boom"
+    )
+    history = [
+        {"body": failure_body, "authorAssociation": "OWNER"},
+        # A public comment with a copied marker: skipped, not a break.
+        {"body": failure_body, "authorAssociation": "NONE"},
+        # A non-string body: skipped alike.
+        {"body": None, "authorAssociation": "OWNER"},
+        # A publisher milestone: no premise change, the streak survives.
+        {"body": f"{MARKER}\n**Orbi progress**\n\nfix needed",
+         "authorAssociation": "OWNER"},
+    ]
+    assert runner._failure_streak(history, RUN_ID, fp) == 1
+    assert runner._failure_reported_before(history, RUN_ID, fp) is True
+    # The public copy alone never satisfies the dedup.
+    public_only = [
+        {"body": failure_body, "authorAssociation": "NONE"},
+    ]
+    assert runner._failure_reported_before(
+        public_only, RUN_ID, fp,
+    ) is False
+    assert runner._failure_streak(public_only, RUN_ID, fp) == 0
+
+
+def test_report_fake_rejects_unexpected_commands(monkeypatch):
+    """Every branch of the report fake is exercised (the repo's
+    fake-coverage convention): an unrecognized command fails fast."""
+    make_report_fake(monkeypatch)
+    with pytest.raises(AssertionError):
+        seam.run_command(["git", "status"])

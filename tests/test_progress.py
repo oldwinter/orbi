@@ -902,3 +902,14 @@ def test_progress_state_survives_an_activity_snapshot_failure(monkeypatch, tmp_p
     assert state["phase"] == "starting"
     assert state["last_activity"] is None
     assert state["session"] is None
+
+
+def test_failure_marker_renders_and_validates_the_fingerprint():
+    """Issue #825: the hidden failure-fingerprint marker renders from a
+    16-hex fingerprint and rejects anything else."""
+    marker = progress.failure_marker("01e1f4a35a2fe1e5")
+    assert marker == "<!-- orbi:fail=01e1f4a35a2fe1e5 -->"
+    with pytest.raises(ValueError, match="invalid failure fingerprint"):
+        progress.failure_marker("nothex")
+    with pytest.raises(ValueError, match="invalid failure fingerprint"):
+        progress.failure_marker("0" * 17)
