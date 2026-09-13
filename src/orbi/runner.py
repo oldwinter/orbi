@@ -6,7 +6,7 @@ Pi in an isolated worktree, and accepts success only when one open PR exists.
 After the implementer opens the PR, the Runner closes the loop itself: it
 freezes the exact PR base/head SHA, runs one independent review session that
 reviews the diff AND fixes Blocker/Major findings in the same session
-(modify code, run tests, push the task branch — Issue #82: no cold-start
+(modify code, run tests, push the task branch — no cold-start
 fixer, no third review), re-freezes the head after a clean verdict,
 re-checks the merge gate against the latest remote base, and merges via
 `gh pr merge --match-head-commit`. Pi never pushes the protected branch;
@@ -14,7 +14,7 @@ the Runner is the only merge actor. Any command failure is logged and
 raised. There is no fallback, queue, daemon, or multi-agent framework.
 
 Throughout the whole lifecycle the Runner publishes live progress
-automatically (Issue #18): one per-run GitHub progress comment carrying a
+automatically: one per-run GitHub progress comment carrying a
 hidden run marker is PATCHed in place on every activity change and at most
 every 30 seconds while any Pi session (implementer or reviewer) runs, and
 short milestone comments (plan ready, tests passed/failed, review findings,
@@ -48,11 +48,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-# NOTE (Issue #158, root-caused by Issue #168): the editable finder maps
+# NOTE: the editable finder maps
 # the WHOLE package directory `src/orbi/`, so a newly added package
 # module is importable WITHOUT any reinstall — the #158 incident class
-# is fixed at the root. `refresh_cli_install` lives in `orbi.cli_source`
-# since Issue #785; `runner` imports it like any caller and the
+# is fixed at the root. `refresh_cli_install` lives in `orbi.cli_source`; `runner` imports it like any caller and the
 # preflight stubs keep patching the module global below.
 from orbi import engine_source
 from orbi.engine_source import EngineSourceError
@@ -150,7 +149,7 @@ from orbi.pi_process import (
     stream_pi,
 )
 
-# Issue #785: the shared primitives live in the leaf modules now — the
+# The shared primitives live in the leaf modules now — the
 # journal kernel (logger, run binding, subprocess seam), the GitHub
 # data-access layer, the git operations layer, and the CLI-install domain.
 # `runner` consumes them like any other caller; only `cli` and
@@ -240,12 +239,12 @@ from orbi.release import (
 VERDICT_MARKER = "REVIEW_VERDICT"
 MAX_REVIEW_ROUNDS = 5
 
-# Automatic observability (Issue #18): the GitHub progress comment is
+# Automatic observability: the GitHub progress comment is
 # PATCHed on every activity change and at most every 30 seconds while a
 # Pi session runs, so a mobile user sees live progress without any
 # command. The journal cadence is the poll interval above.
 PI_HEARTBEAT_SECONDS = 30.0
-# Stop-handler grace (Issue #48): when the Runner is stopped with SIGTERM
+# Stop-handler grace: when the Runner is stopped with SIGTERM
 # while a Pi delivery is in flight, the handler must not wait forever for
 # the Pi child to exit. systemd gives `TimeoutStopSec` (default 90s) before
 # it SIGKILLs the whole cgroup, so an unbounded `child.wait()` on a child
@@ -255,13 +254,13 @@ PI_HEARTBEAT_SECONDS = 30.0
 # own deadline — a clean signal stop, never `failed`/`timeout`.
 STOP_CHILD_GRACE_SECONDS = 15.0
 
-# Non-implement Pi session roles (Issue #41/#82). `ROLE_IMPLEMENT` is the
+# Non-implement Pi session roles. `ROLE_IMPLEMENT` is the
 # default role of a delivery Pi session and lives in `orbi.pi_process`.
 ROLE_REVIEW = "review"
 ROLE_TICKET = "ticket"
 
 
-# Issue #745: {{ISSUE_COMMENTS}} injects the Issue's trusted-comment
+# {{ISSUE_COMMENTS}} injects the Issue's trusted-comment
 # timeline into the implementer/review prompt. This cap bounds how many
 # trusted comments a long-discussed Issue may contribute to the task
 # context; the NEWEST are kept (the latest decision lives there) and a
@@ -269,7 +268,7 @@ ROLE_TICKET = "ticket"
 # the truncation is never silent.
 ISSUE_COMMENTS_LIMIT = 20
 
-# Task-worktree reclamation (Issue #760): the tick-start pass removes at
+# Task-worktree reclamation: the tick-start pass removes at
 # most this many worktrees per tick (oldest-closed first), so a large
 # backlog drains over ticks and one tick never spends unbounded time on
 # `rm -rf`.
@@ -301,7 +300,7 @@ class RecoverableMergeGateError(RuntimeError):
 
 class UnrecoverableDeliveryError(RuntimeError):
     """A delivery failure that is an EXTERNAL precondition the AI cannot
-    safely judge or fix (Issue #50).
+    safely judge or fix.
 
     `ai-blocked` is not the result of "one run failed": it is the
     terminal state the Runner reaches only after reading the full task
@@ -343,7 +342,7 @@ class ReviewRoundsExhausted(UnrecoverableDeliveryError):
 
 
 class ResumePrClosedError(UnrecoverableDeliveryError):
-    """The resumed delivery's scene PR is no longer open (Issue #494).
+    """The resumed delivery's scene PR is no longer open.
 
     Carries the scene PR's GitHub state (`CLOSED` or `MERGED`) so the
     resume handler routes the ALREADY-DECIDED fact — a merged PR
@@ -360,7 +359,7 @@ class ResumePrClosedError(UnrecoverableDeliveryError):
 
 
 def is_unrecoverable_failure(exc: BaseException) -> bool:
-    """Issue #50: classify one delivery failure.
+    """Classify one delivery failure.
 
     True for an explicit `UnrecoverableDeliveryError` (an external
     precondition the AI cannot safely judge or fix) and for the #698
@@ -381,13 +380,13 @@ def is_unrecoverable_failure(exc: BaseException) -> bool:
     )
 
 
-# Issue #266: the health check's journal lines carry the same `[run_id]`
+# The health check's journal lines carry the same `[run_id]`
 # prefix as every other Runner line (the RunIdFilter is attached per
 # logger; the health module must not import this one — circular).
 
 
 def _stop_delivery(signum: int) -> None:
-    """Log the stop scene, shut down the live Pi child, exit (Issue #48).
+    """Log the stop scene, shut down the live Pi child, exit.
 
     Runs from the SIGTERM handler. With no run in flight the stop is
     idle: one `run_stopped result=idle` line, no invented Issue fields.
@@ -430,10 +429,9 @@ def _shutdown_child(child: subprocess.Popen | None,
                    grace: float = STOP_CHILD_GRACE_SECONDS) -> None:
     """Terminate and reap a live child without blocking past `grace`.
 
-    Issue #48 root cause: the stop handler previously called
-    ``child.wait()`` with no timeout. A Pi child stuck in a model/network
-    call that does not exit on SIGTERM left the handler blocked; systemd
-    then SIGKILLed the whole unit after ``TimeoutStopSec`` and recorded
+    A plain ``child.wait()`` with no timeout lets a Pi child stuck in a
+    model/network call block the stop handler; systemd then SIGKILLs the
+    whole unit after ``TimeoutStopSec`` and records
     ``Result=timeout``/failed. This TERMs the child, waits at most
     ``grace`` seconds, then KILLs and reaps it, so the Runner always
     exits with the ORIGINAL signal (128+signum) before systemd's own
@@ -450,7 +448,7 @@ def _shutdown_child(child: subprocess.Popen | None,
 
 
 def _die_from_signal(signum: int) -> None:
-    """Exit the process from the ORIGINAL signal (Issue #48).
+    """Exit the process from the ORIGINAL signal.
 
     `os._exit` never returns in production; the two lines after it
     exist so a handler crash can never swallow the stop: restore the
@@ -464,7 +462,7 @@ def _die_from_signal(signum: int) -> None:
 
 
 def _handle_stop(signum: int, frame: object) -> None:
-    """SIGTERM handler: log the active Issue context, then exit (Issue #48)."""
+    """SIGTERM handler: log the active Issue context, then exit."""
     _stop_delivery(signum)
 
 
@@ -484,7 +482,7 @@ def _prompt_config_path(value: str, base: Path, legacy_name: str) -> Path:
 
 
 def _load_deploy_env_file(deploy_home: Path) -> None:
-    """Merge `<deploy_home>/.orbi/env` into the process environment (Issue #348).
+    """Merge `<deploy_home>/.orbi/env` into the process environment.
 
     The documented env-file-first flow (getting-started step 4) writes the
     provider key to this gitignored file, and the installed unit loads it
@@ -526,7 +524,7 @@ def _load_deploy_env_file(deploy_home: Path) -> None:
 
 @dataclass(frozen=True)
 class RunnerConfig:
-    """The typed host configuration (Issue #790).
+    """The typed host configuration.
 
     :func:`load_config` is the ONLY constructor from raw TOML; derived
     instances (the per-run values and the repository-policy overlay) are
@@ -542,7 +540,7 @@ class RunnerConfig:
     # is the unbound placeholder (never read before the binding).
     run_id: str = ""
     base_sha: str = ""
-    # Repository-policy overlay (Issue #527): written only by
+    # Repository-policy overlay: written only by
     # `repo_config.resolve_policy` — `test_command` and `dispatch_label`
     # are repository-declared keys with no host equivalent.
     test_command: str | None = None
@@ -588,7 +586,7 @@ class RunnerConfig:
     pi_providers: Path | None = None
     pi_providers_data: dict | None = None
     pi_provider_key_finding: dict | None = None
-    # Multi-repo registry (Issue #134): the explicit per-repo entries
+    # Multi-repo registry: the explicit per-repo entries
     # (name, path, github, base_branch). Empty -> the single-repo config.
     repositories: tuple[dict, ...] = ()
 
@@ -615,7 +613,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     base_branch = data.get("base_branch", "main")
     if not isinstance(base_branch, str) or not base_branch:
         raise ValueError("base_branch must be a non-empty string")
-    # Delivery transport (Issue #580): how the checkout's git data
+    # Delivery transport: how the checkout's git data
     # operations (fetch/push) authenticate. Absent -> "ssh" (the exact
     # pre-#580 contract); "https" keeps the origin on the HTTPS URL and
     # authenticates via the gh credential helper (the token-only
@@ -623,7 +621,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     git_transport = data.get("git_transport", "ssh")
     if git_transport not in ("ssh", "https"):
         raise ValueError("git_transport must be 'ssh' or 'https'")
-    # Claim scope (Issue #139): the active Milestone is an EXPLICIT
+    # Claim scope: the active Milestone is an EXPLICIT
     # version scope for the fresh-claim scans — it is never guessed
     # from the repo's Milestone list. Absent (None) keeps the current
     # behavior exactly (compat); present it must be a non-empty
@@ -637,7 +635,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     auto_next_milestone = data.get("auto_next_milestone", True)
     if not isinstance(auto_next_milestone, bool):
         raise ValueError("auto_next_milestone must be a boolean")
-    # Startup source freshness (Issue #525): the Runner refuses to claim
+    # Startup source freshness: the Runner refuses to claim
     # when the code it executes is not the origin/main head.
     # This flag is the EXPLICIT degraded mode for offline/restricted-
     # network deployments — it only downgrades the gate to a warning,
@@ -645,7 +643,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     allow_stale_runner = data.get("allow_stale_runner", False)
     if not isinstance(allow_stale_runner, bool):
         raise ValueError("allow_stale_runner must be a boolean")
-    # Human acceptance gate (Issue #763): when true, every delivery's
+    # Human acceptance gate: when true, every delivery's
     # PR carries an acceptance checklist on the Issue and the review
     # round waits for the human-only `ai-human-review` label while the
     # checklist's column 2 (the machine-unverifiable minimum) is
@@ -656,7 +654,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     human_review_gate = data.get("human_review_gate", False)
     if not isinstance(human_review_gate, bool):
         raise ValueError("human_review_gate must be a boolean")
-    # Engine source update channel (Issue #535): what the deploy home
+    # Engine source update channel: what the deploy home
     # checkout follows at the next start — origin/main by default (the
     # exact pre-#535 dogfood behavior), a branch, the newest official
     # release tag, one exact tag or one exact commit. Host/deploy-only:
@@ -665,7 +663,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     engine_source_track = engine_source.normalize_engine_source_track(
         data.get("engine_source_track"),
     )
-    # Concurrency cap (Issue #39): the local machine can only serve a
+    # Concurrency cap: the local machine can only serve a
     # limited number of concurrent tasks, so the default is 1. Any other
     # value must be a positive integer; fail fast on anything else.
     max_concurrency = data.get("max_concurrency", 1)
@@ -678,50 +676,50 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
             "max_concurrency must be a positive integer with a matching "
             f"Runner timer instance (1..{len(TIMER_INSTANCES)})"
         )
-    # Optional Pi model selection (Issue #119): each key is absent -> None
+    # Optional Pi model selection: each key is absent -> None
     # (the Pi flag is not passed, Pi keeps its own default) or a non-empty
     # string passed to Pi verbatim. Anything else fails fast.
     pi_provider = _optional_pi_string(data, "pi_provider")
     pi_model = _optional_pi_string(data, "pi_model")
     pi_thinking = _optional_pi_string(data, "pi_thinking")
     pi_extensions = _load_pi_extensions(data.get("pi_extensions"), base)
-    # Hung-model-request threshold (Issue #228): the model_wait dead
+    # Hung-model-request threshold: the model_wait dead
     # silence is configurable; omitted -> PI_MODEL_WAIT_DEAD_SECONDS
     # (default 1800 s, 30 minutes). It measures silence between
     # complete session events, never token-level model progress.
     model_wait_dead_seconds = _model_wait_dead_seconds(data)
-    # Trusted-comment injection cap (Issue #745): how many of the
+    # Trusted-comment injection cap: how many of the
     # Issue's trusted comments enter the agent's task context.
     issue_comments_limit = _issue_comments_limit(data)
-    # Task-worktree reclamation (Issue #760): how long a closed Issue's
+    # Task-worktree reclamation: how long a closed Issue's
     # worktree stays inspectable before the tick start removes it.
     worktree_retain_hours = _worktree_retain_hours(data)
-    # Swallowed-model-request probe (Issue #233): the /slots endpoint
+    # Swallowed-model-request probe: the /slots endpoint
     # (optional) and its sustained-idle grace (default 60 s). Absent URL
     # -> the probe is disabled (the exact pre-#233 behavior: the run is
     # bounded by model_wait_dead_seconds only).
     model_wait_probe_url = _model_wait_probe_url(data)
     model_wait_probe_seconds = _model_wait_probe_seconds(data)
-    # Release CI wait (Issue #268): the release gate's in-tick upper
+    # Release CI wait: the release gate's in-tick upper
     # bound for pending checks on the release commit. The DELIVERY path
-    # has no CI wait anymore (Issue #788): a pending check defers the
+    # has no CI wait anymore: a pending check defers the
     # delivery to the next tick, so this bound is the release state
     # machine's pure cap, never a delivery-wait mechanism.
     release_ci_wait_seconds = _release_ci_wait_seconds(data)
     release_deliveries_wait_seconds = _release_deliveries_wait_seconds(data)
-    # Runner-self health alert routing (Issue #345): the orbi repo that
+    # Runner-self health alert routing: the orbi repo that
     # receives the watchdog's crash_loop / stale_pickup Issues. Absent ->
     # None (the Runner derives the orbi repo from the deploy home's git
     # origin); present -> must be a non-empty `owner/repo` string, used
     # verbatim for fork/private deployments.
     health_alert_repo = _optional_pi_string(data, "health_alert_repo")
-    # Optional Pi provider file (Issue #157): the provider metadata
+    # Optional Pi provider file: the provider metadata
     # (baseUrl / api / apiKey / models) lives in a separate JSON file in
     # Pi's own `models.json` shape; `orbi.toml` only selects the
     # provider/model/thinking used at runtime. Absent key -> None (Pi
     # keeps using its own agent dir, the exact pre-#157 behavior).
     repo_dir = _config_path(data.get("repo_dir", "."), base)
-    # Deployment home (Issue #330): the orbi source checkout — the editable
+    # Deployment home: the orbi source checkout — the editable
     # CLI install source, the systemd/ unit templates, labels.toml and the
     # prompt defaults. Absent -> repo_dir (the orbi-bootstrap deployment,
     # home == delivery checkout, keeps its exact behavior). Present -> must
@@ -738,13 +736,13 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
         if deploy_home_raw is not None
         else repo_dir
     )
-    # The deploy-home env file (Issue #348): step 4 of getting-started
+    # The deploy-home env file: step 4 of getting-started
     # writes the provider key to `<deploy_home>/.orbi/env` and the
     # installed unit loads it via `EnvironmentFile` at service start —
     # the CLI process does not. Load it here so `orbi setup` (and every
     # other CLI entry) validates the key exactly like the unit would.
     _load_deploy_env_file(deploy_home)
-    # Optional Pi provider file (Issue #157): the provider metadata
+    # Optional Pi provider file: the provider metadata
     # (baseUrl / api / apiKey / models) lives in a separate JSON file in
     # Pi's own `models.json` shape; `orbi.toml` only selects the
     # provider/model/thinking used at runtime. Absent key -> None (Pi
@@ -784,7 +782,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
         unit_name=unit_name,
         health_alert_repo=health_alert_repo,
         workspace_root=_config_path(data.get("workspace_root", ".."), base),
-        # Issue #330: when deploy_home is EXPLICIT the prompt defaults
+        # When deploy_home is EXPLICIT the prompt defaults
         # live in the deployment home (the delivery checkout may be a
         # foreign repo without them); an explicit prompt path still
         # resolves against the config file dir. deploy_home absent ->
@@ -830,7 +828,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
         pi_provider_key_finding=getattr(
             _load_pi_providers, "last_key_finding", None,
         ),
-        # Multi-repo registry (Issue #134): the explicit per-repo entries
+        # Multi-repo registry: the explicit per-repo entries
         # (name, path, github, base_branch). Absent section -> () so the
         # single-repo config keeps its exact shape and flow.
         repositories=tuple(
@@ -840,7 +838,7 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
 
 
 def _optional_pi_string(data: dict, key: str) -> str | None:
-    """Read one optional Pi model key (Issue #119).
+    """Read one optional Pi model key.
 
     Absent -> None (the corresponding `pi --provider/--model/--thinking`
     flag is not passed and Pi keeps its own default). Present -> must be a
@@ -941,7 +939,7 @@ def _pi_extension_env(config: RunnerConfig) -> dict[str, str]:
 
 def _model_wait_probe_url(data: dict) -> str | None:
     """Load and validate the optional `model_wait_probe_url`
-    (Issue #233).
+.
 
     Omitted -> None (the /slots probe is disabled: the run is bounded by
     `model_wait_dead_seconds` only, the exact pre-#233 behavior). Present
@@ -967,7 +965,7 @@ def _model_wait_probe_url(data: dict) -> str | None:
 
 def _model_wait_probe_seconds(data: dict) -> float:
     """Load and validate the optional `model_wait_probe_seconds`
-    (Issue #233).
+.
 
     Omitted -> `PI_MODEL_WAIT_PROBE_SECONDS` (default 60 s). Present ->
     must be a finite positive number (int or float); booleans, zero,
@@ -1008,7 +1006,7 @@ def _model_wait_probe_seconds(data: dict) -> float:
 
 def _release_ci_wait_seconds(data: dict) -> float:
     """Load and validate the optional `release_ci_wait_seconds`
-    (Issue #268).
+.
 
     Omitted -> `RELEASE_CI_WAIT_SECONDS` (default 1800 s). Present ->
     must be a finite positive number (int or float); booleans, zero,
@@ -1046,7 +1044,7 @@ def _release_ci_wait_seconds(data: dict) -> float:
 
 
 def _release_deliveries_wait_seconds(data: dict) -> float:
-    """Load the Issue #381 release delivery wait limit."""
+    """Load the release delivery wait limit."""
     value = data.get(
         "release_deliveries_wait_seconds", RELEASE_DELIVERIES_WAIT_SECONDS,
     )
@@ -1066,7 +1064,7 @@ def _release_deliveries_wait_seconds(data: dict) -> float:
 
 def _model_wait_dead_seconds(data: dict) -> float:
     """Load and validate the optional `model_wait_dead_seconds`
-    (Issue #228).
+.
 
     Omitted -> `PI_MODEL_WAIT_DEAD_SECONDS` (default 1800 s, 30
     minutes). Present -> must be a finite positive number (int or
@@ -1176,7 +1174,7 @@ def _issue_comments_limit(data: dict) -> int:
 def _load_pi_providers(path: Path, pi_provider: str | None,
                        pi_model: str | None, env_file: Path, *,
                        check_api_key: bool = True) -> dict:
-    """Load and validate the Pi provider file (Issue #157).
+    """Load and validate the Pi provider file.
 
     The file uses Pi's own `models.json` shape (`{"providers": {id:
     {baseUrl, api, apiKey, models: [...]}}}`) — verified against the
@@ -1302,7 +1300,7 @@ def _pi_provider_api_key_finding(path: Path, provider_id: str,
 
 
 def _expand_pi_api_key_refs(api_key: str) -> str:
-    """Resolve `$VAR` / `${VAR}` references in an `apiKey` (Issue #303).
+    """Resolve `$VAR` / `${VAR}` references in an `apiKey`.
 
     Same reference syntax `_pi_provider_api_key_finding` validates (Pi's
     `docs/models.md`): every reference whose environment variable is
@@ -1321,7 +1319,7 @@ def _expand_pi_api_key_refs(api_key: str) -> str:
 
 
 def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
-    """Materialize the per-run Pi agent dir (Issue #157).
+    """Materialize the per-run Pi agent dir.
 
     Returns None when no provider file is configured — the Pi command
     and environment keep their exact pre-#157 shape (Pi uses its own
@@ -1337,7 +1335,7 @@ def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
       files when they exist, so Pi's other behavior (settings, stored
       auth) is unchanged apart from the provider catalog.
 
-    The per-run `settings.json` is a REAL file (Issue #172), consistent
+    The per-run `settings.json` is a REAL file, consistent
     with the per-run catalog:
 
     - base: the user agent dir's settings when it exists (the user's
@@ -1365,7 +1363,7 @@ def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
     still valid.
 
     `apiKey` env-var references (`$VAR` / `${VAR}`) are resolved into
-    the per-run copy (Issue #303): config load already required the
+    the per-run copy: config load already required the
     SELECTED provider's references to resolve, so the materialized
     catalog carries a usable real credential — without it Pi would
     hold the literal `$VAR` string and the request could never
@@ -1398,7 +1396,7 @@ def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
             user_providers = {}
         merged_providers.update(user_providers)
     merged_providers.update(providers_data["providers"])
-    # Issue #303: the per-run copy carries the resolved `apiKey` values
+    # The per-run copy carries the resolved `apiKey` values
     # (entries with a string key are copied, so the loaded config data
     # keeps its literal references).
     resolved_providers: dict = {}
@@ -1411,7 +1409,7 @@ def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
         json.dumps({"providers": resolved_providers}, indent=2),
         encoding="utf-8",
     )
-    # Per-run settings.json (Issue #172): a real file consistent with
+    # Per-run settings.json: a real file consistent with
     # the merged catalog above, never a symlink to the user's global
     # settings (whose defaults/enabledModels may reference models this
     # run's catalog cannot resolve). Idempotent for a resumed run in
@@ -1468,7 +1466,7 @@ def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
 
 
 def _resolve_enabled_models(patterns: list, providers: dict) -> list:
-    """Filter `enabledModels` patterns to the merged catalog (Issue #172).
+    """Filter `enabledModels` patterns to the merged catalog.
 
     Mirrors Pi's exact reference match (`model-resolver.js`
     `findExactModelReferenceMatch`, verified against Pi 0.84.3): the
@@ -1505,7 +1503,7 @@ def _resolve_enabled_models(patterns: list, providers: dict) -> list:
 
 
 def _pi_model_args(config: RunnerConfig) -> list[str]:
-    """Return the configured Pi model flags (Issue #119).
+    """Return the configured Pi model flags.
 
     One `--flag value` pair per configured key, in the fixed order
     provider, model, thinking; an unset key contributes nothing, so a
@@ -1527,7 +1525,7 @@ def _pi_model_args(config: RunnerConfig) -> list[str]:
 
 
 def parse_repositories(entries: object, base: Path) -> list[dict]:
-    """Parse the explicit multi-repo registry (Issue #134).
+    """Parse the explicit multi-repo registry.
 
     Each entry is a TOML table with the required string fields `name`,
     `path`, `github` and `base_branch`; `path` is resolved relative to
@@ -1554,7 +1552,7 @@ def parse_repositories(entries: object, base: Path) -> list[dict]:
             raise ValueError(
                 f"duplicate repositories name: {entry['name']!r}"
             )
-        # Issue #527: the optional repository config path (default
+        # The optional repository config path (default
         # `.github/orbi.toml`) — a string, no path resolution (it is a
         # repository-relative path read through the GitHub contents API,
         # never the local checkout).
@@ -1575,7 +1573,7 @@ def parse_repositories(entries: object, base: Path) -> list[dict]:
 
 
 def repository_config_path(config: RunnerConfig, source_repo: str) -> str:
-    """The repository config path of one source repo (Issue #527).
+    """The repository config path of one source repo.
 
     The optional `[[repositories]].config_path` wins when its `github`
     entry matches the source repo; otherwise the single default location
@@ -1588,7 +1586,7 @@ def repository_config_path(config: RunnerConfig, source_repo: str) -> str:
 
 
 def repository_base_branch(config: RunnerConfig, source_repo: str) -> str:
-    """The fallback base branch of one source repo (Issue #527, D3).
+    """The fallback base branch of one source repo.
 
     A repository config that omits `base_branch` falls back to its
     `[[repositories]]` entry's `base_branch` when one matches the source
@@ -1602,7 +1600,7 @@ def repository_base_branch(config: RunnerConfig, source_repo: str) -> str:
 
 def load_repo_policy(config: RunnerConfig,
                      source_repo: str) -> RepoPolicy | None:
-    """Read and validate one source repo's policy file (Issue #527).
+    """Read and validate one source repo's policy file.
 
     Returns the validated :class:`RepoPolicy` with the file's blob sha
     bound, or `None` when the repository has no policy file. A
@@ -1618,7 +1616,7 @@ def load_repo_policy(config: RunnerConfig,
 
 def apply_repo_policy(config: RunnerConfig, source_repo: str,
                       policy: RepoPolicy) -> RunnerConfig:
-    """Resolve one repo's policy over the host fallback (Issue #527, D3)."""
+    """Resolve one repo's policy over the host fallback."""
     fallback = replace(
         config,
         base_branch=repository_base_branch(config, source_repo),
@@ -1627,7 +1625,7 @@ def apply_repo_policy(config: RunnerConfig, source_repo: str,
 
 
 def previous_repo_config_sha(number: int, source_repo: str) -> str | None:
-    """The sha recorded by the previous run of this Issue (Issue #527, D4).
+    """The sha recorded by the previous run of this Issue.
 
     Scans the trusted Orbi comments for the `repo_config` field of the
     newest run. Best-effort audit: a read failure is logged and returns
@@ -1674,7 +1672,7 @@ def validate_execution_source_repos(source_repos: Sequence[str]) -> None:
 def validate_config(config: RunnerConfig) -> None:
     if not config.repo_dir.is_dir():
         raise FileNotFoundError(config.repo_dir)
-    # Issue #330: the deployment home (CLI install source, unit templates,
+    # The deployment home (CLI install source, unit templates,
     # labels.toml, prompt defaults) must exist too — a missing home fails
     # the start fast, like a missing delivery checkout.
     if not config.deploy_home.is_dir():
@@ -1685,7 +1683,7 @@ def validate_config(config: RunnerConfig) -> None:
     ]:
         if not path.is_file():
             raise FileNotFoundError(path)
-    # Multi-repo registry (Issue #134): every registered path must exist
+    # Multi-repo registry: every registered path must exist
     # and be a Git checkout — a `.git` directory (a plain checkout) or a
     # `.git` file (a linked worktree). Absent key -> no registry, so a
     # single-repo config keeps its exact flow.
@@ -1751,15 +1749,15 @@ def sync_active_milestone_variable(
         LOGGER.exception("active_milestone_variable_sync_failed repo=%s", repo)
 
 
-# Ready scans (Issue #71/#101): P0 urgent Issues are claimed before
+# Ready scans: P0 urgent Issues are claimed before
 # bugs, bugs before new features — if the delivery loop is broken,
 # claiming enhancements only piles up unreviewed PRs, and a production
 # outage (P0) must not wait behind ordinary work. The P0 scan runs
 # first, then the bug scan, then the plain ready scan — each with the
 # exact same exclusions. No priority numbers, no separate queue, no
 # new state machine: three `gh issue list` searches with the same
-# blockedBy semantics (Issue #54). `p0` is a plain label, not a
-# delivery state: it only orders the pickup (Issue #101).
+# blockedBy semantics. `p0` is a plain label, not a
+# delivery state: it only orders the pickup.
 READY_SCAN_EXCLUSIONS = (
     f"-label:{IN_PROGRESS_LABEL} -label:{PR_OPENED_LABEL} "
     f"-label:{FIX_NEEDED_LABEL} -label:{MERGED_LABEL} "
@@ -1771,7 +1769,7 @@ def ready_searches(active_milestone: str | None = None,
                    dispatch_label: str = READY_LABEL) -> tuple[str, str, str]:
     """Return the three ready scans (p0, bug, plain) in pickup order.
 
-    With a configured `active_milestone` (Issue #139) every scan
+    With a configured `active_milestone` every scan
     carries the `milestone:"<title>"` qualifier — the quoted form is
     the contract because milestone titles may contain spaces or
     special characters (verified against the live API). The scope is
@@ -1780,7 +1778,7 @@ def ready_searches(active_milestone: str | None = None,
     without `ai-ready` never does either: the `label:ai-ready`
     qualifier stays. The Milestone is a version scope, not a
     replacement for the `ai-ready` execution switch. P0 does NOT
-    cross milestones (Issue #139 decision): the active Milestone is
+    cross milestones: the active Milestone is
     the claim scope of EVERY fresh claim, and `p0` only orders the
     pickup inside it — one uniform rule, no special case. Without a
     configured Milestone the searches are byte-identical to the
@@ -1789,7 +1787,7 @@ def ready_searches(active_milestone: str | None = None,
     scope = (
         f' milestone:"{active_milestone}"' if active_milestone else ""
     )
-    # Issue #527: the claim label is a delivery-policy key; the lifecycle
+    # The claim label is a delivery-policy key; the lifecycle
     # labels (`ai-in-progress`/`ai-merged`/...) stay host constants.
     label = dispatch_label or READY_LABEL
     return (
@@ -1801,7 +1799,7 @@ def ready_searches(active_milestone: str | None = None,
 
 def release_fallback_search(active_milestone: str | None = None,
                             dispatch_label: str = READY_LABEL) -> str:
-    """Return the release fallback scan query (Issue #255).
+    """Return the release fallback scan query.
 
     A Release task is a closing action and must never compete with an
     ordinary delivery for the slot: it is claimed only after the three
@@ -1838,7 +1836,7 @@ def _issue_label_set(issue: dict) -> frozenset[str]:
 
 
 def is_epic(issue: dict) -> bool:
-    """Return True when one issue carries the `ai-epic` label (Issue #93).
+    """Return True when one issue carries the `ai-epic` label.
 
     A pure function of the issue's `labels` (the scans fetch `labels`,
     so no extra gh call), the same style as `issue_priority`. A
@@ -1955,7 +1953,7 @@ def reconcile_release_milestones(repo: str, run_id: str) -> list[str]:
     return evidence
 
 
-# Issue #746: the hidden marker of the orphan-PR report — the sweep's
+# The hidden marker of the orphan-PR report — the sweep's
 # idempotency key (one report per PR, never one per tick).
 ORPHAN_PR_MARK = "<!-- orbi:orphan-pr -->"
 
@@ -1976,7 +1974,7 @@ def orphan_pr_branch_issue(head_ref: object) -> int | None:
 
 
 def reconcile_orphan_prs(repo: str, run_id: str) -> list[str]:
-    """Report open delivery PRs whose source Issue is closed (Issue #746).
+    """Report open delivery PRs whose source Issue is closed.
 
     A human may close an Issue while its delivery is in flight, and the
     close can land before OR after the PR is opened — every resumable
@@ -2036,7 +2034,7 @@ def reconcile_orphan_prs(repo: str, run_id: str) -> list[str]:
 
 
 # The scenes the ready scans claim: the fresh-claim family of the
-# delivery-scene classification (Issue #787). A release candidate is
+# delivery-scene classification. A release candidate is
 # claimable only through the release fallback scan's `allow_release`
 # gate above; the classification still names its scene. A candidate
 # that classifies elsewhere is skipped — a terminal state the query's
@@ -2062,22 +2060,22 @@ def _pick_from_scan(
     """Return the first claimable Issue of one scan result, else None.
 
     The per-Issue guards, shared by the three ordinary ready scans and
-    the release fallback scan (Issue #255). An `ai-epic` Issue is never
+    the release fallback scan. An `ai-epic` Issue is never
     claimed — no label change, no worktree, no run, no slot — with the
     structured `epic_not_claimed` line (the check precedes the blockedBy
     check: "it is an Epic" is the more fundamental reason). An Issue
     with open native blockers is skipped with the structured
-    `blocked_by` line (Issue #54). Otherwise the Issue is picked and the
-    pickup log carries the explicit priority field (Issue #101): `p0`
+    `blocked_by` line. Otherwise the Issue is picked and the
+    pickup log carries the explicit priority field: `p0`
     for urgent Issues, `normal` otherwise.
 
-    `allow_release` controls the release skip (Issue #255): the three
+    `allow_release` controls the release skip: the three
     ordinary scans skip an `ai-release` Issue (`release_not_claimed`) so
     a release never competes with an ordinary delivery for the slot; the
     release fallback scan passes `allow_release=True` and claims it.
 
     A release candidate additionally passes the Milestone completeness
-    gate (Issue #663): while the Milestone still counts any other open
+    gate: while the Milestone still counts any other open
     Issue (`open_issues > 1`), the release is skipped with the
     structured `release_milestone_incomplete` line and the Issue stays
     `ai-ready` for the next tick — a recoverable wait, never
@@ -2160,22 +2158,22 @@ def pick_issue(repo: str, active_milestone: str | None = None,
     # open) Issue; `ai-merged` is the success terminal state, so it is
     # excluded from the ready scan like every other delivery state.
     # The scan fetches the ready queue (not just the first Issue) and
-    # reads the native GitHub dependency per Issue (Issue #54): an
+    # reads the native GitHub dependency per Issue: an
     # Issue with open blockers is skipped — no claim, no label change,
     # no worktree — and the next ready Issue is considered instead.
-    # Issue #93: an `ai-epic` Issue is skipped too — no claim, no
+    # An `ai-epic` Issue is skipped too — no claim, no
     # label change, no worktree, no run, no slot — with the structured
     # `epic_not_claimed` line (the Epic check precedes the blockedBy
-    # check). Issue #71/#101: the P0 scan runs first, then the bug
+    # check). The P0 scan runs first, then the bug
     # scan; a P0 or bug with open blockers is skipped there and the
     # next scan still decides. The scan also fetches `labels` so the
     # picked issue's priority (and Epic-ness) is visible without an
-    # extra gh call. Issue #139: with a configured `active_milestone`
+    # extra gh call. With a configured `active_milestone`
     # all three scans are scoped to that Milestone in the query itself
     # (see `ready_searches`) — the Epic skip and the blockedBy skip
     # above are the unchanged second (code) layer, and a failed scan
     # still fails open (never a silent claim of the wrong version).
-    # Issue #255: an `ai-release` Issue is skipped by the three ordinary
+    # An `ai-release` Issue is skipped by the three ordinary
     # scans (`release_not_claimed`) and claimed only by the release
     # fallback scan that runs AFTER all three found nothing claimable —
     # a release is a closing action and must never take the slot ahead
@@ -2187,7 +2185,7 @@ def pick_issue(repo: str, active_milestone: str | None = None,
                 json_fields="number,title,body,labels,blockedBy", limit=200,
             )
         except Exception as exc:
-            # Fail open (Issue #54): a failed blockedBy query must
+            # Fail open: a failed blockedBy query must
             # never deadlock the queue. This tick claims nothing from
             # this repo and the next tick retries the query; the error
             # is logged, never raised, and no label is touched.
@@ -2201,7 +2199,7 @@ def pick_issue(repo: str, active_milestone: str | None = None,
         )
         if picked is not None:
             return picked
-    # Release fallback (Issue #255): only when no ordinary delivery
+    # Release fallback: only when no ordinary delivery
     # (p0/bug/plain) is claimable. The query keeps `label:ai-ready` +
     # `label:ai-release` and the same delivery-state exclusions; the Epic
     # and blockedBy guards still apply via `_pick_from_scan`. Issue
@@ -2234,7 +2232,7 @@ def pick_in_progress_issue(
 ) -> dict | None:
     """Return one in-flight Issue a killed runner left behind.
 
-    `dispatch_label` is the repository's claim label (Issue #527): a
+    `dispatch_label` is the repository's claim label: a
     repository policy may replace `ai-ready` with its own label, and the
     in-flight scan must find the SAME queue entry the ready scan used —
     otherwise a killed (or model-wait-recovered) run would be stranded
@@ -2244,13 +2242,13 @@ def pick_in_progress_issue(
     claim label behind (the failure path never ran); the Issue keeps
     `ai-ready` too (a claim never removes it). The ready scan excludes
     `ai-in-progress`, so without this scan the run is never resumed and
-    the Issue is stuck forever — the Issue #18 acceptance "restart finds
+    the Issue is stuck forever — the "restart finds
     the same progress comment by run marker" would be unreachable in the
     production flow. `process_issue`'s resume block (newest worktree's
     run id) then reuses the run instead of starting a second one. Every
     other delivery state is excluded: those Issues are owned by the
     resumable-PR scan (`ai-fix-needed`) or are terminal. `ai-epic` is
-    excluded too (Issue #93): a legacy Epic left behind with
+    excluded too: a legacy Epic left behind with
     `ai-in-progress` (the #80 scene, before the Epic mechanism existed)
     must never be resumed into a run — an Epic is coordination, not an
     executable task.
@@ -2259,7 +2257,7 @@ def pick_in_progress_issue(
     another process proves a live runner is working (on this or another
     Issue), so the `ai-in-progress` label is in flight, not orphaned —
     resuming it here would start a second Pi for a run that is alive
-    (Issue #39 slot semantics: the flock lock is the source of truth).
+.
     This runner's own slot is excluded: `main` took it before the claim
     scan and holds it for the whole delivery.
     """
@@ -2268,13 +2266,13 @@ def pick_in_progress_issue(
         if holder is not None and holder != mine:
             return None
     label = dispatch_label or READY_LABEL
-    # `labels` (Issue #101): a P0 a killed runner left behind
+    # `labels`: a P0 a killed runner left behind
     # keeps its priority in the progress comment on resume.
-    # `milestone` (Issue #671): a release run killed mid-release is
+    # `milestone`: a release run killed mid-release is
     # resumed with THIS dict, and `process_release` scopes its
     # leftover-delivery gate to the release's own Milestone — the
     # Issue is the authority (never `active_milestone`: a resume is
-    # not gated by a Milestone change, Issue #139).
+    # not gated by a Milestone change).
     issues = list_issues(
         repo, state="open",
         search=(
@@ -2287,7 +2285,7 @@ def pick_in_progress_issue(
     )
     candidate = issues[0] if issues else None
     if candidate is not None:
-        # Issue #787: the same pure classification the dispatch runs.
+        # The same pure classification the dispatch runs.
         # This scan hands the candidate to `process_issue`, whose full
         # fact set decides the handler, so the scan skips only a
         # candidate that left EVERY claimable state (a relabel inside
@@ -2327,7 +2325,7 @@ def claim_route(labels: set[str], *, branch_exists: bool,
     This is deliberately pure: labels are the event and branch/PR existence
     is the observed physical state.  The existing review loop handles the
     returned ``review`` route. `ready_label` is the repository's dispatch
-    label (Issue #527; default `ai-ready`).
+    label.
     """
     if open_pr and ready_label in labels:
         return "review"
@@ -2342,7 +2340,7 @@ def external_takeover_pr(repo_dir: Path, body: str | None,
                          source_repo: str, base_branch: str) -> dict | None:
     """Resolve the external PR an Issue body routes to, or None.
 
-    The marker is written by the triage workflow (Issue #608); a claim of
+    The marker is written by the triage workflow; a claim of
     that Issue must review the external PR before any internal redo. A
     PR that is no longer open — merged by a human, closed by the
     contributor (withdrawn) or closed as rejected — is NOT a takeover:
@@ -2391,9 +2389,9 @@ def external_takeover_pr(repo_dir: Path, body: str | None,
 def started_pi_comment_body(run_id: str, run_info: str, branch: str,
                             worktree: Path,
                             extra_fields: dict | None = None) -> str:
-    """The start comment doubles as the recoverable run scene (Issue #45).
+    """The start comment doubles as the recoverable run scene.
 
-    `extra_fields` carries the repo-config audit fields (Issue #527, D4);
+    `extra_fields` carries the repo-config audit fields;
     their values may contain spaces, so they are rendered by the field
     block and never spliced into the space-separated `run_info`.
     """
@@ -2415,18 +2413,18 @@ def opened_pr_comment_body(run_id: str, run_info: str, pr_url: str,
     """The PR-opened comment records the recoverable run scene.
 
     It is the single source the next tick parses to resume this run on
-    the same branch, worktree and PR (Issue #45). The runner is the only
+    the same branch, worktree and PR. The runner is the only
     writer of this comment, so the scene carries only what the runner
     cannot derive itself: run_id, base and PR URL. Branch and worktree
     are derived from the configured repo_dir, source_repo, Issue number
     and run_id — a comment must never be able to name a local path. An
-    external takeover (Issue #608) marks the scene `external`: the PR is
+    external takeover marks the scene `external`: the PR is
     the contributor's own (no run marker, no `Fixes` keyword in its
     body), and the delivery branch is the PR's head branch — derived
     from the takeover worktree, never from the comment.
 
     The machine-readable record is the single hidden `orbi:scene:v1`
-    block rendered from the `Scene` (Issue #786); the field lines below
+    block rendered from the `Scene`; the field lines below
     the headline stay for humans only.
     """
     fields = _run_info_fields(run_info)
@@ -2451,10 +2449,10 @@ def parse_pr_comment(body: str) -> dict | None:
 
     The v1 scene block (orbi.scene) is the machine protocol; the
     human-readable text is the legacy fallback kept for one transition
-    version (Issue #786). Returns None when the body is not an
+    version. Returns None when the body is not an
     opened-PR comment. Fails fast when the comment is malformed:
     resuming must recover the exact run (run id, base, PR URL), never a
-    guess (Issue #45). Branch and worktree are not parsed: the runner
+    guess. Branch and worktree are not parsed: the runner
     derives them from its own config, the Issue number and the run id,
     so a comment can never name an arbitrary local path.
     """
@@ -2467,7 +2465,7 @@ def parse_pr_comment(body: str) -> dict | None:
         "base_sha": found.base_sha,
         "pr_url": found.pr_url,
         "external": found.external,
-        # Issue #788: the review-round counter travels with the scene —
+        # The review-round counter travels with the scene —
         # the round comments carry the updated scene block, so the next
         # resume reads the advanced count instead of re-counting text.
         "review_round": found.review_round,
@@ -2479,8 +2477,8 @@ def resume_scene(comments: list[dict]) -> dict:
 
     Only comments posted by a trusted maintainer (OWNER, MAINTAINER,
     MEMBER or COLLABORATOR) are considered: a public comment can never
-    become the recovery scene (Issue #45 review, BLOCKER). The two
-    failure shapes stay distinct for the caller (Issue #786):
+    become the recovery scene. The two
+    failure shapes stay distinct for the caller:
     `scene.SceneError` when a trusted scene comment is corrupted,
     `scene.SceneMissingError` when no trusted comment carries a scene
     at all. Neither may be guessed at. The projection adds `scene_at`
@@ -2504,7 +2502,7 @@ def _route_external_pr_ticket(issue: dict, repo: str) -> bool:
     """Route a marker-bearing opened-PR ticket through external
     integration instead of `ai-blocked`. Returns True when handled.
 
-    Issue #726: the triage workflow (#621) labels the linked Issue
+    The triage workflow (#621) labels the linked Issue
     `ai-pr-opened` — the resumable scan then picks it, finds no trusted
     runner scene comment, and the old code burned the ticket to
     `ai-blocked` while the takeover entry (#608) stayed unreachable for
@@ -2580,41 +2578,38 @@ def pick_resumable_delivery(
 ) -> tuple[dict, dict] | None:
     """Return the newest opened-PR delivery and its resume scene.
 
-    Both opened-PR states are scanned (Issue #70): `ai-fix-needed`
+    Both opened-PR states are scanned: `ai-fix-needed`
     (awaiting the next review session after a finding or a base
-    conflict — Issue #82: the review session fixes findings in the same
+    conflict — the review session fixes findings in the same
     session, so the next tick runs the same independent review on the
     same branch, worktree and PR) and `ai-pr-opened` (awaiting review —
     the next tick runs the independent review). The `ai-pr-opened`
     scan exists because the delivery that opened the PR can be gone: the
-    progress-publishing failure behind Issue #70 used to label the
-    delivered Issue `ai-blocked` before the review started, and a killed
     runner can die inside the delivery wait loop, leaving a valid
     MERGEABLE PR with no owner. Without the scan such a delivery is
     picked up by no other scan (`pick_issue` excludes `ai-pr-opened`)
     and is stranded forever. `ai-blocked` Issues are excluded (they need
     a human decision first), as are merged Issues and closed Issues.
-    `ai-in-progress` is NOT excluded (Issue #178): a runner killed
+    `ai-in-progress` is NOT excluded: a runner killed
     during review leaves the backfilled in-flight label behind on the
     opened-PR delivery, and the same scan must pick it back up — the
     positive `label:ai-fix-needed,ai-pr-opened` qualifier already
     restricts the scan to opened-PR Issues (an implement-phase Issue
     has `ai-ready`+`ai-in-progress` but neither opened-PR label, so it
     never matches). A scene that cannot be recovered is a SINGLE-Issue
-    failure (Issue #672): the Issue is marked `ai-blocked` with the
+    failure: the Issue is marked `ai-blocked` with the
     concrete reason (`block_scene_failure`) and the scan reports no
     resumable delivery, so the tick continues with the in-flight and
     ready scans and exits 0 — one corrupted Issue must never make every
     tick crash while the whole queue waits.
 
     The scan runs only when no OTHER runner is live (the same guard as
-    `pick_in_progress_issue`, Issue #39 slot semantics): a slot held by
+    `pick_in_progress_issue` slot semantics): a slot held by
     another process proves a live runner is working, so an opened-PR
     delivery is in flight, not stranded — resuming it here would start
     a second review Pi in the same worktree/branch/run, and the second
     `gh pr merge --match-head-commit` on the already-merged PR would
-    fail and mark the merged Issue `ai-blocked` (Issue #70 review
-    round 1). This runner's own slot is excluded: `main` took it
+    fail and mark the merged Issue `ai-blocked`. This runner's own slot is excluded: `main` took it
     before the claim scan and holds it for the whole delivery.
     """
     mine = os.getpid()
@@ -2623,13 +2618,13 @@ def pick_resumable_delivery(
             return None
     # `label:a,b` is GitHub's OR within one label qualifier
     # (verified live: repeating the qualifier matches only the
-    # first label). `ai-in-progress` is intentionally NOT excluded
-    # (Issue #178): a killed review runner leaves the backfilled
+    # first label). `ai-in-progress` is intentionally NOT excluded:
+    # a killed review runner leaves the backfilled
     # in-flight label behind, and the positive qualifier above
     # already keeps implement-phase Issues out.
-    # `labels` (Issue #101): a resumed P0 delivery keeps its
+    # `labels`: a resumed P0 delivery keeps its
     # priority in the progress comment through review/merge.
-    # `body` (Issue #787): the scene classification reads the
+    # `body`: the scene classification reads the
     # delivery markers — without it the #726 external routing of a
     # marker ticket with no trusted scene comment is unreachable in
     # production (the probe read a body the query never fetched).
@@ -2650,7 +2645,7 @@ def pick_resumable_delivery(
     try:
         found = resume_scene(comments)
     except scene.SceneError as exc:
-        # A trusted scene comment exists but is corrupted (Issue #786):
+        # A trusted scene comment exists but is corrupted:
         # probe the #726 external route first; otherwise this is the
         # ONLY trigger of `block_scene_failure` — a present-but-broken
         # scene is a writer bug or tampering and needs a human.
@@ -2660,12 +2655,12 @@ def pick_resumable_delivery(
         return None
     except scene.SceneMissingError as exc:
         # No trusted comment carries a scene at all — a distinct branch
-        # from corruption (Issue #786). The original #726 incident was
+        # from corruption. The original #726 incident was
         # exactly this shape, so the external route is probed first;
-        # un-routed, the same Issue #50 terminal contract applies
+        # un-routed, the same terminal contract applies
         # through its OWN reporting (explicit reason + human next
         # step), never `block_scene_failure`. The failure is scoped to
-        # this one Issue (Issue #672): the tick continues.
+        # this one Issue: the tick continues.
         if _route_external_pr_ticket(issue, repo):
             return None
         number = int(issue["number"])
@@ -2692,7 +2687,7 @@ def pick_resumable_delivery(
         except Exception:
             LOGGER.exception("issue=%s failure reporting failed", number)
         return None
-    # Issue #787: the scan and the dispatch classify with the same pure
+    # The scan and the dispatch classify with the same pure
     # function. This scan owns the resumable route only: a candidate
     # that classifies elsewhere left the opened-PR state between the
     # query and this read (a relabel race) — claim nothing this tick.
@@ -2718,7 +2713,7 @@ def block_scene_failure(issue: dict, error: ValueError, repo: str,
                         comments: list[dict]) -> None:
     """Mark an opened-PR Issue `ai-blocked` when its scene is malformed.
 
-    The blocked transition is scoped to this one Issue (Issue #672): the
+    The blocked transition is scoped to this one Issue: the
     caller continues the tick, so a malformed scene never crashes the
     whole runner. The failure comment carries the run marker recovered
     from a trusted comment when it is present — the same run id, never a
@@ -2737,7 +2732,7 @@ def block_scene_failure(issue: dict, error: ValueError, repo: str,
             number, repo=repo, event=EVENT_BLOCKED,
             current_labels={FIX_NEEDED_LABEL},
         )
-        # Issue #50: a scene that cannot be recovered is an external
+        # A scene that cannot be recovered is an external
         # precondition the AI cannot fix by itself (the runner cannot
         # derive run_id, branch, worktree or PR without the trusted
         # scene comment, so it cannot start a review session): the
@@ -2981,7 +2976,7 @@ def advance_active_milestone_on_idle(
         except Exception:
             # The confirmation Issue is an idle-path notification. Its
             # failure must not turn an otherwise successful no-ready tick
-            # into a delivery failure (Issue #73/#79).
+            # into a delivery failure.
             LOGGER.exception(
                 "pending_milestone_issue_failed repo=%s old=%s",
                 repo, active_milestone,
@@ -3007,12 +3002,12 @@ def pick_next_delivery(
     single concurrency slot occupied by the same run (implement →
     review → fix → merge), so a second Pi is never started for a run
     that already has a PR. An in-flight Issue (a killed runner left
-    `ai-in-progress` behind, Issue #18) is recovered before the ready
+    `ai-in-progress` behind) is recovered before the ready
     scan: `process_issue`'s resume block reuses the newest worktree's
     run id, so the same progress comment is kept instead of a second
     run being started on an Issue that is already in flight.
 
-    Issue #139: `active_milestone` scopes only the FRESH claim
+    `active_milestone` scopes only the FRESH claim
     (`pick_issue`) — the resumable-PR and in-flight restart scans are
     resume states, and running an in-flight or opened-PR delivery to
     completion is never gated by a Milestone change.
@@ -3037,7 +3032,7 @@ def pick_next_delivery(
             reconcile_release_milestones(repo, tick_run_id)
         except Exception:
             LOGGER.exception("milestone_reconcile_failed repo=%s", repo)
-        # Orphan-PR reconciliation (Issue #746) follows the same bypass
+        # Orphan-PR reconciliation follows the same bypass
         # pattern: a broken GitHub query must never prevent the ordinary
         # delivery scans.
         try:
@@ -3068,7 +3063,7 @@ def pick_next_delivery(
 def _repo_scan_keys(
     config: RunnerConfig | None, repo: str, active_milestone: str | None,
 ) -> tuple[str | None, str]:
-    """Resolve one source repo's scan keys from its policy (Issue #527).
+    """Resolve one source repo's scan keys from its policy.
 
     Returns `(active_milestone, dispatch_label)`. The read is fail-open and
     a malformed repository file is ignored here (host keys keep the scan
@@ -3098,7 +3093,7 @@ def _repo_scan_keys(
 def _pick_issue_with_repo_policy(
     repo: str, active_milestone: str | None, config: RunnerConfig | None,
 ) -> dict | None:
-    """Fresh ready scan with the repo's scan keys (Issue #527).
+    """Fresh ready scan with the repo's scan keys.
 
     `dispatch_label` and `active_milestone` are resolved from the
     repository policy before the scan (see `_repo_scan_keys`).
@@ -3112,10 +3107,10 @@ def _pick_issue_with_repo_policy(
 
 
 def run_state_path(worktree: Path) -> Path:
-    """The run state file of one task worktree (Issue #219).
+    """The run state file of one task worktree.
 
     It lives in the gitignored `.orbi/` directory, so it never
-    dirties the commit boundary (Issue #186) and never reaches the
+    dirties the commit boundary and never reaches the
     delivery commit.
     """
     return worktree / ".orbi" / "run-state.json"
@@ -3125,7 +3120,7 @@ def write_run_state(worktree: Path, *, run_id: str, issue: int,
                     source_repo: str, branch: str) -> None:
     """Write (or refresh) the run state file of one task worktree.
 
-    The file is the explicit "same run" marker (Issue #219): the
+    The file is the explicit "same run" marker: the
     worktree directory name alone is not stable across a repo rename
     (the slug changes), but the state file carries the issue number
     and the repo — the identity the next tick matches on. A resumed
@@ -3150,7 +3145,7 @@ def read_run_state(worktree: Path) -> dict | None:
 
     A corrupt state file is a delivery failure, never a guess: the
     resume must continue the SAME run, and a wrong continuation is
-    worse than a blocked Issue (Issue #219).
+    worse than a blocked Issue.
     """
     path = run_state_path(worktree)
     if not path.is_file():
@@ -3194,7 +3189,7 @@ def changed_files(worktree: Path) -> list[str]:
 
 
 def resume_context(worktree: Path) -> str | None:
-    """The resume context for a continued run (Issue #219), or None.
+    """The resume context for a continued run, or None.
 
     A worktree without uncommitted changes and without a previous
     session is a fresh scene: the agent starts from the Issue alone
@@ -3236,12 +3231,12 @@ def worktree_resume_scene(repo_dir: Path, source_repo: str,
                  number: int) -> tuple[str, Path] | None:
     """Return the resume scene `(run_id, worktree)` for one Issue, or None.
 
-    The worktrees are matched by the RUN STATE FILE (Issue #219), not
+    The worktrees are matched by the RUN STATE FILE, not
     by the directory name alone: the directory name carries the
     source-repo slug, which changes when the repo is renamed, while
     the state file carries the issue number and the repo NAME (the
     part after the slash — stable across a rename). The newest
-    matching worktree (by mtime) wins, as before (Issue #18). The
+    matching worktree (by mtime) wins, as before. The
     scene's worktree path may carry the OLD slug (a rename): it is
     the scene the run continues in, never a reason for a second
     worktree.
@@ -3249,7 +3244,7 @@ def worktree_resume_scene(repo_dir: Path, source_repo: str,
     A worktree that claims THIS issue number but has a MISSING or
     CORRUPT run state file cannot be verified as the same run: it
     fails fast with the exact reason — never a silent fresh redo
-    (Issue #219). A worktree of another issue without a state file
+. A worktree of another issue without a state file
     (a legacy completed run) is unrelated and skipped.
     """
     name = source_repo.rsplit("/", 1)[-1]
@@ -3290,7 +3285,7 @@ def resume_run_id(repo_dir: Path, source_repo: str,
     """Return the run id to resume for one Issue, or None.
 
     Delegates to `worktree_resume_scene` (the worktree is matched by its run
-    state file, not the directory name alone — Issue #219).
+    state file, not the directory name).
     """
     scene = worktree_resume_scene(repo_dir, source_repo, number)
     return scene[0] if scene is not None else None
@@ -3315,7 +3310,7 @@ def _tree_size(path: Path) -> int:
 def reclaim_released_worktrees(config: RunnerConfig, *,
                                now: datetime | None = None) -> None:
     """Remove the task worktrees of closed Issues past the retention
-    window (Issue #760).
+    window.
 
     Called at every tick start beside `check_unit_drift` — idempotent,
     bounded (at most `WORKTREE_RECLAIM_MAX_PER_TICK` removals,
@@ -3328,7 +3323,7 @@ def reclaim_released_worktrees(config: RunnerConfig, *,
       for the CONFIGURED source repos (a foreign worktree or an
       old-slug scene left by a repo rename is never touched);
     - the worktree of this process's bound run is never a candidate —
-      matched by run id and by the Issue #48 stop-scene path (an
+      matched by run id and by the stop-scene path (an
       external takeover checks out a head branch whose directory name
       is not run-id-derived);
     - the Issue must be closed (ONE batched `gh issue list` per involved
@@ -3444,10 +3439,10 @@ def _another_live_runner(slot_dir: Path, max_concurrency: int) -> bool:
     The #39 liveness rule `pick_in_progress_issue` applies to the orphan
     scan (runner.py:2412): a slot held by another process proves a live
     runner is working, so state it owns is in flight, not orphaned.
-    Issue #708 reuses the same rule for the release dispatch — an
-    in-progress release found while another runner is live is being
-    released right now; only a runner that is alone may resume it.
-    Issue #724 reuses it once more for the claim-window yield guard.
+    The same rule extends to the release dispatch — an in-progress
+    release found while another runner is live is being released right
+    now; only a runner that is alone may resume it — and to the
+    claim-window yield guard.
     """
     mine = os.getpid()
     for _, holder in slot_occupancy(slot_dir, max_concurrency):
@@ -3459,9 +3454,8 @@ def _another_live_runner(slot_dir: Path, max_concurrency: int) -> bool:
 def is_content_only(issue: dict) -> bool:
     """Return True only for the explicit content-only task marker.
 
-    Issue #209 introduced the content agent; #530 renamed its label and
-    #537 gave that name to the full-execution ops path — the content
-    path dispatches on `ai-content-only` now.
+    The content path dispatches ONLY on the explicit
+    `ai-content-only` marker, never on derived state.
     """
     labels = issue.get("labels", [])
     return isinstance(labels, list) and any(
@@ -3471,7 +3465,7 @@ def is_content_only(issue: dict) -> bool:
 
 
 def is_ops(issue: dict) -> bool:
-    """Return True only for the explicit ops task marker (Issue #537).
+    """Return True only for the explicit ops task marker.
 
     An ops ticket runs the SAME full-execution session as a dev ticket
     (worktree, shell, network — no command whitelist exists); the ops
@@ -3511,7 +3505,7 @@ def run_ticket_agent(issue: dict, config: RunnerConfig, source_repo: str,
             *_pi_model_args(config), "--print", "--session-dir", str(session_dir),
             "--system-prompt", system_prompt, context,
         ]
-        # Startup phase (Issue #176): the ticket-only session keeps Pi's
+        # Startup phase: the ticket-only session keeps Pi's
         # own agent dir (no per-run materialization) — the provider
         # config is still loaded and resolved before the spawn.
         _log_provider_config_loaded(
@@ -3629,28 +3623,27 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
            resume_context: str | None = None) -> str:
     """Run the implementer Pi session for a freshly claimed Issue.
 
-    Issue #82 removed the fixer reuse of this function: findings are
-    fixed by the review session in the same session, so the implementer
-    is the only user of `prompts/prompt.md` now.
+    Findings are fixed by the review session in the same session, so
+    the implementer is the only user of `prompts/prompt.md`.
 
-    `resume_context` (Issue #219): when the worktree already carries
+    `resume_context`: when the worktree already carries
     the interrupted run's work (uncommitted changes and/or a previous
     session), the context argument gains the resume section so the NEW
     session continues the existing work instead of a fresh redo. The
     prompt template itself is untouched; absent -> the exact
     pre-#219 context.
     """
-    # Issue #256: pin the Runner-owned runtime paths in the worktree's
+    # Pin the Runner-owned runtime paths in the worktree's
     # local exclude BEFORE Pi starts (covers create, resume and
     # implement) — the tracked .gitignore is the agent's to rename.
     apply_runner_runtime_excludes(worktree)
-    # Issue #302: the run artifact dir exists BEFORE the session starts,
+    # The run artifact dir exists BEFORE the session starts,
     # so the contract commands write `.orbi/plan.md`, `.orbi/test.log`
     # and the coverage artifacts without a mkdir step (a shell redirect
     # into a missing directory fails the command outright).
     (worktree / ".orbi").mkdir(exist_ok=True)
     started = time.monotonic()
-    # Issue #527: the repository policy's context files are
+    # The repository policy's context files are
     # repository-relative; resolve them against the delivery worktree and
     # enforce existence + the size cap before injection (D2).
     context_files = list(config.context_files)
@@ -3671,19 +3664,19 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
         ),
         "BASE_BRANCH": config.base_branch,
         "BASE_SHA": config.base_sha,
-        # Issue #527: a repository-declared test command (absent ->
+        # A repository-declared test command (absent ->
         # the agent follows its own test contract, as before #527).
         "TEST_COMMAND": (
             (config.test_command or "").strip()
             or "(not declared)"
         ),
         "RUN_ID": config.run_id,
-        # Issue #186: the implementer prompt no longer carries the
+        # The implementer prompt no longer carries the
         # base-sync lock (the base fetch is the Runner's operation);
         # the value stays available for custom prompt templates.
         "BASE_SYNC_LOCK": str(base_sync_lock_path(config.repo_dir)),
     }
-    # Issue #745: the trusted-comment timeline enters the task context
+    # The trusted-comment timeline enters the task context
     # only when the template carries the placeholder — a template
     # without it keeps the exact pre-#745 behavior (no extra GitHub
     # read, no new failure mode).
@@ -3708,13 +3701,13 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
         "--print", "--session-dir",
         str(worktree / ".pi-session"), "--system-prompt", system_prompt, context,
     ]
-    # Issue #157: the provider file (baseUrl / api / apiKey / models)
+    # The provider file (baseUrl / api / apiKey / models)
     # reaches Pi through the materialized per-run agent dir, never
     # through the command line or the log (the redacted command keeps
     # only the #119 provider/model/thinking identifiers). Unconfigured
     # -> the stream_pi call keeps its exact pre-#157 shape.
     agent_dir = prepare_pi_agent_dir(worktree, config)
-    # Startup phase (Issue #176): the provider config is loaded and
+    # Startup phase: the provider config is loaded and
     # materialized for this run (or resolved to Pi's own agent dir when
     # unconfigured) — the first startup line, before the process is
     # spawned.
@@ -3743,11 +3736,11 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
         source_repo=source_repo,
         branch=branch,
         progress=progress,
-        # Issue #228: the configured model_wait dead threshold (the
+        # The configured model_wait dead threshold (the
         # real load_config always provides the key; the module
         # constant stays the fallback for hand-built configs).
         model_wait_dead_seconds=config.model_wait_dead_seconds,
-        # Issue #233: the /slots swallow probe (absent URL -> disabled,
+        # The /slots swallow probe (absent URL -> disabled,
         # the exact pre-#233 behavior).
         model_wait_probe_url=config.model_wait_probe_url,
         model_wait_probe_seconds=config.model_wait_probe_seconds,
@@ -3759,9 +3752,9 @@ def _query_open_prs(worktree: Path, branch: str) -> list:
     """Return the task branch's open PRs as the raw `gh pr list` list.
 
     The ONE PR-query contract shared by verify_pr and freeze_pr
-    (Issue #291): a single field set, a single ambiguity-guard limit and
+: a single field set, a single ambiguity-guard limit and
     a single parse. The limit is wide enough that the failure evidence
-    lists every ambiguous open PR (the resume audit record, Issue #495);
+    lists every ambiguous open PR (the resume audit record);
     the "exactly one" decision needs no tighter bound. A non-array
     payload is a broken `gh` response, never "zero PRs" — fail fast
     instead of guessing.
@@ -3788,7 +3781,7 @@ def _single_open_pr(worktree: Path, branch: str, base_branch: str,
     """Return the one open delivery PR of the task branch, base validated.
 
     The "exactly one open PR + configured base" decision shared by
-    verify_pr and freeze_pr (Issue #291); callers add their own extra
+    verify_pr and freeze_pr; callers add their own extra
     validations on the returned raw PR dict. `scene` names the calling
     path: the same externally-closed-PR failure used to raise the
     identical sentence from both paths and the log could not tell them
@@ -3832,20 +3825,20 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
     before the base merge, when being behind is the expected state),
     exactly one open PR for the head branch, PR base, PR head vs local
     HEAD (a local HEAD AHEAD of the PR head is the #158 unpushed-commit
-    scene, Issue #50: it is logged and passed through — the next review
+    scene: it is logged and passed through — the next review
     session pushes the task branch on the same PR; a diverged head is a
     failure), the run marker in the PR body, and the `Fixes #<issue>`
-    keyword in the PR body (Issue #53: GitHub closes the source Issue
+    keyword in the PR body (GitHub closes the source Issue
     natively only when the body carries the keyword, so a PR without it
     would leave the Issue open after the merge). With `external_pr`
-    (Issue #608: the delivery is a takeover of a contributor's own PR)
+
     the two body checks are skipped — an external PR body carries
     neither the run marker nor a `Fixes` keyword for this Issue; the
     Issue is closed by the Runner after the merge instead. When
     `pr_repo` is given (resume path), the PR's head repo must be that
     repo; when `expected_url` is given, the verified PR URL must exactly
-    equal the recovered original PR URL (Issue #45 review: the resume
-    must keep the same PR number).
+    equal the recovered original PR URL (the resume must keep the
+    same PR number).
     """
     current_branch = run_command(
         ["git", "branch", "--show-current"], cwd=worktree,
@@ -3862,7 +3855,7 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
         # Re-fetch before judging: the delivery must contain the latest
         # remote base, otherwise it is behind and the PR is rejected
         # (fail fast). The fetch updates the shared remote-tracking
-        # ref, so it runs under the base-sync lock (Issue #171) with
+        # ref, so it runs under the base-sync lock with
         # the deployment checkout as the lock location.
         fetch_base_ref(repo_dir, base_branch, cwd=worktree)
         if not _is_ancestor(f"origin/{base_branch}", "HEAD", cwd=worktree):
@@ -3880,15 +3873,15 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
     )
     if expected_url is not None:
         # A resume cannot safely select a replacement PR, so it keeps its
-        # own exactly-one policy (Issue #291): the FULL open list is the
-        # failure audit record (Issue #495) and zero open PRs is
-        # classified against the scene PR's state (Issue #494).
+        # own exactly-one policy: the FULL open list is the
+        # failure audit record and zero open PRs is
+        # classified against the scene PR's state.
         prs = _query_open_prs(worktree, branch)
         if len(prs) != 1:
             # A resume cannot safely select a replacement PR. Query the scene
             # PR separately so zero open PRs (a closed/merged or missing
             # scene PR) have a different outcome from an ambiguous branch
-            # (Issue #494).
+            #.
             scene_state = "unknown"
             try:
                 scene_pr = run_gh_read_command([
@@ -3917,7 +3910,7 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
                     )
                     # The typed error carries the state so the resume
                     # handler routes the decided fact (delivered /
-                    # withdrawn) instead of blocking (Issue #788: the
+                    # withdrawn) instead of blocking (the
                     # resumed path is the ONLY path, so these scenes are
                     # normal between-ticks states).
                     raise ResumePrClosedError(
@@ -3963,7 +3956,7 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
                 f"PR head repo is {head_repo}, expected {pr_repo}; the "
                 "resume must keep the PR of the configured source repo"
             )
-    # The non-resume base validation lives in _single_open_pr (Issue #291);
+    # The non-resume base validation lives in _single_open_pr;
     # the resume keeps its typed failure with the full run evidence.
     base_ref = pr.get("baseRefName")
     if expected_url is not None and base_ref != base_branch:
@@ -3981,7 +3974,7 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
         )
     head_oid = pr.get("headRefOid")
     if head_oid != local_head:
-        # Issue #50 (the #158 `d13b0c56` scene): the local HEAD may be
+        # The local HEAD may be
         # AHEAD of the remote PR head — a commit made by a killed
         # session (implementer or reviewer) that was never pushed. The
         # local commit, branch, worktree and PR stay intact and the
@@ -4027,7 +4020,7 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
     fixes = f"Fixes #{issue}"
     # Accept GitHub-style `Fixes #N` and the common `Fixes N` variant.
     # The number must match exactly, not as a digit prefix: `Fixes #41`
-    # closes Issue 41, not Issue 4 (review F1, Issue #53).
+    # closes Issue 41, not Issue 4 (review F1).
     if not external_pr and not re.search(rf"Fixes #?{issue}(?!\d)", body):
         event(
             "pr_fixes_missing", level=logging.ERROR,
@@ -4053,7 +4046,7 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
     return url
 
 
-# Runner-owned runtime paths inside a task worktree (Issue #256): created
+# Runner-owned runtime paths inside a task worktree: created
 # by the parent Runner and the Pi session machinery, never by the agent's
 # delivery. The task branch's tracked `.gitignore` must NOT be the thing
 # that keeps them out of the delivery commit boundary — a task may legally
@@ -4064,9 +4057,9 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
 # legacy state dir onto `.orbi/`, so the migration window is closed and a
 # single pattern covers it.
 #
-# Issue #302 extends the set with the ORBI CONTRACT ARTIFACTS: the pi-loop
+# The set also covers the ORBI CONTRACT ARTIFACTS: the pi-loop
 # plugin state (#215) and the per-run plan/test/verify artifacts the
-# Runner's own prompt tells the agent to write (pre-#302 at the worktree
+# Runner's own prompt tells the agent to write (once at the worktree
 # root, now under the excluded `.orbi/` run dir). The four historical
 # dirty-gate incidents (#215/#235/#256/#301) were all orbi-owned artifacts
 # blocking a finished delivery — the exemption is now the Runner's runtime
@@ -4114,7 +4107,7 @@ def runner_runtime_exclude_path(worktree: Path) -> Path:
 
 def apply_runner_runtime_excludes(worktree: Path) -> None:
     """Idempotently pin the Runner-owned runtime paths in the worktree's
-    local git exclude (Issue #256).
+    local git exclude.
 
     Existing exclude content (including user-written patterns) is
     preserved verbatim; a pattern already present is never written twice.
@@ -4147,7 +4140,7 @@ def apply_runner_runtime_excludes(worktree: Path) -> None:
 
 def _is_runner_runtime_only(status: str) -> bool:
     """True when EVERY non-empty porcelain entry is a Runner-owned runtime
-    path (Issue #256): the delivery repair may then continue; any
+    path: the delivery repair may then continue; any
     agent-owned entry keeps the `delivery_uncommitted_changes` fail fast."""
     entries = [line for line in status.splitlines() if line.strip()]
     if not entries:
@@ -4169,7 +4162,7 @@ def _is_runner_runtime_only(status: str) -> bool:
 def cleanup_task_worktree(worktree: Path, repo_dir: Path, *, run_id: str,
                           issue: int) -> None:
     """Remove a terminally failed task's worktree and Runner state
-    (Issue #256).
+.
 
     Called ONLY on the terminal `ai-blocked` outcome AFTER the Issue
     evidence (journal line + `Orbi failed` comment) is recorded.
@@ -4199,13 +4192,13 @@ def _agent_delivery_boundary(worktree: Path) -> tuple[str, str]:
     """Return the agent's commit boundary as (HEAD, dirty status).
 
     The Runner-owned runtime paths are pinned in the worktree's LOCAL
-    exclude BEFORE the check (Issue #256), so a task that renamed the
+    exclude BEFORE the check, so a task that renamed the
     tracked .gitignore (the #246 scene) cannot make the Runner's own
     state look like agent leftovers. Only Runner-owned runtime paths
     that remain (the exclude write raced or the path appeared after it)
     are repaired by re-writing the exclude — deterministic, no git add,
     no deletion, no arbitrary whitelisting. Shared by the dev closeout
-    (`deliver_pr`) and the ops closeout (Issue #537).
+    (`deliver_pr`) and the ops closeout.
     """
     apply_runner_runtime_excludes(worktree)
     dirty = run_command(["git", "status", "--porcelain"], cwd=worktree)
@@ -4226,7 +4219,7 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
                source_repo: str) -> str | None:
     """The Runner completes the deterministic delivery closeout.
 
-    Issue #186: the Agent stops at the committed delivery (code, tests,
+    The Agent stops at the committed delivery (code, tests,
     commit on the task branch). Everything after is deterministic and
     owned by the Runner — the Agent no longer fetches the base, merges
     it, pushes or creates the PR:
@@ -4234,7 +4227,7 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
     1. commit boundary: the worktree is clean and HEAD advanced past
        the frozen base — the Runner never commits uncommitted changes
        or expands the Agent's commit boundary (fail fast);
-    2. base freshness: fetch under the base-sync lock (Issue #171); when
+    2. base freshness: fetch under the base-sync lock; when
        the base advanced, a plain `git merge origin/<base>` absorbs it;
        a conflict is aborted (the worktree returns to the Agent's exact
        commit boundary) and the PR opens on the Agent's head — the
@@ -4247,7 +4240,7 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
        verified by `verify_pr` with `require_latest_base=False` (this
        function just fetched and merged the base itself).
 
-    Issue #746: a human may close the Issue while the delivery is in
+    A human may close the Issue while the delivery is in
     flight (labels/state only affect the next scan, so the in-flight
     session correctly keeps running). The Issue state is read directly
     right before the PR creation; a CLOSED Issue returns None — the
@@ -4263,7 +4256,7 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
         raise RuntimeError(
             f"Pi changed branch: expected={branch} actual={current_branch}"
         )
-    # Commit boundary (Issue #186 + #256): the Agent's delivery is the
+    # Commit boundary: the Agent's delivery is the
     # committed worktree state.
     local_head, dirty = _agent_delivery_boundary(worktree)
     if dirty:
@@ -4285,7 +4278,7 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
             f"the agent delivered no commit on the task branch (HEAD "
             f"{local_head} is still the frozen base {base_sha})"
         )
-    # Base freshness (Issue #171): the fetch updates the shared
+    # Base freshness: the fetch updates the shared
     # remote-tracking ref, so it runs under the base-sync lock with the
     # deployment checkout as the lock location. A lock timeout or a
     # fetch error fails fast — no retry, no lock bypass.
@@ -4333,7 +4326,7 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
             f"remote head {remote_head} does not match the local head "
             f"{local_head} after push origin {branch}"
         )
-    # Issue #746: the closed-Issue guard runs AFTER the push (the work
+    # The closed-Issue guard runs AFTER the push (the work
     # stays on the branch for the human) and BEFORE the PR creation.
     # `gh issue view` is a direct, strongly consistent read — the same
     # property `has_in_progress_label` relies on.
@@ -4359,7 +4352,7 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
         )
         return None
     # Exactly one open PR of the branch: create it when absent (the PR
-    # body contract is the Runner's obligation now, Issue #186) and
+    # body contract is the Runner's obligation now) and
     # verify it with the full PR contract (exactly one open PR, base,
     # head, run marker, `Fixes #<issue>`, URL). The verify step skips
     # its own base re-fetch: this function just fetched and merged it.
@@ -4391,27 +4384,27 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
                       source_repo: str) -> str:
     """Verify the PR of a resumed delivery BEFORE any git/Pi mutation.
 
-    Issue #89: #82 removed the cold-start fixer together with the
+    #82 removed the cold-start fixer together with the
     pre-Pi `verify_pr` of the old `resume_delivery` — the resume passed
     the comment's PR URL straight to the delivery wait while the review
     froze the PR derived from the run id, so the two lines could be
     different PRs (a comment must never steer the runner into the wrong
-    PR, Issue #45). Restored: branch and worktree are DERIVED from the
+    PR). Restored: branch and worktree are DERIVED from the
     configured repo_dir, source repo, Issue number and run id (never
     read from the comment), the scene base must still equal the
-    configured base (Issue #91) and the worktree must exist (Issue #90)
+    configured base and the worktree must exist
     — both checked BEFORE any command runs — and the existing
     `verify_pr` then validates exactly one open PR of the derived
     branch in the configured source repo, on the configured base,
     carrying the run marker and the `Fixes` keyword, with the EXACT URL
     of the recovered scene. `require_latest_base=False`: being behind
     the latest base is the expected state the review session absorbs
-    in-session (Issue #82), so the base merge never returns to the
+    in-session, so the base merge never returns to the
     runner. The returned URL is the one verify_pr verified — the
     delivery wait only ever sees verified URLs, never the comment
     string.
 
-    A failure is classified (Issue #50): a RECOVERABLE failure
+    A failure is classified: a RECOVERABLE failure
     (unpushed local commit, runner exception, ...) keeps the Issue in
     the automatic fix loop — `ai-fix-needed` with a run-marked failure
     comment carrying the full scene (run_id, PR, branch, worktree,
@@ -4428,7 +4421,7 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
     """
     number = int(issue["number"])
     run_id = scene["run_id"]
-    # Issue #608: an external takeover scene delivers the contributor's own
+    # An external takeover scene delivers the contributor's own
     # PR — the delivery branch is the PR's head branch, read from the
     # takeover worktree (the worktree path stays derived from the trusted
     # inputs; the branch is a local git fact of that worktree).
@@ -4439,7 +4432,7 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
     )
     try:
         if scene["base_branch"] != config.base_branch:
-            # Issue #91 + #50: a base-branch change is a human
+            # A base-branch change is a human
             # decision: the runner must not auto-retry a PR frozen on
             # another base, so the handler below marks the Issue
             # ai-blocked with the explicit reason and both base values
@@ -4454,7 +4447,7 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
                 "mismatch"
             )
         if not worktree.is_dir():
-            # Issue #90 + #50: a missing worktree is a RECOVERABLE
+            # A missing worktree is a RECOVERABLE
             # failure (the branch still exists on the remote and the
             # worktree can be recreated on the next resume), so the
             # handler below keeps the Issue in the automatic fix loop.
@@ -4470,7 +4463,7 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
             expected_url=scene["pr_url"], require_latest_base=False,
             external_pr=external,
         )
-        # Issue #178: the resumed delivery is in flight from here on —
+        # The resumed delivery is in flight from here on —
         # the Runner holds the slot and continues the review/merge
         # work — so the Issue must carry the in-flight label BEFORE
         # the work continues. The backfill is an idempotent label
@@ -4495,7 +4488,7 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
         return verified_url
     except Exception as exc:
         if isinstance(exc, ResumePrClosedError):
-            # Issue #788: the resumed path IS the path, so a scene PR
+            # The resumed path IS the path, so a scene PR
             # that is no longer open is a NORMAL between-ticks state,
             # not a crash leftover. The fact is already decided on
             # GitHub — route it here, where the takeover flag is known;
@@ -4534,11 +4527,11 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
             number, scene["pr_url"], branch,
         )
         try:
-            # The shared classified reporter (Issue #288): recoverable
+            # The shared classified reporter: recoverable
             # -> `ai-fix-needed` with the full scene on Issue AND PR,
             # unrecoverable -> `ai-blocked` ALONE — the PR, branch and
             # worktree stay intact either way. `run_id` is the id the
-            # tick BOUND (Issue #41): without it the comment carries no
+            # tick BOUND: without it the comment carries no
             # marker and the progress publishing is skipped, whatever
             # the recovered scene says.
             report_delivery_failure(
@@ -4564,7 +4557,7 @@ def _is_code_fence_line(line: str) -> bool:
 
     Reviewers commonly wrap the machine-readable verdict in a fence
     (```` ``` ````, ```` ```json ```` or `~~~`); a fence line carries no
-    review content, so the tail scan skips it without relaxing Issue #591.
+    review content, so the tail scan skips it without relaxing the verdict checks.
     """
     stripped = line.strip()
     for fence_char in ("`", "~"):
@@ -4580,7 +4573,7 @@ def _is_code_fence_line(line: str) -> bool:
 def _json_dict_span(segment: str) -> dict | None:
     """The `{...}` dict embedded in a text segment, or None.
 
-    Issue #774: wrapper noise around a verdict payload — a leading text
+    Wrapper noise around a verdict payload — a leading text
     prefix, Markdown inline-code backticks, trailing CJK/Western
     punctuation — all sit OUTSIDE the braces, so the first-`{`…last-`}`
     span isolates the JSON. A segment whose braces are reversed or whose
@@ -4598,7 +4591,7 @@ def _json_dict_span(segment: str) -> dict | None:
 
 
 def _validated_verdict(parsed: dict) -> dict:
-    """The Issue #591 semantic checks every verdict payload must pass."""
+    """The semantic checks every verdict payload must pass."""
     if parsed.get("verdict") not in ("pass", "findings"):
         raise ValueError("verdict must be 'pass' or 'findings'")
     head = parsed.get("head")
@@ -4622,11 +4615,11 @@ def _validated_verdict(parsed: dict) -> dict:
 def parse_review_verdict(text: str) -> dict:
     """Extract the REVIEW_VERDICT JSON from a review session's output.
 
-    The output is scanned BACKWARDS (Issue #774): the verdict may be the
+    The output is scanned BACKWARDS: the verdict may be the
     last line, wrapped in the reviewer's natural-language phrasing
     (leading CJK prefix, inline-code backticks, trailing punctuation —
     the orbi-cloud#287 scene), or followed by trailing prose. The
-    semantics do not relax with the shape (Issue #591): a line that only
+    semantics do not relax with the shape: a line that only
     MENTIONS `REVIEW_VERDICT` without starting it (a quote from the
     Issue body, a diff hunk, an echo) is never adopted, a verdict-shaped
     but invalid JSON blob in prose is never adopted, every payload must
@@ -4647,7 +4640,7 @@ def parse_review_verdict(text: str) -> dict:
         stripped = line.strip()
         marked = stripped.startswith(VERDICT_MARKER)
         if not marked and VERDICT_MARKER in stripped:
-            continue  # a marker mention, never a verdict (Issue #591)
+            continue  # a marker mention, never a verdict
         parsed = _json_dict_span(
             stripped[len(VERDICT_MARKER):] if marked else stripped)
         if marked:
@@ -4687,9 +4680,9 @@ def freeze_pr(worktree: Path, branch: str, base_branch: str) -> dict:
     }
 
 
-# Role-specific skill filtering (Issue #83): the review session ends
+# Role-specific skill filtering: the review session ends
 # with a single REVIEW_VERDICT line and its job is to review this one
-# diff and fix it until it can merge (Issue #82) — not to open another
+# diff and fix it until it can merge — not to open another
 # full delivery — so the delivery-oriented skills must not be loaded
 # there (tdd-dev would steer it into the implement/test/PR flow,
 # review-fix-loop would open another fix/review round). The
@@ -4737,19 +4730,18 @@ def run_review(worktree: Path, pr: dict, config: RunnerConfig, source_repo: str,
     """Run one independent review session for a frozen PR.
 
     The session is independent (new process, `prompts/prompt_review.md`, a new
-    session JSONL) and reviews the exact frozen base/head. Issue #82:
-    when it finds Blocker/Major issues it fixes them IN THIS SAME
+    session JSONL) and reviews the exact frozen base/head. When it finds Blocker/Major issues it fixes them IN THIS SAME
     SESSION (modify code, run the full test suite with coverage, commit
     and push the task branch) and re-emits the final verdict — there is
     no cold-start fixer and no third review. The review streams live
     activity through the same pipeline as the implementer (role=review;
-    Issue #41: one run_id end to end, the roles are steps of the same
+    One run_id end to end, the roles are steps of the same
     run).
     """
-    # Issue #256: the review/fix session gets the SAME local-exclude
+    # The review/fix session gets the SAME local-exclude
     # preflight as the implementer (one idempotent helper, Pi 前).
     apply_runner_runtime_excludes(worktree)
-    # Issue #302: same run-dir guarantee as the implementer — the
+    # Same run-dir guarantee as the implementer — the
     # review session reads/writes the same `.orbi/` artifacts.
     (worktree / ".orbi").mkdir(exist_ok=True)
     started = time.monotonic()
@@ -4763,12 +4755,12 @@ def run_review(worktree: Path, pr: dict, config: RunnerConfig, source_repo: str,
         "HEAD_SHA": pr["head_oid"],
         "HEAD_REF": pr["head_ref"],
         "ROUND": str(round),
-        # Issue #171: the SAME shared base-sync lock as the
+        # The SAME shared base-sync lock as the
         # implementer — the review session's base-absorb fetch must
         # run under it (flock <lock> git fetch origin <base>).
         "BASE_SYNC_LOCK": str(base_sync_lock_path(config.repo_dir)),
     }
-    # Issue #745: the review path sees the Issue's decision evolution
+    # The review path sees the Issue's decision evolution
     # too — same trusted timeline, same placeholder gate (a template
     # without it keeps the exact pre-#745 behavior).
     if "{{ISSUE_COMMENTS}}" in review_template:
@@ -4793,10 +4785,10 @@ def run_review(worktree: Path, pr: dict, config: RunnerConfig, source_repo: str,
         str(worktree / ".pi-session"), "--system-prompt", system_prompt,
         context,
     ]
-    # Issue #157: the review session uses the SAME provider config as
+    # The review session uses the SAME provider config as
     # the implementer (one materialized dir per worktree, re-used).
     agent_dir = prepare_pi_agent_dir(worktree, config)
-    # Startup phase (Issue #176): the review session's provider config
+    # Startup phase: the review session's provider config
     # is loaded and materialized too (same line shape, role=review).
     _log_provider_config_loaded(
         issue_ref=issue_context(source_repo, issue),
@@ -4824,12 +4816,12 @@ def run_review(worktree: Path, pr: dict, config: RunnerConfig, source_repo: str,
         branch=branch,
         role=ROLE_REVIEW,
         progress=progress,
-        # Issue #228: the review session uses the SAME configured
+        # The review session uses the SAME configured
         # model_wait dead threshold as the implementer (the real
         # load_config always provides the key; the module constant
         # stays the fallback for hand-built configs).
         model_wait_dead_seconds=config.model_wait_dead_seconds,
-        # Issue #233: the review session uses the SAME /slots swallow
+        # The review session uses the SAME /slots swallow
         # probe as the implementer (absent URL -> disabled).
         model_wait_probe_url=config.model_wait_probe_url,
         model_wait_probe_seconds=config.model_wait_probe_seconds,
@@ -4911,7 +4903,7 @@ class DeliveryDeferred(Exception):
     """An intermediate GitHub state asked the delivery to wait.
 
     Pending CI checks or a still-UNKNOWN mergeability are transient
-    states, never failures (Issue #788): the caller journals the
+    states, never failures: the caller journals the
     observation and returns — the next tick re-reads the state. The
     delivery labels stay untouched and the review-round budget does not
     advance, so a deferred tick costs a couple of read calls only.
@@ -4926,13 +4918,13 @@ def merge_gate(worktree: Path, pr: dict, base_branch: str,
     Re-fetch the latest remote base, require the PR head to contain it, the PR
     to be mergeable, the remote head to still be the reviewed head, and the
     exact head's GitHub CI checks to be completed successfully. Every state
-    is read ONCE (Issue #788): a pending check or an UNKNOWN mergeability is
+    is read ONCE: a pending check or an UNKNOWN mergeability is
     not a failure but an intermediate state — the gate raises
     `DeliveryDeferred`, the caller returns, and the next tick re-reads; a
     failed check or a not-mergeable PR prevents the merge. Then merge with
     `--match-head-commit` so only that exact head can land. No force push, no
     direct push of the protected branch. The base fetch updates the shared
-    remote-tracking ref, so it runs under the base-sync lock (Issue #171)
+    remote-tracking ref, so it runs under the base-sync lock
     with the deployment checkout as the lock location.
     """
     fetch_base_ref(repo_dir, base_branch, cwd=worktree)
@@ -5011,7 +5003,7 @@ def confirm_merged(worktree: Path, pr: dict, base_branch: str,
     """Confirm the PR is MERGED and origin/<base> contains the merge commit.
 
     The base fetch updates the shared remote-tracking ref, so it runs
-    under the base-sync lock (Issue #171) with the deployment checkout
+    under the base-sync lock with the deployment checkout
     as the lock location.
     """
     state = pr_view(pr["number"], "state,mergedAt,mergeCommit", cwd=worktree)
@@ -5118,7 +5110,7 @@ def log_recovery_ci_status(pr: dict, repo: str) -> None:
     """Record the recovered PR's current check status without check output.
 
     This is observability only: a GitHub status lookup must never decide
-    whether the recovered review runs (Issue #79).
+    whether the recovered review runs.
     """
     try:
         checks = commit_check_runs(repo, pr["head_oid"])
@@ -5140,7 +5132,7 @@ def log_recovery_ci_status(pr: dict, repo: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Startup source freshness (Issue #525): the 2026-09-07 incident — the
+# Startup source freshness: the 2026-09-07 incident — the
 # editable install resolved into an OLD issue worktree while the
 # ExecStartPre preflight kept the deployment checkout fresh — showed
 # that "the checkout gets synced" and "the process executes that
@@ -5220,9 +5212,9 @@ def _runner_source_stale_line(facts: dict, *, allowed: bool, fix: str) -> str:
 
 
 def check_runner_source_freshness(config: RunnerConfig, *, run_command) -> dict:
-    """Startup invariant (Issue #525): prove that the code THIS process
+    """Startup invariant: prove that the code THIS process
     executes is the configured engine source channel's exact commit
-    BEFORE any slot or claim (Issue #535: the channel is the
+    BEFORE any slot or claim (the channel is the
     ``engine_source_track`` — ``origin/main`` by default — never the
     delivery target's ``base_branch``). A stale (or unverifiable) source
     fails fast with the structured ``runner_source_stale`` line (facts +
@@ -5372,7 +5364,7 @@ def check_runner_source_freshness(config: RunnerConfig, *, run_command) -> dict:
             expected_tag = resolved["tag"] if resolved else None
         else:
             # A sha: lock has no version mapping: unverifiable -> fail
-            # closed (Issue #535: an unverifiable source never runs).
+            # closed.
             expected_tag = None
         parsed_tag = (
             _parse_release_version(expected_tag) if expected_tag else None
@@ -5432,7 +5424,7 @@ def sync_base_checkout(repo_dir: Path, base_branch: str,
     remote base. A checkout that cannot fast-forward (local drift) fails
     fast; the merge itself already landed on GitHub.
 
-    Issue #149: the whole sync runs under the short-lived base-sync
+    The whole sync runs under the short-lived base-sync
     flock (the SAME lock the service template's `ExecStartPre` uses),
     so two instances starting in the same tick never write the main
     worktree concurrently; the lock is released when the sync finishes
@@ -5490,7 +5482,7 @@ def _sync_base_checkout_locked(repo_dir: Path, base_branch: str) -> None:
 def _round_scene_block(resumed: dict, pr_url: str, round: int) -> str:
     """The updated scene block a completed round carries to the next resume.
 
-    The round comment is the budget's write path (Issue #788): embedding
+    The round comment is the budget's write path: embedding
     the scene with `review_round=round` makes THAT comment the latest
     scene, so the next tick's `resume_scene` reads the advanced count —
     GitHub stays the only state store, no second record exists.
@@ -5511,13 +5503,13 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
                               *, scene: dict) -> bool:
     """Run one independent review round; merge when the verdict is clean.
 
-    `title` is the issue's GitHub title (Issue #100): the review
+    `title` is the issue's GitHub title: the review
     progress scenes (ensure, findings, merged) show `#<number> <title>`
     like every other scene; it is required, never fabricated.
 
     `scene` is the delivery's recovered resume scene (run_id, base,
     PR URL, `review_round`, `scene_at`): the round budget reads the
-    scene's `review_round` field (Issue #788 — the scene is the
+    scene's `review_round` field (the scene is the
     waiting primitive's state anchor), and every round comment carries
     the updated scene block, so the next resume continues the count.
 
@@ -5527,7 +5519,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
     (streamed, role=review), and then:
 
     - clean verdict -> the reviewer may have fixed findings IN THE SAME
-      SESSION and pushed the task branch (Issue #82), so the PR is
+      SESSION and pushed the task branch, so the PR is
       RE-FROZEN before the merge gate: the gate (latest-base ancestor,
       one-shot CI read, mergeable, head match,
       `gh pr merge --match-head-commit`) then runs against the head the
@@ -5536,7 +5528,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
       `ai-merged`; returns True;
     - an intermediate gate state (CI still pending on the reviewed head,
       or mergeability still UNKNOWN) -> one journal line and return
-      without a comment or a label change (Issue #788): "pending" is a
+      without a comment or a label change: "pending" is a
       state, not a failure — the next tick re-reads it, the round budget
       does not advance; returns False;
     - Blocker/Major findings the reviewer could not fix in-session ->
@@ -5549,22 +5541,22 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
       `ai-fix-needed` with the finding (the next review session absorbs
       the latest base in-session or repairs the red CI); returns False;
     - missing/malformed verdict (including a verdict whose `head` does
-      not match the PR head, Issue #591) -> raise; the caller keeps the
-      Issue in the automatic fix loop (`ai-fix-needed`, Issue #50: the
+      not match the PR head) -> raise; the caller keeps the
+      Issue in the automatic fix loop (`ai-fix-needed`: the
       next review session re-runs the same review on the same PR);
     - an exhausted round budget -> raise `UnrecoverableDeliveryError`
-      (Issue #50: the bounded loop is a human decision, not a
+      (the bounded loop is a human decision, not a
       recoverable failure); the caller marks the Issue `ai-blocked`
       with the explicit reason.
     """
     marker = run_marker(config.run_id)
-    # The round budget lives in the scene (Issue #788): `review_round`
+    # The round budget lives in the scene: `review_round`
     # counts the COMPLETED rounds, each recorded by the round comment
     # that carried the updated scene block.
     rounds = int(scene["review_round"])
     recovery_at = None
     if rounds >= MAX_REVIEW_ROUNDS:
-        # Issue #483: a maintainer may repair an external prerequisite and
+        # A maintainer may repair an external prerequisite and
         # explicitly move the terminal Issue back to ai-fix-needed. That
         # transition establishes a new budget for this same PR; old review
         # comments remain immutable evidence and are not counted again.
@@ -5584,7 +5576,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
                 issue=number, rounds=rounds,
                 terminal="expected_human_decision",
             )
-            # Issue #50: the loop is bounded by MAX_REVIEW_ROUNDS on purpose
+            # The loop is bounded by MAX_REVIEW_ROUNDS on purpose
             # — after 5 rounds without a clean verdict the remaining findings
             # need a human decision, so the AI cannot safely continue this PR.
             raise ReviewRoundsExhausted(
@@ -5606,7 +5598,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         source_repo=source_repo, role=ROLE_REVIEW,
     )
     started = time.monotonic()
-    # Issue #79: ensure is a bypass — a 404 here must not stop the
+    # Ensure is a bypass — a 404 here must not stop the
     # review (the delivery is already open and awaiting review; the
     # journal is the record, the progress comment is observability).
     publish(
@@ -5634,7 +5626,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
     )
     if review_has_findings(verdict):
         # The reviewer could not make the PR mergeable in this session
-        # (Issue #82: findings are fixed in the same session; reaching
+        # (findings are fixed in the same session; reaching
         # this branch means the fix was not verifiable or not this
         # session's to decide). The Issue moves to the explicit
         # fix-needed state: the next review session retries the same PR
@@ -5648,13 +5640,13 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             f"{verdict['blockers']} blocker(s), {verdict['majors']} "
             "major(s). Findings: "
             + json.dumps(verdict["findings"], ensure_ascii=False)
-            # The completed round advances the scene's budget counter
-            # (Issue #788): the next resume reads it from this comment.
+            # The completed round advances the scene's budget counter:
+            # the next resume reads it from this comment.
             + "\n" + _round_scene_block(scene, pr["url"], round)
         )
         comment_issue(number, repo=source_repo, body=body)
         comment_pr(pr["number"], repo=source_repo, body=body)
-        # Issue #79: the findings publishing is bypass — a 404 here
+        # The findings publishing is bypass — a 404 here
         # must not stop the `ai-fix-needed` transition below (the next
         # review session retries the same PR either way).
         publish(
@@ -5685,7 +5677,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             current_labels=issue_labels(number, source_repo),
         )
         return False
-    # Issue #82: the reviewer fixes findings in the same session and
+    # The reviewer fixes findings in the same session and
     # pushes the task branch, so the head the verdict covers may be
     # NEWER than the frozen head. Re-freeze before the merge gate: the
     # gate then checks the latest-base ancestor, mergeability and the
@@ -5697,7 +5689,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             "review_head_advanced", pr=pr["number"], round=round,
             frozen=pr["head_oid"], reviewed=refrozen["head_oid"],
         )
-    # Issue #591: the clean verdict is bound to the head it covers. The
+    # The clean verdict is bound to the head it covers. The
     # gate below merges exactly `refrozen["head_oid"]`, so a verdict
     # naming any other head (forged by injected text, replayed from an
     # older round, or stale after a fix the reviewer forgot to state)
@@ -5713,8 +5705,8 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         body = (
             f"{marker}\n"
             # Both gate-failure scenes carry the counted `Orbi review
-            # round` prefix (Issue #588) and the updated scene block
-            # (Issue #788): the counted comment is the round budget's
+            # round` prefix and the updated scene block:
+            # the counted comment is the round budget's
             # carrier, so a persistently red CI still consumes the
             # budget and exhausts into the bounded human decision
             # instead of looping forever.
@@ -5749,7 +5741,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             base_branch, repo_dir=config.repo_dir,
         )
     except DeliveryDeferred as exc:
-        # Issue #788: a pending check or an UNKNOWN mergeability on the
+        # A pending check or an UNKNOWN mergeability on the
         # reviewed head is an intermediate state, not a failure — the
         # next tick re-reads it. No comment, no label change, no round
         # consumed: the scene's counter only advances on round comments.
@@ -5772,7 +5764,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
     confirmed = confirm_merged(
         worktree, merged, base_branch, repo_dir=config.repo_dir,
     )
-    # Issue #79: the merged publishing is bypass — the GitHub merge
+    # The merged publishing is bypass — the GitHub merge
     # already landed; a 404 here must not stop the `ai-merged`
     # transition and the merged PR scene comment below.
     publish(
@@ -5802,7 +5794,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
     # the local systemd checkout: a checkout that cannot fast-forward is
     # runner ops, not a failed delivery (must not become ai-blocked).
     # Read the label projection after the merge: a resumed fix round may
-    # have both `ai-in-progress` and `ai-fix-needed` (Issue #423/#330).
+    # have both `ai-in-progress` and `ai-fix-needed`.
     # The merged patch clears every delivery-state label actually present.
     apply_label_patch(
         number, repo=source_repo, event=EVENT_MERGED,
@@ -5828,7 +5820,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             and config.repo_dir == config.deploy_home
             and config.engine_source_track != "main"
         ):
-            # Issue #535: the delivery checkout IS the engine source in
+            # The delivery checkout IS the engine source in
             # the dogfood layout, and the engine channel is locked (or
             # tracks a non-main branch) — fast-forwarding it to
             # origin/<base_branch> would break the lock. The next tick's
@@ -5854,7 +5846,7 @@ def comment_pr(number: int, *, repo: str, body: str) -> None:
 
     The same `format_status_comment` rendering as `comment_issue`: the
     PR-side copy of a round / finding / blocked comment carries the run
-    marker and the runner fingerprint like its Issue twin (Issue #526).
+    marker and the runner fingerprint like its Issue twin.
     """
     run_command([
         "gh", "pr", "comment", str(number), "--repo", repo,
@@ -5885,7 +5877,7 @@ def delivery_head_advanced(worktree: Path, base_sha: str) -> bool:
 def delivered_changed_files(worktree: Path, base: str) -> list[str] | None:
     """The paths the delivered commits changed against the frozen base.
 
-    The checklist's classification input (Issue #763). A git failure
+    The checklist's classification input. A git failure
     returns None — unknown evidence is MISSING evidence, and the
     checklist treats missing evidence as a column-2 item so the gate
     holds (the safe direction: only real evidence can pass it).
@@ -5945,7 +5937,7 @@ def _human_review_column2(worktree: Path, config: RunnerConfig) -> list[str]:
 
 def _publish_plan_milestone(publisher: ProgressPublisher, worktree: Path) -> None:
     """Post the `plan ready` milestone once the worktree has the plan
-    artifact (Issue #302: `.orbi/plan.md`, the excluded run dir)."""
+    artifact."""
     if (worktree / ".orbi" / "plan.md").is_file():
         publisher.milestone("plan ready")
 
@@ -6010,7 +6002,7 @@ def _latest_session_file(worktree: Path | None) -> Path | None:
 
 
 def _fenced(content: str, *, cap: int = 4000) -> str:
-    """One raw-output segment inside a CommonMark code fence (Issue #775).
+    """One raw-output segment inside a CommonMark code fence.
 
     GitHub renders fenced content literally and monospaced, so coverage
     tables and escaped JSONL survive a failure comment unread by the
@@ -6032,13 +6024,13 @@ def _fenced(content: str, *, cap: int = 4000) -> str:
     return block
 
 
-# The number of session records a failure comment summarizes (Issue #775).
+# The number of session records a failure comment summarizes.
 SESSION_SUMMARY_LIMIT = 20
 
 
 def _session_summary(session_file: Path,
                      *, limit: int = SESSION_SUMMARY_LIMIT) -> str:
-    """Structured summary of the last session records (Issue #775).
+    """Structured summary of the last session records.
 
     One line per parsed record — timestamp, type, role, tool name and
     content-block kinds; the record text itself never enters the comment
@@ -6108,7 +6100,7 @@ def _failure_evidence(worktree: Path | None, exc: BaseException) -> str:
     test log are read before cleanup and only bounded, fenced segments are
     copied into the failure comment: raw output stays literal on GitHub,
     the session tail is a structural summary whose duplicates are removed,
-    and the full session log is named for the deep-dive (Issue #775). The
+    and the full session log is named for the deep-dive. The
     failure reason itself stays the readable head of the comment.
     """
     stderr = getattr(exc, "stderr", None)
@@ -6149,7 +6141,7 @@ def _live_progress(publisher: ProgressPublisher, *, issue: int,
     """One live GitHub progress update while a Pi session is running.
 
     Called from the `stream_pi` poll loop (every activity change or
-    heartbeat, Issue #18): the same run-marker comment is PATCHed in
+    heartbeat): the same run-marker comment is PATCHed in
     place at most every `PI_HEARTBEAT_SECONDS` or when the visible
     activity changed. `activity` is the watcher state of that poll, so
     the live comment shows the session exactly as the journal reports
@@ -6197,7 +6189,7 @@ class LiveProgressThrottle:
         visible = (
             activity["phase"], activity["action"], activity["result"],
             activity["model_wait"],
-            # The idle-recovery state is visible progress (Issue #94):
+            # The idle-recovery state is visible progress:
             # entering/leaving it PATCHes the live comment immediately.
             activity.get("recovery"),
         )
@@ -6215,7 +6207,7 @@ def _report_resume_failure(*, number: int, source_repo: str, run_id: str,
     """Report a failed resume decision through the terminal path.
 
     The worktree of this issue exists but its run state cannot be
-    verified (Issue #219): continuing on a guessed identity risks a
+    verified: continuing on a guessed identity risks a
     silent fresh redo on top of unknown work, and a fresh run would
     lose the existing work. The Issue goes `ai-blocked` ALONE (the
     claim label removed) with the exact reason in the failure comment
@@ -6245,15 +6237,15 @@ class IssueResult(NamedTuple):
 def _dispatch_release(issue: dict, config: RunnerConfig,
                       source_repo: str) -> IssueResult:
     """Deliver a RELEASE-scene ticket through the deterministic release
-    state machine (Issue #98): a first-class task type that NEVER enters
+    state machine: a first-class task type that NEVER enters
     the normal `run_pi` development path (scope verification, gates,
     tests, tag, GitHub Release)."""
     number = int(issue["number"])
     # `orbi.release` imports the runner primitives back, so the
     # dispatch imports it lazily here — a module-level import would
-    # be circular (Issue #286).
+    # be circular.
     #
-    # Issue #708: the ready scan's stale snapshot can hand an
+    # The ready scan's stale snapshot can hand an
     # already-claimed release ticket to a second live runner. The
     # dev path got the direct-read yield in #658; the release path
     # needs the same semantics — an in-progress release owned by a
@@ -6295,8 +6287,8 @@ def _gather_claim_facts(issue: dict, config: RunnerConfig,
 
     The probe sequence is `process_issue`'s prologue, order unchanged:
     the attempt binds its run id before any other step is logged
-    (Issue #41), the repository policy applies, the live
-    `ai-in-progress` state is read directly (Issue #658), then the
+, the repository policy applies, the live
+    `ai-in-progress` state is read directly, then the
     fresh-claim probes (the stable branch's open PR, the branch
     existence, the external takeover of a marker ticket) or the
     in-flight probes (the external takeover, the resume worktree) run.
@@ -6310,12 +6302,12 @@ def _gather_claim_facts(issue: dict, config: RunnerConfig,
     # The run id is generated once per attempt and bound BEFORE any
     # other step is logged, so every journal line of the attempt
     # carries it — including the claim-time lines of the restart resume
-    # scan below (Issue #41; review round 3, PR #42). It is bound before
-    # the repository-policy read (Issue #527) so a forbidden/malformed
+    # scan below. It is bound before
+    # the repository-policy read so a forbidden/malformed
     # repository file blocks the claim with a run-marked comment.
     run_id = new_run_id()
     set_run_id(run_id)
-    # Repository-level config-as-code (Issue #527): the caller resolved
+    # Repository-level config-as-code: the caller resolved
     # `.github/orbi.toml` (or the entry's `config_path`) from the source
     # repo's default branch tip ONCE for the whole delivery (a missing
     # file is the None no-op) and it is applied here per key over the host
@@ -6342,7 +6334,7 @@ def _gather_claim_facts(issue: dict, config: RunnerConfig,
             previous_policy=previous_policy,
         )
     base_branch = config.base_branch
-    # The claim label is a delivery-policy key (Issue #527); the lifecycle
+    # The claim label is a delivery-policy key; the lifecycle
     # labels stay host constants.
     dispatch_label = (config.dispatch_label or READY_LABEL)
     claim_labels = _issue_label_set(issue)
@@ -6359,7 +6351,7 @@ def _gather_claim_facts(issue: dict, config: RunnerConfig,
             config.repo_dir, stable_branch,
         )
         if takeover_pr is None:
-            # Issue #608: a triage Issue whose body routes to an EXTERNAL
+            # A triage Issue whose body routes to an EXTERNAL
             # contributor PR takes that PR over for review FIRST — the
             # same takeover primitive as a stable-branch PR (run_pi is
             # skipped, the PR goes straight to the delivery wait loop).
@@ -6382,7 +6374,7 @@ def _gather_claim_facts(issue: dict, config: RunnerConfig,
             event("delivery_takeover", issue=number, branch=stable_branch,
                   pr=takeover_pr.get("url"))
     if in_progress:
-        # Issue #608: an in-flight external takeover (the run died between
+        # An in-flight external takeover (the run died between
         # the worktree creation and the opened-PR transition) must NOT
         # resume into `run_pi` on the contributor's branch — the external
         # PR, when still open, is the takeover delivery.
@@ -6395,7 +6387,7 @@ def _gather_claim_facts(issue: dict, config: RunnerConfig,
                 config.repo_dir, source_repo, number,
             )
         except Exception as exc:
-            # Issue #219: the worktree of this issue exists but its run
+            # The worktree of this issue exists but its run
             # state is missing or corrupt: the same run cannot be
             # verified. Recorded here; the handler fails fast through
             # the terminal failure path (`ai-blocked` + the reason
@@ -6438,9 +6430,9 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     """Run one implementation scene to its delivery outcome.
 
     The handler of FRESH_CLAIM (the normal dev delivery),
-    RESTART_IN_FLIGHT (the Issue #18 restart resume), EXTERNAL_TAKEOVER
-    (the Issue #608 contributor-PR takeover) and OPS (the Issue #537
-    full-execution ops session: the same claim, worktree and run
+    RESTART_IN_FLIGHT (the restart resume), EXTERNAL_TAKEOVER
+    (the contributor-PR takeover) and OPS (the full-execution ops
+    session: the same claim, worktree and run
     machinery — no command whitelist exists anywhere — with the ops
     playbook instead of the dev one and an evidence-on-the-Issue
     closeout when the session delivers no commit). `facts` carries the
@@ -6461,7 +6453,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     existing_worktree = facts.resume_scene[1] if facts.resume_scene else None
     repo_config_fields = facts.repo_config_fields
     if in_progress:
-        # Issue #724: the claim-race window has two halves. The scan
+        # The claim-race window has two halves. The scan
         # snapshot lacking the label while THIS direct read sees it
         # means the claim landed between the scan and the read. Whether
         # that claimant is still ALIVE decides the semantics: with a
@@ -6484,7 +6476,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             )
             return IssueResult("claim-yielded", None)
         if facts.resume_error is not None:
-            # Issue #219: the worktree of this issue exists but its run
+            # The worktree of this issue exists but its run
             # state is missing or corrupt: the same run cannot be
             # verified. Fail fast through the terminal failure path
             # (`ai-blocked` + the reason comment) — never a silent
@@ -6506,7 +6498,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     base_sha = freeze_base(config.repo_dir, base_branch)
     branch = task_branch(source_repo, number, run_id)
     if existing_worktree is not None:
-        # Issue #219: the resumed run keeps its ORIGINAL branch —
+        # The resumed run keeps its ORIGINAL branch —
         # after a repo rename the re-derived name would carry the NEW
         # slug and no longer match the branch the worktree is on (a
         # second branch would be a second delivery). The worktree's
@@ -6516,10 +6508,10 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             cwd=existing_worktree,
         )
     elif external_takeover:
-        # Issue #608: the external takeover delivers the contributor's own
+        # The external takeover delivers the contributor's own
         # branch — the identity the takeover PR is frozen on.
         branch = takeover_pr["headRefName"]
-    # Pickup priority (Issue #101): derived from the scanned issue's
+    # Pickup priority: derived from the scanned issue's
     # labels (no extra gh call) and carried on every journal line and
     # scene comment of the attempt via `run_info`.
     priority = issue_priority(issue)
@@ -6530,7 +6522,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     if ops:
         run_info += " task_type=ops"
     if facts.repo_policy is not None and facts.repo_policy.sha is not None:
-        # Issue #527 D4: the run comment carries the repository config sha
+        # The run comment carries the repository config sha
         # (the file blob at the default branch tip) so a policy change is
         # always visible on the run.
         run_info += f" repo_config={facts.repo_policy.sha}"
@@ -6539,13 +6531,13 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     )
     if not in_progress and dispatch_label in claim_labels \
             and takeover_pr is None:
-        # Issue #658: the pickup scan and the in-progress recheck above
+        # The pickup scan and the in-progress recheck above
         # both predate freeze_base (a seconds-long network round trip).
         # A label — or the stable branch — appearing inside that window
         # means another instance claimed this Issue while we were
         # preparing: yield. No label writes, no comments, nothing that
         # could interrupt the winner's in-flight delivery; the next
-        # tick's scan picks work up again on its own. Issue #724: the
+        # tick's scan picks work up again on its own. The
         # predicate keys on the repository's dispatch label (#527), not
         # the default constant — a custom-label repository's tickets
         # never carry `ai-ready`, and the guard must guard them too.
@@ -6566,7 +6558,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         number, repo=source_repo, event=EVENT_CLAIM,
         current_labels=claim_labels,
     )
-    # Issue #266: the successful pickup resets the stale-pickup clock in
+    # The successful pickup resets the stale-pickup clock in
     # the health state file (bypass — a state-write failure never fails
     # the claim).
     try:
@@ -6574,7 +6566,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     except Exception:
         LOGGER.exception("issue=%s health_pickup_record_failed", number)
     # The Issue is in flight from the claim label on: bind the stop
-    # scene (Issue #48) so a SIGTERM during this tick logs the active
+    # scene so a SIGTERM during this tick logs the active
     # Issue context, not only systemd's generic "Stopped" line. The
     # branch and worktree path are the same derived values the
     # worktree creation below uses (bound before the worktree exists);
@@ -6589,7 +6581,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     set_active_run(
         number, title, branch,
         # The verified resume scene keeps its own path (after a repo
-        # rename it carries the OLD slug — Issue #219); otherwise the
+        # rename it carries the OLD slug); otherwise the
         # derived path (the same value the worktree creation uses).
         str(ctx.worktree),
     )
@@ -6602,7 +6594,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     )
     worktree: Path | None = None
     started = time.monotonic()
-    # Issue #79: the `Orbi opened PR:` scene comment is the first
+    # The `Orbi opened PR:` scene comment is the first
     # delivery step AFTER the opened-PR label transition that can still
     # fail; when it does, the failure path below must leave the Issue in
     # the terminal state `ai-blocked` ALONE (docs/workflow.mdx label
@@ -6618,14 +6610,14 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             # create gap: continue from that branch rather than trying to
             # create a second local branch with the same name.
             existing_branch=stable_branch_present or takeover_pr is not None,
-            # Issue #608: an external takeover checks out the
+            # An external takeover checks out the
             # contributor's own head branch — the identity the takeover
             # PR is frozen on.
             branch=(
                 takeover_pr["headRefName"] if external_takeover else None
             ),
         )
-        # Issue #219: the run state file is the same-run marker —
+        # The run state file is the same-run marker —
         # written for EVERY run (a fresh one included, so a later
         # interruption can be verified and resumed), refreshed for a
         # resumed one (same run id, never a second marker).
@@ -6634,7 +6626,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             source_repo=source_repo, branch=branch,
         )
         ctx = replace(ctx, worktree=worktree)
-        # Issue #219: the new session starts from the existing work —
+        # The new session starts from the existing work —
         # the uncommitted changes and the previous session's progress —
         # instead of a fresh redo. A clean worktree without a previous
         # session is a fresh scene (None, the pre-#219 prompt).
@@ -6657,7 +6649,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             )
         config = replace(config, base_sha=base_sha, run_id=run_id)
         if ops:
-            # Issue #537: the ops session runs the ops playbook — the
+            # The ops session runs the ops playbook — the
             # sibling of the configured dev prompt (a custom prompt
             # deployment carries prompt_ops.md next to it). A missing
             # file fails the run fast through the delivery failure
@@ -6672,7 +6664,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                 extra_fields=repo_config_fields,
             ),
         )
-        # Issue #79: the whole ProgressPublisher path is a bypass — a
+        # The whole ProgressPublisher path is a bypass — a
         # failure here (404, rate limit) is logged and never skips
         # `run_pi` or fails the delivery.
         publish(
@@ -6703,7 +6695,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             action=lambda: _publish_test_milestone(publisher, worktree),
         )
         if ops:
-            # Issue #537: an ops delivery without a commit is COMPLETE —
+            # An ops delivery without a commit is COMPLETE —
             # the evidence the session posted on the Issue (per-step real
             # command output / API responses, the #526 fact culture) is
             # the deliverable. Pure ops actions take no PR ceremony; the
@@ -6749,7 +6741,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                         pr="-", commit=head,
                     ),
                 )
-                # Issue #266: the delivered outcome breaks any failure
+                # The delivered outcome breaks any failure
                 # streak of this Issue in the health history. Pure
                 # bypass: a state-write failure never changes the
                 # delivery outcome.
@@ -6764,7 +6756,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                         "issue=%s health_success_record_failed", number,
                     )
                 return IssueResult("ops", None)
-        # Issue #186: the deterministic closeout (commit boundary, base
+        # The deterministic closeout (commit boundary, base
         # freshness + absorb, plain push, PR creation, PR verification)
         # is the Runner's job — the agent stopped at the committed
         # delivery.
@@ -6780,7 +6772,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             ["git", "rev-parse", "HEAD"], cwd=worktree,
         )
         if pr_url is None:
-            # Issue #746: the Issue was closed during delivery — the
+            # The Issue was closed during delivery — the
             # delivery is complete with no PR (deliver_pr already left
             # the explanatory comment). No label patch (labels are moot
             # on a closed Issue, and a later reopen resumes the run
@@ -6806,7 +6798,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                     pr="-", commit=commit,
                 ),
             )
-            # Issue #266: the delivered outcome breaks any failure
+            # The delivered outcome breaks any failure
             # streak of this Issue in the health history. Pure bypass.
             try:
                 runner_health.record_run_attempt(
@@ -6820,22 +6812,19 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                 )
             return IssueResult("issue-closed", None)
         # The implementer always commits the delivery on top of the
-        # frozen base, so the head always advanced. (Issue #82 removed
-        # the fixer's `fix pushed` milestone: findings are fixed by the
-        # review session, which records its own round comments.)
+        # frozen base, so the head always advanced.
         apply_label_patch(
             number, repo=source_repo, event=EVENT_PR_OPENED,
             current_labels={IN_PROGRESS_LABEL},
         )
         pr_opened = True
-        # The scene comment is NOT a bypass (Issue #79): the next
-        # tick's resume (Issue #45/#89) parses it to recover run_id,
+        # The scene comment is NOT a bypass: the next
+        # tick's resume parses it to recover run_id,
         # base and PR, so a failure here is a real delivery failure —
         # it propagates into the failure path below (ai-blocked, the
         # `Orbi failed` comment, re-raise). The `ProgressPublisher`
-        # steps around it stay bypass: a failure there (Issue #60: the
-        # #57 delivered PATCH 404'd and the runner labeled the Issue
-        # ai-blocked, skipping the review of a valid PR) is logged as
+        # steps around it stay bypass: a failure there (it must never
+        # skip the review of a valid PR) is logged as
         # `progress_publish_failed` and the run continues into the
         # review/merge wait loop.
         comment_issue(
@@ -6845,9 +6834,9 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             ),
         )
         if config.human_review_gate:
-            # Issue #763: the human acceptance checklist — the readable
+            # The human acceptance checklist — the readable
             # face of the gate — posts ONCE per delivery, at the moment
-            # the delivery completes (the PR opens). Bypass (Issue #79):
+            # the delivery completes (the PR opens). Bypass:
             # a failed checklist never fails the delivery; the gate
             # itself is the label check in the review rounds, and a
             # checklist-less delivery still holds there when column 2
@@ -6881,7 +6870,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                 pr=pr_url, commit=commit,
             ),
         )
-        # Issue #266: the delivered outcome breaks any failure streak of
+        # The delivered outcome breaks any failure streak of
         # this Issue in the health history (the streak-break contract of
         # `repeated_failure_findings`). Pure bypass: a state-write
         # failure never changes the delivery outcome.
@@ -6893,7 +6882,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             )
         except Exception:
             LOGGER.exception("issue=%s health_success_record_failed", number)
-        # Issue #608: an external takeover reports its own kind — the
+        # An external takeover reports its own kind — the
         # delivery wait then closes the triage Issue itself after the
         # merge (the external PR body carries no `Fixes #N` for this
         # Issue, so GitHub never closes it natively).
@@ -6901,7 +6890,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             "external-pr" if external_takeover else "pr", ctx.pr,
         )
     except (ModelWaitDeadError, RecoverablePiFailure) as exc:
-        # Issue #227/#325: classified Pi/model infrastructure failures are
+        # Classified Pi/model infrastructure failures are
         # recoverable. Keep the claim, worktree and run-state file so the
         # next in-flight scan resumes this same run.
         recoverable_name = (
@@ -6909,7 +6898,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             if isinstance(exc, ModelWaitDeadError)
             else "Pi failure recovered"
         )
-        # Issue #227: the hung-model-request recovery is a CLASSIFIED,
+        # The hung-model-request recovery is a CLASSIFIED,
         # AI-recoverable failure — NOT the terminal `ai-blocked`. The
         # worktree keeps the interrupted work and the run state file is
         # intact, so the Issue keeps `ai-in-progress`: the next tick's
@@ -6933,7 +6922,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         # Falling through to the generic handler below would mark the
         # Issue `ai-blocked` — exactly the unrecoverable state Issue
         # #227 forbids for this recovery.
-        # Issue #645: an identical repeated failure of this run updates
+        # An identical repeated failure of this run updates
         # the existing scene comment in place (the progress patch path)
         # instead of appending a duplicate on every retry tick.
         try:
@@ -6956,7 +6945,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                 "branch, worktree)"
             ))),
         )
-        # Issue #266: the recoverable failure reaches the health history
+        # The recoverable failure reaches the health history
         # exactly like the terminal one — the resume loop retries the
         # same dead end, which IS the repeating-dead-end scene the
         # self-health check exists to catch (#246). Without this record
@@ -6974,7 +6963,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         return IssueResult("failed", None)
     except Exception as exc:
         LOGGER.exception("issue=%s failed", number)
-        # Issue #266: record the failed run attempt (conservative failure
+        # Record the failed run attempt (conservative failure
         # fingerprint) so the next tick's self-health check can detect a
         # repeating dead end (the #246 scene). Pure bypass: a state-write
         # failure never changes the delivery outcome.
@@ -6988,7 +6977,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         except Exception:
             LOGGER.exception("issue=%s health_failure_record_failed", number)
         try:
-            # The shared terminal reporter (Issue #288): every failure
+            # The shared terminal reporter: every failure
             # reaching this handler is terminal by design (the
             # recoverable Pi failures have their own handler above), so
             # it never classifies — `ai-blocked` with the plain
@@ -7017,7 +7006,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         except Exception:
             LOGGER.exception("issue=%s failure reporting failed", number)
         else:
-            # Issue #256: the terminal evidence is recorded (journal +
+            # The terminal evidence is recorded (journal +
             # `Orbi failed` comment) and the Issue is genuinely
             # `ai-blocked` — the scene is never needed again (a retry
             # gets a new run id and worktree), so clean it up. The
@@ -7030,7 +7019,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                     ctx.worktree, config.repo_dir, run_id=ctx.run_id,
                     issue=ctx.issue,
                 )
-        # Issue #239: the failure is terminal — the Issue is `ai-blocked`
+        # The failure is terminal — the Issue is `ai-blocked`
         # and the `Orbi failed` comment is posted above. Returning
         # `None` ends the tick cleanly: `main` skips the delivery wait
         # (there is no PR) and the slot is released by its `finally`.
@@ -7043,7 +7032,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         return IssueResult("failed", None)
 
 
-# The scene dispatch tables (Issue #787). Phase one routes the
+# The scene dispatch tables. Phase one routes the
 # task-type scenes off the ticket-face facts alone — before any attempt
 # state is bound: a release or content ticket never binds a run id and
 # never applies the repository policy, exactly as before. Phase two
@@ -7064,7 +7053,7 @@ def process_issue(issue: dict, config: RunnerConfig, source_repo: str,
                   repo_policy: RepoPolicy | None = None) -> IssueResult:
     """Deliver one claimed Issue by its explicit delivery scene.
 
-    Three steps, at two fact depths (Issue #787): the ticket-face facts
+    Three steps, at two fact depths: the ticket-face facts
     classify first — the task-type scenes dispatch immediately — then
     the probes gather the claim facts, the classification runs again on
     the full fact set, and the scene's handler is looked up and run.
@@ -7080,7 +7069,7 @@ def process_issue(issue: dict, config: RunnerConfig, source_repo: str,
     stays with the scans.
     """
     number = int(issue["number"])
-    # Issue #100: the progress comment's issue line shows the number
+    # The progress comment's issue line shows the number
     # AND the title in every scene. The scanned issue dict always
     # carries the GitHub title (every scan fetches `title`); a missing
     # or non-string title fails fast here (KeyError / ValueError in
@@ -7130,13 +7119,13 @@ def _finish_progress(
 ) -> None:
     """Finish the tracked progress comment with the terminal scene.
 
-    One function for both terminal scenes (Issue #293): `outcome` is
-    the scene headline — `blocked` (Issue #18: the terminal failure,
+    One function for both terminal scenes: `outcome` is
+    the scene headline — `blocked` (the terminal failure,
     the same body the `process_issue` failure path writes) or
-    `fix needed` (Issue #50: the recoverable failure that keeps the
+    `fix needed` (the recoverable failure that keeps the
     Issue in the automatic fix loop, the next timer resuming the same
     run, branch, worktree and PR). `title` is the issue's GitHub title
-    (Issue #100): the scene shows `#<number> <title>` like every other
+: the scene shows `#<number> <title>` like every other
     progress scene; it is required, never fabricated.
 
     `ensure` finds the run's existing progress comment by its hidden
@@ -7146,7 +7135,7 @@ def _finish_progress(
     review rounds and pickup priority of the run: the caller derives
     them from the Issue's trusted review-round comments and labels,
     so the terminal comment never shows a stale hardcoded role/round
-    (review round 2, PR #42). Issue #82: the only post-PR role is
+    (review round 2, PR #42). The only post-PR role is
     `review` (the review session fixes findings in the same session),
     so the default is `ROLE_REVIEW`.
     """
@@ -7163,7 +7152,7 @@ def _finish_progress(
     ))
 
 
-# Issue #288: the failure-scene snapshot placeholder — the fields a
+# The failure-scene snapshot placeholder — the fields a
 # failure comment shows when no session file exists yet (the Pi never
 # started or the session dir is gone). One constant for every reporter.
 _SNAPSHOT_PLACEHOLDER: dict = {
@@ -7175,7 +7164,7 @@ _SNAPSHOT_PLACEHOLDER: dict = {
 
 
 def _snapshot_or_placeholder(session_dir: Path, *, number: int) -> dict:
-    """Best-effort activity snapshot for a failure scene (Issue #288).
+    """Best-effort activity snapshot for a failure scene.
 
     The watcher state when a session file exists, the placeholder scene
     when none does yet, and the placeholder again — with the read
@@ -7190,7 +7179,7 @@ def _snapshot_or_placeholder(session_dir: Path, *, number: int) -> dict:
     return snapshot if snapshot is not None else dict(_SNAPSHOT_PLACEHOLDER)
 
 
-# The fixed phrases of the two failure templates (Issue #50): the
+# The fixed phrases of the two failure templates: the
 # classified blocked branch names WHY automatic recovery is impossible,
 # the recoverable branch names the automatic next step.
 _BLOCKED_PRECONDITION_PHRASE = (
@@ -7202,7 +7191,7 @@ _FIX_NEEDED_PHRASE = (
     "; the Issue stays ai-fix-needed and the next tick resumes the "
     "same run, branch, worktree and PR"
 )
-# Issue #775: the whole failure-comment body is capped well below the
+# The whole failure-comment body is capped well below the
 # GitHub comment limit; the cut is noted with the full session log path.
 FAILURE_COMMENT_MAX_CHARS = 20000
 
@@ -7215,7 +7204,7 @@ def report_delivery_failure(
     blocked_suffix: str = "", review_round: int | None = None,
     finish: bool = True, publisher: ProgressPublisher | None = None,
 ) -> str:
-    """Report one delivery failure through the Issue #50 flow (Issue #288).
+    """Report one delivery failure through the classified-failure flow.
 
     The single implementation of the flow previously hand-copied in
     `verify_resumed_pr`, `_run_review_round` and `process_issue`:
@@ -7225,7 +7214,7 @@ def report_delivery_failure(
     phrase + `cause` + run scene + evidence), prefix the run marker,
     comment the Issue (the PR too on the recoverable branch — the
     terminal blocked state is Issue-only), then publish the milestone
-    and the terminal progress scene as a pure bypass (Issue #79). The
+    and the terminal progress scene as a pure bypass. The
     milestone text is `blocked|fix needed: {cause}` — untruncated, so
     the concrete reason (a missing worktree path, a round-exhaustion
     reason) stays visible in the mobile notification. Returns the
@@ -7267,7 +7256,7 @@ def report_delivery_failure(
 
         The classified reporters degrade a failed snapshot read to the
         '-' placeholder (the debug entry still carries worktree and
-        branch, Issue #50); the implement-phase first-line scene is
+        branch); the implement-phase first-line scene is
         omitted entirely on a failed read — the structured-alert field
         block then shows only the failure's own fields (the pinned
         #256 isolation).
@@ -7325,7 +7314,7 @@ def report_delivery_failure(
     if evidence:
         body += _failure_evidence(worktree, exc)
     if len(body) > FAILURE_COMMENT_MAX_CHARS:
-        # Issue #775: the comment body is capped; the cut preserves the
+        # The comment body is capped; the cut preserves the
         # cause-first head and names the full session log for the part
         # that was dropped.
         session_file = _latest_session_file(worktree)
@@ -7339,7 +7328,7 @@ def report_delivery_failure(
         body = f"{run_marker(run_id)}\n{body}"
     comment_issue(number, repo=source_repo, body=body)
     if pr_url and not blocked:
-        # The recoverable scene is written to the PR too (Issue #50):
+        # The recoverable scene is written to the PR too:
         # the next review session and any human watcher see it where
         # the delivery lives. A blocked Issue is terminal — Issue only.
         comment_pr(_pr_number(pr_url), repo=source_repo, body=body)
@@ -7406,13 +7395,13 @@ def report_delivery_failure(
 def _run_review_round(
     pr_url: str, issue: dict, config: RunnerConfig, source_repo: str,
 ) -> bool | None:
-    """Run ONE review round of an open-PR delivery (Issue #289).
+    """Run ONE review round of an open-PR delivery.
 
     The delivery step's round body: read the delivery labels ONCE per
     round, repair a lost `ai-in-progress` transition, gate on the
     resumable opened-PR states, then recover the trusted scene,
     validate the frozen base, derive the worktree/branch, run the
-    independent review and classify any failure (Issue #50).
+    independent review and classify any failure.
 
     Returns True when this round merged the PR (terminal success);
     False when the delivery stays open for a LATER TICK (`ai-fix-needed`
@@ -7476,7 +7465,7 @@ def _run_review_round(
             "open PR has no resumable delivery label",
         )
         return None
-    # Issue #763: the human acceptance gate — checked BEFORE the scene,
+    # The human acceptance gate — checked BEFORE the scene,
     # the worktree or any review session. One label read decides; the
     # column-2 re-derivation is local evidence reads only. With the
     # gate on and no `ai-human-review` label, a non-empty column 2
@@ -7507,15 +7496,15 @@ def _run_review_round(
             return None
     # The PR is in an opened-PR review state: run the
     # independent review of the frozen PR on the same run
-    # (Issue #34). `ai-pr-opened` awaits review; `ai-fix-needed`
+    #. `ai-pr-opened` awaits review; `ai-fix-needed`
     # awaits the next review session after a finding or a base
-    # conflict (Issue #82: the review session fixes findings in
+    # conflict (the review session fixes findings in
     # the same session, so both states run the same review). A
     # clean verdict re-freezes the head, merges and returns
     # True (terminal); unfixed findings or a behind/conflict
     # gate label the Issue `ai-fix-needed` and the next
     # iteration re-runs the same independent review. A review
-    # that cannot run is classified (Issue #50): a RECOVERABLE
+    # that cannot run is classified: a RECOVERABLE
     # failure (Pi execution failure, model wait, runner
     # exception, missing/malformed verdict, missing worktree,
     # unpushed local commit) keeps the Issue in the automatic
@@ -7538,7 +7527,7 @@ def _run_review_round(
                 issue_comments(number, repo=source_repo),
             )
         except ValueError as scene_exc:
-            # Issue #50: without the trusted scene the runner
+            # Without the trusted scene the runner
             # cannot derive run_id, branch, worktree or PR and
             # cannot start a review session — an external
             # precondition the AI cannot fix by itself (the
@@ -7555,14 +7544,14 @@ def _run_review_round(
                 "must restore the scene comment or relabel "
                 "the Issue"
             ) from scene_exc
-        # Issue #91 + #50: the scene freezes the base the PR
+        # The scene freezes the base the PR
         # was opened against. The config may have moved on (or
         # the comment is stale): reviewing or merging a PR
         # frozen on another base against the configured one
         # would run the freeze/merge gate on the wrong base,
         # so fail fast before any git/Pi mutation instead of
         # silently switching bases. A base-branch change is a
-        # human decision (Issue #50): the runner must not
+        # human decision: the runner must not
         # auto-retry a PR frozen on another base, so the
         # handler below marks the Issue ai-blocked with the
         # explicit reason and both base values named.
@@ -7580,7 +7569,7 @@ def _run_review_round(
             config.repo_dir, source_repo, number,
             scene["run_id"],
         )
-        # Issue #90 + #50: the worktree is derived from the
+        # The worktree is derived from the
         # configured repo_dir, source repo, Issue number and run id
         # (never read from a comment). A missing directory is a
         # RECOVERABLE failure: the branch still exists on the
@@ -7590,7 +7579,7 @@ def _run_review_round(
         # PR and branch preserved.
         if not worktree.is_dir():
             # The failure comment must carry the full scene
-            # including the branch (Issue #50): the stable
+            # including the branch: the stable
             # derivation is the best available guess when the
             # worktree is gone.
             branch = task_branch(
@@ -7600,7 +7589,7 @@ def _run_review_round(
         # The delivery branch is a local git fact of the derived
         # worktree — the stable naming for the Runner's own
         # deliveries, the contributor's head branch for an
-        # external takeover (Issue #608). Deriving it from the
+        # external takeover. Deriving it from the
         # worktree keeps the whole review/merge loop
         # branch-identity agnostic while the worktree path itself
         # stays comment-independent.
@@ -7634,7 +7623,7 @@ def _run_review_round(
             LOGGER.exception(
                 "issue=%s delivery_review_failed pr=%s", number, pr_url,
             )
-        # The shared classified reporter (Issue #288): recoverable ->
+        # The shared classified reporter: recoverable ->
         # `ai-fix-needed` with the full scene on Issue AND PR,
         # unrecoverable -> `ai-blocked` ALONE. No wrapper: a reporting
         # failure here fails the tick fast (the slot is released by
@@ -7666,7 +7655,7 @@ def _requeue_closed_external_takeover(
     closed PR thread too, because the contributor watches their PR,
     never the triage Issue (docs/contributing.mdx). Shared by the
     delivery step and the resume seam, where the same scene arrives
-    through `ResumePrClosedError` (Issue #788).
+    through `ResumePrClosedError`.
     """
     apply_label_patch(
         number, repo=source_repo, event=EVENT_REQUEUE,
@@ -7728,7 +7717,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
     runs. No sleep exists on this path:
 
     - PR `MERGED` -> terminal: the delivery is done. An EXTERNAL
-      takeover (Issue #608) additionally closes the triage Issue with
+      takeover additionally closes the triage Issue with
       the merge evidence — the contributor's PR body carries no
       `Fixes #N` for this Issue, so GitHub never closes it natively
       (合并外部 PR 即关票); the close is bookkeeping of an already
@@ -7736,7 +7725,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
     - PR `CLOSED` without merge -> terminal failure: the Issue is
       marked `ai-blocked` (removing `ai-pr-opened`/`ai-fix-needed`)
       with a failure comment carrying the run marker. An EXTERNAL
-      takeover is the exception (Issue #608): the contributor withdrew
+      takeover is the exception: the contributor withdrew
       the PR or a maintainer rejected it — that is the 放弃/不可修
       fallback, so the Issue is requeued to `ai-ready` and the next
       claim redoes the fix internally;
@@ -7746,7 +7735,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
       rate-limit guards); no label changes, no round consumed;
     - otherwise -> ONE review round (`_run_review_round`): the label
       read/repair, the resumable gate, the human acceptance gate
-      (Issue #763, the waiting primitive returns the ticket to
+      (the waiting primitive returns the ticket to
       `ai-ready` while column 2 is non-empty), the independent review
       of the frozen PR — the only blocking phase, a Pi subprocess —
       and the merge gate, whose own intermediate states (pending CI,
@@ -7755,14 +7744,14 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
       tick resumes the same run, branch, worktree and PR.
     """
     number = int(issue["number"])
-    # Issue #100: the progress comment's issue line shows the number
+    # The progress comment's issue line shows the number
     # AND the title in every scene; the scanned issue dict always
     # carries the GitHub title (every scan fetches `title`) — a
     # missing or non-string title fails fast, never fabricated.
     title = issue["title"]
     run_id = current_run_id()
     marker = run_marker(run_id) if run_id else ""
-    # Pickup priority (Issue #101): derived from the scanned issue's
+    # Pickup priority: derived from the scanned issue's
     # labels (the resumable/in-flight scans fetch `labels`), so the
     # progress comment of a resumed P0 delivery keeps showing `p0`
     # through review/merge.
@@ -7786,7 +7775,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
             "delivery_merged", issue=number, pr=pr_url,
         )
         if external_takeover:
-            # Issue #608: merging the external PR closes the triage
+            # Merging the external PR closes the triage
             # Issue (the PR body has no `Fixes #N` for it).
             _close_external_triage_issue(
                 number, source_repo, pr_url, marker, run_id,
@@ -7794,7 +7783,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
         return
     if state == "CLOSED":
         if external_takeover:
-            # Issue #608: the external PR was closed without a merge
+            # The external PR was closed without a merge
             # (contributor withdrew, or a maintainer rejected it) —
             # the 放弃/不可修 fallback. The Issue returns to the
             # ready queue and the next claim redoes the fix
@@ -7829,7 +7818,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
             body = f"{marker}\n{body}"
         comment_issue(number, repo=source_repo, body=body)
         if run_id:
-            # Issue #79: the blocked-scene progress publishing is
+            # The blocked-scene progress publishing is
             # bypass — a 404 here must not escape the step (the
             # terminal bookkeeping above already completed and the
             # slot must be released).
@@ -7844,7 +7833,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
             )
             # The blocked scene carries the actual role and the
             # completed review rounds (review round 2, PR #42):
-            # Issue #82 — both opened-PR states are review states
+            # Both opened-PR states are review states
             # (the review session fixes findings in the same
             # session), so the role is always `review`, and the
             # trusted review-round comments bound the round count
@@ -7852,8 +7841,8 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
             blocked_round = review_rounds_so_far(
                 issue_comments(number, repo=source_repo),
             )
-            # The tracked progress comment becomes the blocked scene
-            # (Issue #18): the same terminal body the other failure
+            # The tracked progress comment becomes the blocked scene:
+            # the same terminal body the other failure
             # paths write, with the next-step reason.
             publish(
                 action=lambda: _finish_progress(
@@ -7871,11 +7860,11 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
                 ),
             )
         return
-    # Issue #788: the pre-review CI gate. Pending checks defer the whole
+    # The pre-review CI gate. Pending checks defer the whole
     # delivery to the next tick — the review never starts against a head
     # whose CI has not concluded, so no Pi session is spent on a state
     # that a later read replaces. A failed check still runs the review:
-    # the review session is the fixer (Issue #82), and the merge gate
+    # the review session is the fixer, and the merge gate
     # re-reads the CI of the verdict's head one-shot.
     pending, _failed = _classify_rollup(rollup)
     if pending:
@@ -7884,7 +7873,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
             pending="; ".join(pending),
         )
         return
-    # Issue #289: one OPEN round — the label read/repair, the
+    # One OPEN round — the label read/repair, the
     # resumable gate, one independent review of the frozen PR and
     # the whole failure classification — lives in
     # `_run_review_round`. True (merged this round), False (findings or
@@ -7896,7 +7885,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
         pr_url, issue, config, source_repo,
     )
     if merged_this_round is True and external_takeover:
-        # Issue #726: the SUCCESSFUL auto-merge path must close
+        # The SUCCESSFUL auto-merge path must close
         # the triage Issue exactly like the MERGED branch
         # above — previously only the "someone else merged" poll
         # reached it, so every auto-merged external contribution
@@ -7917,19 +7906,19 @@ def _preflight(config: RunnerConfig) -> None:
     source-freshness gate precede the unit-drift and transport checks,
     and all of them precede any slot or claim.
     """
-    # Issue #399: publish the configured active milestone for the CI
+    # Publish the configured active milestone for the CI
     # triage workflow. This is a bypass; delivery must continue when the
     # variable API is unavailable.
     sync_active_milestone_variable(
         config.source_repos[0], config.active_milestone,
         run_command=run_command,
     )
-    # Editable CLI install refresh (Issue #158): BEFORE any slot or
+    # Editable CLI install refresh: BEFORE any slot or
     # claim the tool env's editable metadata must match the checkout's
     # packaging inputs — a merged packaging change (entry point,
     # version or dependency in `pyproject.toml`) would otherwise make
     # the NEXT CLI process die before the Runner can start (the #158
-    # incident shape; since the src layout, Issue #168, a new package
+    # incident shape; since the src layout, a new package
     # module needs no reinstall). Unchanged: no uv call (no
     # per-tick reinstall); changed or first install: ONE lock-
     # protected editable force reinstall (the SAME base-sync flock the
@@ -7942,13 +7931,13 @@ def _preflight(config: RunnerConfig) -> None:
     # lives in THIS module (see the NOTE at the top): a separate new
     # module would not be importable in the stale-finder tool env, and
     # the refresh that repairs the finder could never run.
-    # Issue #330: the CLI self-update acts on the deployment home, never
+    # The CLI self-update acts on the deployment home, never
     # on the delivery checkout (repo_dir may be a foreign repo X without
     # any orbi packaging input).
     refresh_cli_install(
         config.deploy_home, run_command=run_command,
     )
-    # Startup source freshness (Issue #525): BEFORE any slot or claim,
+    # Startup source freshness: BEFORE any slot or claim,
     # prove that the code THIS process executes is the fetched
     # origin/main head (the import source's checkout HEAD for
     # an editable install, the installed version vs the latest release
@@ -7961,7 +7950,7 @@ def _preflight(config: RunnerConfig) -> None:
     # label change. `allow_stale_runner: true` downgrades the same line
     # to a warning (explicit offline escape hatch, never silent).
     check_runner_source_freshness(config, run_command=run_command)
-    # Deployment consistency (Issue #103, #142): BEFORE any slot or
+    # Deployment consistency: BEFORE any slot or
     # claim the installed systemd units must match the repo templates
     # (the templates the ExecStartPre-synced checkout just loaded).
     # Drift is self-healed with the SAME idempotent install (copy the
@@ -7980,7 +7969,7 @@ def _preflight(config: RunnerConfig) -> None:
             max_concurrency=config.max_concurrency,
             run_command=run_command,
         )
-    # Task-worktree reclamation (Issue #760): closed-Issue worktrees past
+    # Task-worktree reclamation: closed-Issue worktrees past
     # the retention window are bounded garbage — reclaim them at the tick
     # start beside the drift check, NOT through a manual command nobody
     # remembers to run. Idempotent, bounded and never fatal: a reclaim
@@ -7989,7 +7978,7 @@ def _preflight(config: RunnerConfig) -> None:
         reclaim_released_worktrees(config)
     except Exception:
         LOGGER.exception("worktree_reclaim_failed")
-    # Git transport preflight (Issue #114, #580): BEFORE any slot or
+    # Git transport preflight: BEFORE any slot or
     # claim the deployment checkout's git transport must be the
     # CONFIGURED one (orbi.toml `git_transport`, default "ssh") and
     # reachable (the task worktrees share the checkout's single
@@ -8019,12 +8008,12 @@ def _preflight(config: RunnerConfig) -> None:
         ssh_reachable=transport.get("ssh_reachable", "-"),
         transport_reachable=transport.get("transport_reachable", "-"),
     )
-    # Self-health check (Issue #266): BEFORE any slot or claim the Runner
+    # Self-health check: BEFORE any slot or claim the Runner
     # actively looks for the incident patterns of 2026-09-04 — a service
     # crash loop (>= 3 crashes in 60 min, the #262 scene), repeated
     # same-fingerprint run failures on one Issue (>= 3, the #246 scene) and
     # a stale pickup while the ai-ready queue is non-empty. It is a pure
-    # bypass (Issue #79): a check failure logs `health_check_failed` and
+    # bypass: a check failure logs `health_check_failed` and
     # never fails the delivery, takes no slot and changes no label.
     try:
         runner_health.run_health_check(config, run_command=run_command)
@@ -8040,7 +8029,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format=log_format())
-    # Stop scene (Issue #48): install the SIGTERM handler BEFORE any
+    # Stop scene: install the SIGTERM handler BEFORE any
     # other step so every phase of the tick (pre-claim, claim,
     # implement, delivery wait) stops with the active Issue context
     # logged and the live Pi child shut down — never an orphan Pi and
@@ -8058,7 +8047,7 @@ def main(argv: list[str] | None = None) -> int:
         event("config_invalid", level=logging.ERROR, reason=exc)
         return 1
     _preflight(config)
-    # Concurrency cap (Issue #39): take one slot BEFORE claiming anything.
+    # Concurrency cap: take one slot BEFORE claiming anything.
     # The slot is held for the whole delivery lifecycle (implement ->
     # review -> fix -> merge) and released only after the delivery is
     # merged or terminally failed — or when this process exits for any
@@ -8084,7 +8073,7 @@ def main(argv: list[str] | None = None) -> int:
                 "source_repos=%s outcome=no_ready_issue",
                 config.source_repos,
             )
-            # Issue #385: arm a release ticket as a pure bypass. A failed
+            # Arm a release ticket as a pure bypass. A failed
             # label operation must not change the idle outcome.
             if config.active_milestone is not None:
                 try:
@@ -8098,8 +8087,8 @@ def main(argv: list[str] | None = None) -> int:
                         config.source_repos[0],
                         config.active_milestone,
                     )
-                # Issue #274: validate and advance only after the arm attempt.
-                # Issue #614: like the arm above, the advance is an idle-path
+                # Validate and advance only after the arm attempt.
+                # Like the arm above, the advance is an idle-path
                 # pure bypass — a renamed/deleted milestone or a failed `gh`
                 # call must not turn an idle tick into a non-zero exit.
                 try:
@@ -8117,7 +8106,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
             return 0
         source_repo, issue, scene = selected
-        # Issue #527: resolve the repository-level policy ONCE for the whole
+        # Resolve the repository-level policy ONCE for the whole
         # delivery. The effective base branch/milestone must drive the
         # resume verification, the claim and the review/merge loop, and a
         # malformed repository file blocks the claim fast with the offending
@@ -8146,20 +8135,19 @@ def main(argv: list[str] | None = None) -> int:
             config = apply_repo_policy(config, source_repo, repo_policy)
         if scene is not None:
             # An open PR is a recoverable review state: resume the
-            # same run on the same branch, worktree and PR (Issue #45).
+            # same run on the same branch, worktree and PR.
             # Bind the scene's run id first so every journal line and
             # GitHub comment of the resumed delivery carries it
-            # (Issue #41). Both opened-PR states go straight to the
+            #. Both opened-PR states go straight to the
             # delivery step: `ai-pr-opened` awaits review, and
             # `ai-fix-needed` awaits the next review session —
-            # Issue #82: the review session itself fixes findings in the
+            # The review session itself fixes findings in the
             # same session, so there is no cold-start fixer to run
-            # here (a stranded `ai-pr-opened` delivery, dead runner or
-            # the progress failure of Issue #70, is reviewed the same
-            # way).
+            # here (a stranded `ai-pr-opened` delivery or a dead
+            # runner is reviewed the same way).
             set_run_id(scene["run_id"])
             # The resumed delivery is in flight: bind the stop scene
-            # (Issue #48) with the same derived branch/worktree the
+            # with the same derived branch/worktree the
             # delivery wait uses (never read from a comment).
             set_active_run(
                 int(issue["number"]), issue["title"],
@@ -8171,12 +8159,12 @@ def main(argv: list[str] | None = None) -> int:
                     int(issue["number"]), scene["run_id"],
                 )),
             )
-            # Issue #89: verify the open PR BEFORE any git/Pi mutation
+            # Verify the open PR BEFORE any git/Pi mutation
             # (head repo, base, run marker, exact URL of the recovered
             # scene — the pre-#82 resume_delivery check, restored):
             # the step receives the VERIFIED URL, never the comment
             # string, so a comment can never steer the runner into the
-            # wrong PR (Issue #45). A mismatch is terminal: the Issue
+            # wrong PR. A mismatch is terminal: the Issue
             # is marked ai-blocked and the tick stops.
             try:
                 pr_url = verify_resumed_pr(
@@ -8185,7 +8173,7 @@ def main(argv: list[str] | None = None) -> int:
             except UnrecoverableDeliveryError as exc:
                 # Resume verification has already performed the audited
                 # label/comment transition. This is an expected external
-                # scene condition, not a failed Runner tick (Issue #495).
+                # scene condition, not a failed Runner tick.
                 event(
                     "resume_pr_handled", level=logging.ERROR,
                     issue=issue["number"], scene_pr=scene["pr_url"],
@@ -8197,17 +8185,17 @@ def main(argv: list[str] | None = None) -> int:
                 issue, config, source_repo, repo_policy,
             )
             # `process_issue` owns task dispatch and reports its outcome;
-            # do not repeat task-type predicates here (Issue #281).
+            # do not repeat task-type predicates here.
             if result.kind not in ("pr", "external-pr"):
                 return 0
-            # Issue #788: the delivery's PR is open and its scene comment
+            # The delivery's PR is open and its scene comment
             # is written — the tick ends here and releases the slot. The
             # review is the next tick's RESUME_REVIEW step (the waiting
             # primitive generalized): the resume path is the ONLY review
             # path, a crash loses at most the current Pi session, and the
             # slot is never held waiting for CI or mergeability.
             return 0
-        # An external takeover (Issue #608) closes the triage Issue
+        # An external takeover closes the triage Issue
         # itself after the merge — the contributor's PR carries no
         # `Fixes #N` for it. The resumed delivery derives the scene from
         # its trusted comment, which carries the external marker for an
@@ -8220,7 +8208,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         slot.release()
         # The delivery is over (merged, terminally failed, or the tick
-        # found no work): a stop from here on is idle again (Issue #48).
+        # found no work): a stop from here on is idle again.
         clear_active_run()
     return 0
 

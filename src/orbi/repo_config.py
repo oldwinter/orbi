@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repository-level config-as-code (Issue #527).
+"""Repository-level config-as-code.
 
 A repository may carry a delivery-policy file at ``.github/orbi.toml`` on its
 **default branch**. At claim time the Runner reads that file through the
@@ -36,7 +36,7 @@ from orbi.journal import event
 
 if TYPE_CHECKING:
     # Annotation-only: `orbi.runner` imports this module at runtime, so a
-    # real import here would be circular (Issue #790).
+    # real import here would be circular.
     from orbi.runner import RunnerConfig
 
 # Decision D1: one location, `.github/` (the GitHub automation-config
@@ -91,10 +91,10 @@ HOST_ONLY_KEYS = frozenset({
     "slot_dir",
     "unit_name",
     "git_transport",
-    # Tick-start worktree reclamation (Issue #760): the host owns its
+    # Tick-start worktree reclamation: the host owns its
     # disk hygiene, never a repository policy.
     "worktree_retain_hours",
-    # Engine source update channel (Issue #535): a deploy-home decision,
+    # Engine source update channel: a deploy-home decision,
     # never a repository policy.
     "engine_source_track",
     "auto_next_milestone",
@@ -111,7 +111,7 @@ class RepoConfigError(ValueError):
 
 @dataclasses.dataclass(frozen=True)
 class RepoPolicy:
-    """The validated repository delivery policy (Issue #527, typed #790).
+    """The validated repository delivery policy.
 
     One field per whitelisted ``.github/orbi.toml`` key: a key the
     repository file declares carries its validated value, an omitted key
@@ -340,7 +340,7 @@ def read_repo_config(repo: str, *, path: str = REPO_CONFIG_PATH,
     read passes `failure_log_level=logging.DEBUG` so `run_command`'s
     generic `command_failed` line never reaches the INFO journal, and this
     handler owns the real outcome — silent for the 404, an ERROR carrying
-    the command output for any other failure (Issue #730).
+    the command output for any other failure.
     """
     endpoint = f"repos/{repo}/contents/{path}"
     try:

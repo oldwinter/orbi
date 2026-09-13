@@ -1,4 +1,4 @@
-"""The delivery scene: one explicit classification (Issue #787).
+"""The delivery scene: one explicit classification.
 
 A delivery scene used to be re-derived twice per tick with two
 different decision procedures — the scan layer filtered by GitHub
@@ -67,7 +67,7 @@ class DeliveryScene(Enum):
 
 
 # The issue-body marker vocabulary (the marker the triage workflow
-# embeds for an EXTERNAL contributor PR, Issue #608). The regex is the
+# embeds for an EXTERNAL contributor PR). The regex is the
 # one parser: the runner's takeover probes read the PR number from it,
 # `body_markers` reduces a body to the marker set `classify` reads.
 EXTERNAL_PR_MARKER = "orbi:external-pr"
@@ -111,10 +111,10 @@ def classify(
       "implement" for a branch without an open PR is the pinned
       counterpart);
     - `body_markers`: the `body_markers` set of the Issue body;
-    - `ready_label`: the repository's claim label (Issue #527) — the
+    - `ready_label`: the repository's claim label — the
       queue entry a fresh claim keys on;
     - `human_review_hold`: the human acceptance gate's hold (the gate
-      on and a non-empty checklist column 2, Issue #763); the
+      on and a non-empty checklist column 2); the
       `ai-human-review` label (a human confirmed) overrides it.
 
     The decision order is today's behavior, one branch each:
@@ -130,10 +130,10 @@ def classify(
        ticket with an open PR is the internal takeover race (a fresh
        claim — the handler reviews the PR), anything else is
        NOT_CLAIMABLE;
-    5. marker + open external PR → EXTERNAL_TAKEOVER (Issue #608); a
+    5. marker + open external PR → EXTERNAL_TAKEOVER; a
        PR that is no longer open is not a takeover — the claim falls
        through to a fresh internal delivery;
-    6. `ai-in-progress` → RESTART_IN_FLIGHT (Issue #18);
+    6. `ai-in-progress` → RESTART_IN_FLIGHT;
     7. the claim label → FRESH_CLAIM;
     8. anything else → NOT_CLAIMABLE.
     """
@@ -174,7 +174,7 @@ def classify(
 
 @dataclasses.dataclass(frozen=True)
 class DeliveryContext:
-    """The run-identity bundle of one delivery attempt (Issue #290).
+    """The run-identity bundle of one delivery attempt.
 
     `run_id`, `issue`, `branch`, `worktree` and `pr` travel together
     through the dispatch path; one frozen value object replaces the

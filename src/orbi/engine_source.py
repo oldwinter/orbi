@@ -1,4 +1,4 @@
-"""Orbi engine source update channel (Issue #535).
+"""Orbi engine source update channel.
 
 The deploy home — the checkout the installed CLI executes from — follows
 exactly ONE update channel, configured by the host/deploy-only key
@@ -25,7 +25,7 @@ ref/tag and the HEAD SHA). Rolling back is editing the track back to
 the previous tag/SHA; no other state exists.
 
 This module owns only the ENGINE source channel. The delivery target's
-``base_branch`` semantics are untouched (Issue #543 owns the isolation).
+``base_branch`` semantics are untouched.
 No database, queue, daemon or fallback: git state and the config key are
 the only inputs.
 """
@@ -79,7 +79,7 @@ def normalize_engine_source_track(value: object) -> str:
     """Validate one ``engine_source_track`` config value; absent -> main.
 
     Anything that is not one of the documented forms raises ``ValueError``
-    naming the accepted forms — the config load fails fast (Issue #535).
+    naming the accepted forms — the config load fails fast.
     """
     if value is None:
         return "main"
@@ -139,7 +139,7 @@ def parse_semver_tag(tag: str) -> tuple[tuple[int, int, int], bool] | None:
 
 def is_official_release_tag(tag: str) -> bool:
     """True for a semver tag without a pre-release part (the default
-    release-channel selection rule, Issue #535)."""
+    release-channel selection rule)."""
     parsed = parse_semver_tag(tag)
     return parsed is not None and not parsed[1]
 
@@ -170,7 +170,7 @@ def resolve_expected_head(track: str, cwd: Path, *,
                           run_command: Callable[..., str]) -> dict:
     """Resolve the track's expected commit with LOCAL git reads only.
 
-    The freshness gate (Issue #525) and ``orbi doctor`` judge the source
+    The freshness gate and ``orbi doctor`` judge the source
     through the refs/tags the ExecStartPre sync already fetched — no
     network here. Returns the resolved kind/argument, the display ref
     (or tag / sha) and the expected commit; an unresolvable channel
@@ -387,7 +387,7 @@ def _fetch_exact_tag(deploy_home: Path, track: str, tag: str, *,
 def sync_engine_source(deploy_home: Path, track: str, *,
                        run_command: Callable[..., str]) -> dict:
     """Bring the deploy home checkout to the configured engine source
-    channel and verify the head (the ExecStartPre contract, Issue #535).
+    channel and verify the head (the ExecStartPre contract).
 
     Dirty checkouts fail closed before any mutation; tag/sha channels
     land on a detached HEAD at the exact commit; branch channels land on

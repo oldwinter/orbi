@@ -1,10 +1,10 @@
-"""Runner self-health check (Issue #266).
+"""Runner self-health check.
 
 The two 2026-09-04 incidents (#246: three identical delivery failures on one
 Issue, #262: the service crash loop) were both found by humans reading the
 journal in real time. This module gives the Runner a lightweight, active
 self-check that runs at every tick start (a pure bypass — a check failure
-never fails the delivery, Issue #79 semantics):
+never fails the delivery semantics):
 
 - crash loop: the service unit crashed >= CRASH_THRESHOLD times within the
   last CRASH_WINDOW_MINUTES (counted from the systemd journal — each crash
@@ -46,7 +46,7 @@ from orbi.systemd_deploy import service_instances
 
 if TYPE_CHECKING:
     # Annotation-only: `orbi.runner` imports this module at runtime
-    # (Issue #790).
+    #.
     from orbi.runner import RunnerConfig
 
 LOGGER = logging.getLogger("orbi.health")
@@ -122,19 +122,19 @@ def _line_clock_seconds(line: str) -> int | None:
 # "200ms" — the format_duration output the model_wait / idle-recovery
 # failures embed; the duration drifts by one poll interval for the same
 # pit). Only errors whose normalized text is IDENTICAL share a
-# fingerprint — the conservative "same pit" rule of Issue #266.
+# fingerprint — the conservative "same pit" rule.
 VOLATILE_TOKEN_RE = re.compile(
     r"\b[0-9a-f]{8,40}\b"
     r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
     r"|\b(?:\d+(?:ms|[smh]))+(?![0-9a-z])",
 )
 
-# Fail-fast validation errors a HUMAN must fix in the config (Issue #345):
+# Fail-fast validation errors a HUMAN must fix in the config:
 # there is nothing for any agent to implement until a human edits the
 # config. These are the exact messages the Runner raises at config load
 # (`_check_pi_provider_api_key`, `load_config`) and the milestone errors
 # `advance_active_milestone_on_idle` raises for a misconfigured
-# `active_milestone` (Issue #614); a crash loop whose journal carries one
+# `active_milestone`; a crash loop whose journal carries one
 # of them is a deployment-config problem, not an orbi bug.
 CONFIG_CAUSE_RE = re.compile(
     r"missing environment variable"
@@ -160,7 +160,7 @@ def fresh_state() -> dict:
 def load_health_state(path: Path) -> dict:
     """Load the health state; a missing or corrupt file is a fresh state.
 
-    The health check is a bypass (Issue #79): corrupt observability state
+    The health check is a bypass: corrupt observability state
     must never fail the delivery — it is logged and replaced with fresh
     state on the next save.
     """
@@ -201,7 +201,7 @@ def _acquire_health_lock(state_path: Path, *,
                          blocking: bool) -> int | None:
     """Take the cross-instance health-state lock; None when unavailable.
 
-    Issue #710: health.json is the one state file two runner instances
+    Health.json is the one state file two runner instances
     both read and write with no other synchronization — their
     load..save spans interleave and the last writer rolls the other's
     updates back. This is a LEAF lock: it is never taken while holding
@@ -236,7 +236,7 @@ def _acquire_health_lock(state_path: Path, *,
 def save_health_state(path: Path, state: dict) -> None:
     """Write the health state atomically (tmp file + rename).
 
-    Issue #710: the tmp name is pid-scoped. The previous shared
+    The tmp name is pid-scoped. The previous shared
     `health.tmp` meant two instances saving concurrently wrote the same
     tmp inode — interleaved truncate/write produced torn JSON that the
     read side then treated as fresh state (a silent reset of every
@@ -272,7 +272,7 @@ def record_run_attempt(
 ) -> None:
     """Append one run attempt to the bounded health history.
 
-    Issue #710: the load..save span is a cross-instance RMW — the
+    The load..save span is a cross-instance RMW — the
     blocking lock serializes it (the critical section is pure file
     work, milliseconds).
     """
@@ -303,7 +303,7 @@ def record_run_attempt(
 def record_pickup(repo_dir: Path) -> None:
     """Record a successful ticket pickup (resets the stale-pickup clock).
 
-    Issue #710: locked like :func:`record_run_attempt` — an unlocked RMW
+    Locked like :func:`record_run_attempt` — an unlocked RMW
     here is exactly the mechanism behind the false `stale_pickup` alarm
     (one instance's check saves back an old pickup timestamp over the
     other instance's fresh one).
@@ -326,10 +326,10 @@ def crash_journal_lines(
     window.
 
     One bounded `journalctl` query per service instance of THIS deployment
-    (Issue #616: a `unit_name` deployment installs `orbi-<name>@N.service`,
+    (a `unit_name` deployment installs `orbi-<name>@N.service`,
     so the query must follow the same naming — `None` keeps the default
     `orbi@N.service`). The lines are the raw scene the crash-loop alert
-    needs (Issue #345): the exit lines plus the structured fail-fast reason
+    needs: the exit lines plus the structured fail-fast reason
     the Runner logged before each crash.
     """
     lines: list[str] = []
@@ -379,7 +379,7 @@ def count_crashes(
 
 
 def classify_crash(journal_lines: list[str]) -> tuple[str, str]:
-    """Classify a crash loop as deployment-config or orbi-bug (Issue #345).
+    """Classify a crash loop as deployment-config or orbi-bug.
 
     Returns ``(kind, reason_line)``. ``kind`` is ``"config"`` when the
     journal carries a fail-fast validation error (CONFIG_CAUSE_RE) — a human
@@ -400,7 +400,7 @@ def classify_crash(journal_lines: list[str]) -> tuple[str, str]:
 def crash_reason_fingerprint(reason_line: str) -> str:
     """Return the stable 16-hex fingerprint of one crash reason line.
 
-    A per-crash identity for the alert body (Issue #345): the same fail-fast
+    A per-crash identity for the alert body: the same fail-fast
     reason always fingerprints identically, so a recurring loop is
     recognizable at a glance. Empty reason -> empty fingerprint.
     """
@@ -432,8 +432,8 @@ def orbi_repo_from_origin_url(url: str) -> str | None:
 def orbi_repo_from_deploy_home(deploy_home: Path, run_command) -> str | None:
     """Derive the orbi repo from the deploy home's git origin.
 
-    The deploy home is the orbi source checkout (Issue #330); its origin is
-    the orbi repo the Runner-self health alerts belong in (Issue #345).
+    The deploy home is the orbi source checkout; its origin is
+    the orbi repo the Runner-self health alerts belong in.
     A failed query or unparseable URL returns None (the caller falls back to
     the configured override or skips — never guesses a repo).
     """
@@ -510,7 +510,7 @@ def create_health_issue(
     and `gh issue list --search 'in:body ...'` finds an existing Issue, so a
     recurring alarm never creates a second Issue.
 
-    ``dispatchable`` (Issue #345): True -> the normal `bug`+`ai-ready`
+    ``dispatchable``: True -> the normal `bug`+`ai-ready`
     dispatch (an orbi bug orbi's own agent can fix); False -> a
     non-dispatchable alert (`bug` only, NO `ai-ready`) for a deployment
     config problem only a human can fix — the Runner never picks it up.
@@ -584,7 +584,7 @@ def repeat_failure_comment(finding: dict) -> str:
 def run_health_check(config: RunnerConfig, *, run_command) -> list[str]:
     """Run the tick-start self-health check. Returns the fired check names.
 
-    Issue #710: the state read-modify-write is serialized across
+    The state read-modify-write is serialized across
     instances with the leaf health lock, acquired non-blocking with a
     bounded wait — the check is a documented pure bypass, so a lock
     that stays busy skips this tick's check with the same semantics as
@@ -610,7 +610,7 @@ def _run_health_check_locked(config: RunnerConfig, *, run_command) -> list[str]:
     state_path = health_state_path(config.repo_dir)
     state = load_health_state(state_path)
     try:
-        # Routing (Issue #345): Runner-self health alerts belong in the orbi
+        # Routing: Runner-self health alerts belong in the orbi
         # repo, never the delivery repo by default. The configured
         # `health_alert_repo` override wins (fork/private deployments);
         # otherwise the orbi repo is derived from the deploy home's git
@@ -623,7 +623,7 @@ def _run_health_check_locked(config: RunnerConfig, *, run_command) -> list[str]:
             )
         # 1. Crash loop (#262 scene: repeated service exits, including the
         #    unit self-heal death loop — each iteration exits non-zero).
-        #    Issue #616: watch THIS deployment's units (unit_name-aware).
+        # Watch THIS deployment's units (unit_name-aware).
         unit_name = config.unit_name
         crashes = count_crashes(run_command, unit_name=unit_name)
         if crashes >= CRASH_THRESHOLD:

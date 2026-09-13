@@ -2,7 +2,7 @@
 
 One function per GitHub read/write, with the `gh` argument assembly, the
 `--json` field sets, the JSON shape validation, and the read-only retry
-of `run_gh_read_command` all in this one leaf (Issue #785) — no call site
+of `run_gh_read_command` all in this one leaf — no call site
 assembles a `gh` command for the shared contracts anymore, and the
 extracted modules consume GitHub through these typed functions instead of
 importing `runner`.
@@ -38,7 +38,7 @@ from orbi.progress import (
 GH_READ_MAX_ATTEMPTS = 3
 GH_READ_BACKOFF_SECONDS = 1
 # gh prints its own HTTP failures as `HTTP <code>: <text> (<url>)` — the
-# transient classes of Issue #738 are the 401 keyring race, the rate
+# transient classes are the 401 keyring race, the rate
 # limits (429 / the API's "rate limit" messages) and GitHub-side 5xx.
 GH_TRANSIENT_ERROR_RE = re.compile(
     r"http 401|http 429|http 5\d\d|bad credentials|rate limit",
@@ -102,7 +102,7 @@ def run_gh_read_command(
 ) -> str:
     """Run one read-only gh command with bounded transient-failure retries.
 
-    Issue #738: a keyring race (HTTP 401), a rate limit (429) or a
+    A keyring race (HTTP 401), a rate limit (429) or a
     GitHub-side 5xx used to crash a whole tick that was only reading.
     Only provably read-only commands (`_is_readonly_gh_command`) that
     failed with a transient error are retried, so no write path can ever
@@ -173,7 +173,7 @@ def list_issues(repo: str, *, state: str | None = None,
                 timeout: int | None = None) -> list[dict]:
     """Run one ``gh issue list`` query and return the parsed JSON array.
 
-    Issue #299: every ``gh issue list`` call site shares this single
+    Every ``gh issue list`` call site shares this single
     command builder. The flag order mirrors the call sites it replaces
     (``--label``/``--state``/``--search`` before ``--json``/``--limit``,
     with ``--milestone`` appended last, exactly as the release gate did),
@@ -222,7 +222,7 @@ def milestone_issues(repo: str, milestone_number: int,
 def list_milestones(repo: str, *, timeout: int | None = None) -> list[dict]:
     """List ALL Milestones of the repo (open and closed), all pages.
 
-    ``timeout`` keeps the caller's bound (Issue #95: a network wait is
+    ``timeout`` keeps the caller's bound (a network wait is
     a blocking command): the idle milestone-advance sweep bounded this
     read at 30 s before the move into this module.
     """
@@ -234,7 +234,7 @@ def list_milestones(repo: str, *, timeout: int | None = None) -> list[dict]:
 
 
 def milestone_open_issue_count(repo: str, milestone_title: str) -> int:
-    """Return the Open-Issue count of one Milestone (Issue #663).
+    """Return the Open-Issue count of one Milestone.
 
     A single `gh api` call reads GitHub's own `open_issues` counter —
     the authority on whether the Milestone still has unfinished work.
@@ -344,7 +344,7 @@ def release_create(repo: str, *, tag: str, version: str,
 
 
 def issue_priority(issue: dict) -> str:
-    """Return the pickup priority of one issue (Issue #101).
+    """Return the pickup priority of one issue.
 
     `p0` when the issue carries the `p0` label, `normal` otherwise.
     The ready/in-flight/resumable scans fetch `labels` (verified
@@ -388,7 +388,7 @@ def open_blocker_numbers(issue: dict) -> list[int]:
     dependency relation as `{"nodes": [...], "totalCount": N}`. GitHub
     keeps a relation listed after its blocker closes (the node then
     carries `state: "CLOSED"` and is inert — verified against the live
-    API, Issue #54), so only OPEN blockers actually block: a closed
+    API), so only OPEN blockers actually block: a closed
     blocker clears the dependency without any runner-side bookkeeping,
     and the next tick claims the Issue. A node without an explicit
     `state` counts as open (claiming a possibly-blocked Issue costs a
@@ -432,7 +432,7 @@ def _verify_epic_complete(repo: str, listed_epic: dict) -> list[str]:
     if not isinstance(number, int) or isinstance(number, bool):
         raise ValueError("Epic number is missing or invalid")
     blockers = epic.get("blockedBy")
-    # Live API check (Issue #552): `gh issue view --json blockedBy` returns
+    # Live API check: `gh issue view --json blockedBy` returns
     # {"blockedBy":{"nodes":[],"totalCount":0}} for zero dependencies.
     # Missing/malformed blockedBy is not equivalent to that empty set.
     if not isinstance(blockers, dict) or not isinstance(blockers.get("nodes"), list):
@@ -501,7 +501,7 @@ def _epic_audit(child_evidence: list[str], version: str | None = None) -> str:
 # Only comments posted by a repo maintainer are trusted to carry the
 # recovery scene: a public comment (authorAssociation=NONE) must never
 # steer the runner into an arbitrary local worktree, branch or PR
-# (Issue #45 review, BLOCKER). A missing association is never trusted.
+#. A missing association is never trusted.
 TRUSTED_COMMENT_ASSOCIATIONS = frozenset({
     "OWNER", "MAINTAINER", "MEMBER", "COLLABORATOR",
 })
@@ -523,7 +523,7 @@ def apply_label_patch(number: int, *, repo: str, event: str,
 
     `current_labels` is the Issue's current label names (read once by the
     caller). The patch comes from `delivery_labels.label_patch` — the
-    single source of truth for the transition rules (Issue #175) — so the
+    single source of truth for the transition rules — so the
     same current labels and event always produce the same idempotent
     patch. The patch is applied through `edit_issue`: one call for the
     add plus the first remove, then one call per extra remove (the exact
@@ -555,7 +555,7 @@ def issue_comments(number: int, *, repo: str) -> list[dict]:
     ``gh issue view --json comments`` returns a top-level object with a
     ``comments`` array; each comment carries the author and the
     ``authorAssociation`` of the viewer, which is how the runner tells
-    its own trusted comments apart from public ones (Issue #45).
+    its own trusted comments apart from public ones.
     """
     raw = run_gh_read_command([
         "gh", "issue", "view", str(number), "--repo", repo,
@@ -593,7 +593,7 @@ def pr_comments(number: int, *, repo: str) -> list[dict]:
 
 
 def trusted_issue_comments_block(comments: list[dict], limit: int) -> str:
-    """Render the {{ISSUE_COMMENTS}} prompt block (Issue #745).
+    """Render the {{ISSUE_COMMENTS}} prompt block.
 
     Only trusted authors enter the task context — the same
     `authorAssociation` trust set as the recovery-scene parser (Issue
@@ -677,7 +677,7 @@ def _strip_bot_suffix(login: str) -> str:
 
     ``gh issue view --json comments`` reads comments through GraphQL and
     reports ``author.login`` without the ``[bot]`` suffix, while REST's
-    ``user.login`` keeps it (Issue #655). Both shapes name the same App
+    ``user.login`` keeps it. Both shapes name the same App
     credential, so the suffix is normalized away before comparison.
     """
     return login[:-5] if login.endswith("[bot]") else login
@@ -696,7 +696,7 @@ def _comment_is_trusted(comment: object) -> bool:
     # A copied run marker is not sufficient: the author must be the account
     # represented by the currently authenticated installation token. The
     # optional `[bot]` suffix is normalized on both sides because GraphQL
-    # drops it and REST keeps it (Issue #655).
+    # drops it and REST keeps it.
     return _strip_bot_suffix(login) == _strip_bot_suffix(
         _authenticated_github_login()
     )
@@ -792,7 +792,7 @@ def _check_summaries(rollup: list) -> list[str]:
 
 
 def pr_delivery_rollup(pr_url: str, source_repo: str) -> tuple[str, list]:
-    """Return PR state and the raw status check rollup (ONE read, Issue #788).
+    """Return PR state and the raw status check rollup (ONE read).
 
     The delivery step classifies this rollup once per tick: pending
     checks defer the delivery to the next tick instead of sleeping.

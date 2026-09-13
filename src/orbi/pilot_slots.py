@@ -1,4 +1,4 @@
-"""Cross-process concurrency slots for Orbi (Issue #39).
+"""Cross-process concurrency slots for Orbi.
 
 The local machine can only serve a limited number of concurrent Pilot
 tasks, so the configured ``max_concurrency`` is enforced with one slot

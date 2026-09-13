@@ -1,4 +1,4 @@
-"""The run scene: a versioned machine-readable recovery block (Issue #786).
+"""The run scene: a versioned machine-readable recovery block.
 
 The Runner's resume path recovers the run scene (run id, base, PR URL,
 external-takeover flag, review round) from ONE hidden, versioned block
@@ -50,10 +50,10 @@ class Scene:
     """One recoverable run scene, exactly as the v1 block carries it.
 
     `external` keeps the legacy string semantics ("" or "true"): a
-    takeover delivery (Issue #608) reviews the contributor's PR instead
+    takeover delivery reviews the contributor's PR instead
     of a runner-owned one. `review_round` is the delivery's review
     round counter (0 when the PR opens); it turns the scene into the
-    waiting primitive's state anchor (Issue #788). `schema` mirrors the
+    waiting primitive's state anchor. `schema` mirrors the
     marker version the block was rendered with.
     """
 

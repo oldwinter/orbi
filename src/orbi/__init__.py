@@ -1,4 +1,4 @@
-"""Orbi runtime package (Issue #168).
+"""Orbi runtime package.
 
 Standard src layout: the uv editable install maps this WHOLE package
 directory onto the deployment checkout, so a newly added module in this

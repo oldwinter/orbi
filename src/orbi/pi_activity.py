@@ -9,7 +9,7 @@ tool call or assistant statement), and the result of the newest tool call
 (`ok` / `error`). A tool result reports the outcome without overwriting the
 action that produced it.
 
-The module also formats the journal lines (Issue #40): the full invariant
+The module also formats the journal lines: the full invariant
 scene (branch, worktree, session file) is only ever built for the
 run_start / run_failed / run_end lines; activity and heartbeat lines carry
 short changed fields only. All lines are stable `key=value` pairs (values
@@ -152,7 +152,7 @@ class SessionWatcher:
     file whenever one appears, resetting its state. A resumed Fixer run
     creates a NEW JSONL in the same `.pi-session` directory, so this is
     what makes the journal report the session of the current invocation
-    instead of the previous run's (Issue #45). `known_files=None` keeps
+    instead of the previous run's. `known_files=None` keeps
     the original bind-once semantics used by full-scan snapshots.
     """
 
@@ -169,13 +169,13 @@ class SessionWatcher:
         self.action: str | None = None
         self.result: str | None = None
         # The role of the newest message record: a `toolResult` means the
-        # model is expected to reply next (model_wait, Issue #40).
+        # model is expected to reply next (model_wait).
         self.last_role: str | None = None
         self.events = 0
         self.start_time = now()
         self._offset = 0
         self._last_activity_epoch: float | None = None
-        # Startup milestones (Issue #176): the provider/model Pi ACTUALLY
+        # Startup milestones: the provider/model Pi ACTUALLY
         # selected (from the session's `model_change` record, written
         # right after the session record), the first request (the first
         # user message record — Pi writes it when the first request goes
@@ -228,8 +228,8 @@ class SessionWatcher:
         self.start_time = self._now()
         self._offset = 0
         self._last_activity_epoch = None
-        # The startup milestones belong to the session that is followed
-        # (Issue #176): a resumed invocation's first request/response are
+        # The startup milestones belong to the session that is followed:
+        # a resumed invocation's first request/response are
         # the NEW session's, never the previous one's.
         self.provider = None
         self.model = None
@@ -244,7 +244,7 @@ class SessionWatcher:
         else:
             stale = now - self.start_time
         in_model_wait = self.last_role == "toolResult"
-        # Startup sub-phase (Issue #176): the generic `starting` splits
+        # Startup sub-phase: the generic `starting` splits
         # into `session_pending` (no session file yet — Pi is spawned
         # but has not created its session) and `request_pending` (the
         # session exists but the first response has not arrived). After
@@ -268,13 +268,13 @@ class SessionWatcher:
             "result": self.result,
             # True only while the newest session event is a tool result:
             # the model is expected to reply next, so a long silence is a
-            # slow model, not a stalled agent (Issue #40). The pending
+            # slow model, not a stalled agent. The pending
             # duration while in model_wait is `stale_seconds` itself
-            # (the silence since the newest event, Issue #169).
+            # (the silence since the newest event).
             "model_wait": in_model_wait,
             "changed": changed,
             "stale_seconds": max(0.0, stale),
-            # Startup milestones (Issue #176): the selected provider/model
+            # Startup milestones: the selected provider/model
             # (None until the `model_change` record is read) and the
             # first request/response observed in the session file.
             "provider": self.provider,
@@ -292,7 +292,7 @@ class SessionWatcher:
                 self.session_id = session_id
             return
         if record_type == "model_change":
-            # The provider/model Pi actually selected (Issue #176): the
+            # The provider/model Pi actually selected: the
             # identifiers are non-sensitive and visible on every startup
             # line; a missing/invalid field stays unselected (None).
             provider = record.get("provider")
@@ -310,12 +310,12 @@ class SessionWatcher:
         role = message.get("role")
         if role == "assistant":
             self._apply_assistant(message)
-            # The first response from the model arrived (Issue #176).
+            # The first response from the model arrived.
             self.first_response = True
         elif role == "toolResult":
             self._apply_tool_result(message)
         elif role == "user":
-            # The first request to the model went out (Issue #176): the
+            # The first request to the model went out: the
             # milestone only — the prompt content is never summarized.
             self.first_request = True
         self.last_role = role
@@ -356,7 +356,7 @@ class SessionWatcher:
         name = message.get("toolName")
         name = name if isinstance(name, str) and name else "tool"
         # The result reports the outcome only; the action that produced it
-        # stays visible (Issue #40).
+        # stays visible.
         self.result = "error" if message.get("isError") else "ok"
         if name != "bash":
             self.phase = name
@@ -365,7 +365,7 @@ class SessionWatcher:
 def session_state(session_dir: Path,
                   known_files: set[Path] | None = None) -> dict | None:
     """Read the session journal on disk NOW; None when no session file
-    is visible (Issue #656).
+    is visible.
 
     The known_files-aware sibling of `activity_snapshot`: the live
     watcher's last poll can predate the journal (a dying Pi flushes it
@@ -408,7 +408,7 @@ def format_run_scene(snapshot: dict, *, run_id: str, issue: str, role: str,
     """Full invariant scene for run_start / run_failed lines.
 
     This is the only place the full branch, worktree and session file are
-    emitted; activity/heartbeat lines must not repeat them (Issue #40).
+    emitted; activity/heartbeat lines must not repeat them.
     """
     return (
         f"run={run_id} issue={issue} role={role} "

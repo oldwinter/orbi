@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Orbi task dispatch and status CLI.
 
-With NO subcommand the CLI IS the Runner entry (Issue #140): it runs one
+With NO subcommand the CLI IS the Runner entry: it runs one
 tick, exactly like `python3 -m orbi.runner` — this is what the
 systemd service's `ExecStart` (the installed `orbi`) invokes on
 every timer trigger. The named subcommands are the dispatch and debug
@@ -57,20 +57,20 @@ from orbi.pilot_slots import slot_occupancy
 from orbi.pi_activity import activity_snapshot
 
 LOGGER = logging.getLogger("orbi.cli")
-# Same run correlation mechanism as the runner (Issue #41): when a run id is
+# Same run correlation mechanism as the runner: when a run id is
 # bound, every journal line of this process starts with `[run_id]`.
 LOGGER.addFilter(RunIdFilter())
 
-# The CLI version (Issue #140): the single source of truth is the
+# The CLI version: the single source of truth is the
 # package `orbi.__version__` (imported above). tests/
 # test_cli_packaging.py pins it against the PEP 621 `version` in
 # pyproject.toml, so the two cannot drift.
 
 ISSUE_URL_PATTERN = re.compile(r"/issues/(\d+)$")
 # `ai-pr-opened` (awaiting review), `ai-fix-needed` (awaiting the next
-# review session, Issue #82), `ai-merged` (the Runner merged the PR
-# itself, Issue #34) and `ai-blocked` are all result states of an
-# opened delivery (Issue #45).
+# review session), `ai-merged` (the Runner merged the PR
+# itself) and `ai-blocked` are all result states of an
+# opened delivery.
 RESULT_LABELS = (PR_OPENED_LABEL, FIX_NEEDED_LABEL, MERGED_LABEL, BLOCKED_LABEL)
 
 
@@ -125,7 +125,7 @@ def recent_result(repo: str) -> dict | None:
     """Return the newest delivery result Issue, any state.
 
     Result states: `ai-pr-opened` (awaiting review), `ai-fix-needed`
-    (awaiting the next review session, Issue #82), `ai-merged` (success
+    (awaiting the next review session), `ai-merged` (success
     terminal, the Runner merged the PR itself) and `ai-blocked` (needs
     human attention).
     """
@@ -141,7 +141,7 @@ def format_issue(issue: dict) -> str:
     return f"#{issue['number']} {issue['title']} {issue['url']}"
 
 
-# Live Pi session following (Issue #74): the session subcommand is a
+# Live Pi session following: the session subcommand is a
 # debug attachment (the journal and GitHub remain the daily entry
 # points). It finds the newest `.pi-session/*.jsonl` under the
 # configured repo's `.worktrees` directory and prints its path, or
@@ -178,7 +178,7 @@ def follow_session_file(path: Path,
 
     `tail -f` semantics for ONE file: the generator follows the file it
     was given and never switches to a newer file that appears mid-run
-    (Issue #74). A file that disappears (worktree cleanup) stops the
+. A file that disappears (worktree cleanup) stops the
     generator — fail fast, no fallback. A file that shrank is re-read
     from the start (the same rule as the session watcher). Only
     complete lines are yielded: a trailing partial line (the writer is
@@ -213,7 +213,7 @@ def follow_session_file(path: Path,
 
 
 def _session_content_summary(message: dict) -> str:
-    """One short summary of a message record's content (Issue #74)."""
+    """One short summary of a message record's content."""
     content = message.get("content")
     if isinstance(content, list):
         parts = []
@@ -248,7 +248,7 @@ def _session_content_summary(message: dict) -> str:
 
 
 def format_session_line(record: dict) -> str:
-    """Render one session JSONL record as a one-line summary (Issue #74).
+    """Render one session JSONL record as a one-line summary.
 
     The summary carries the timestamp, the record kind and a short
     role/content digest (tool name + first argument, text or thinking
@@ -333,7 +333,7 @@ def slot_lines(state_dir: Path, capacity: int) -> list[str]:
     return lines
 
 
-# Deployment consistency (Issue #103, #149): the repo templates
+# Deployment consistency: the repo templates
 # (systemd/orbi@.service + @.timer) are the single source of
 # truth. `install-units` deploys them idempotently (it never
 # starts/stops/restarts the service — a running Runner keeps running,
@@ -358,7 +358,7 @@ def deploy_home_dirty_files(repo_dir: Path, *, run_command) -> list[str]:
     # run_command strips the stdout, so the first porcelain line can lose
     # its leading X field: slice the path from column 2 and strip, never
     # from column 3 of the raw line (the engine_source sync shares this
-    # contract, Issue #535).
+    # contract).
     return [
         line[2:].strip()
         for line in status.splitlines()
@@ -371,9 +371,9 @@ def install_units_command(config: RunnerConfig, installed_dir: Path | None) -> s
 
     The report carries the deployed commit (the deployment checkout's
     HEAD — the commit the installed templates came from) and the
-    installed sha256 of each unit (Issue #103).
+    installed sha256 of each unit.
     """
-    # Issue #330: the unit templates live in the deployment home (they
+    # The unit templates live in the deployment home (they
     # render the home path into {{ORBI_REPO_DIR}}), never in the delivery
     # checkout.
     result = systemd_deploy.install_units(
@@ -394,7 +394,7 @@ def install_units_command(config: RunnerConfig, installed_dir: Path | None) -> s
 
 
 def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
-    """Read-only deployment and health report (Issue #103).
+    """Read-only deployment and health report.
 
     Checks: repo commit, unit drift (both units; the same comparison
     the pre-start check uses), timer/service active state, Runner
@@ -409,7 +409,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
     lines.append(
         f"commit: {run_command(['git', 'rev-parse', 'HEAD'], cwd=repo_dir)}"
     )
-    # Engine source update channel (Issue #535): the configured track,
+    # Engine source update channel: the configured track,
     # the resolved ref/tag and the deployment home's HEAD SHA. Read-only
     # local git reads; an unresolvable channel is REPORTED (FAILED) with
     # its structured reason while the rest of the report stays readable.
@@ -445,7 +445,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
         )
     else:
         lines.append("deploy_home: clean")
-    # Git transport (Issue #114, #580): the checkout's origin
+    # Git transport: the checkout's origin
     # protocol, the expected URL of the first configured source repo
     # for the CONFIGURED transport (orbi.toml git_transport) and its
     # reachability probe. doctor is the diagnostic report: a failed
@@ -475,7 +475,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
         )
     except git_transport.TransportError as exc:
         lines.append(f"transport: FAILED {exc}")
-    # Issue #330: unit drift is compared against the deployment home's
+    # Unit drift is compared against the deployment home's
     # templates (the same comparison the pre-start check uses).
     if config.unit_name is None:
         status = systemd_deploy.unit_status(config.deploy_home, installed_dir)
@@ -500,7 +500,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
             lines.append(
                 f"  {entry['unit']}: sha256={entry['installed_sha256']}"
             )
-    # Issue #747: hand-written orbi units without the @ template form
+    # Hand-written orbi units without the @ template form
     # are invisible to every deployment's check_unit_drift — the drift
     # self-heal never reaches them. Doctor surfaces them read-only so
     # the bypass becomes visible instead of silently failing.
@@ -534,7 +534,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
             "(edit orbi.toml pi_providers/pi_provider/pi_model and "
             f"{provider['env_file']})"
         )
-    # CLI source (Issue #152): the official local deployment is the
+    # CLI source: the official local deployment is the
     # editable uv tool install — the tool env imports `orbi`
     # from the deployment checkout, so the ExecStartPre sync is picked
     # up by the next CLI process. A non-editable (site-packages) or
@@ -544,7 +544,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
     # with the editable reinstall, never with
     # `orbi install-units` alone). Read-only: the report stays
     # readable and the rest of the health report is still produced.
-    # Issue #330: the editable CLI source is expected in the deployment
+    # The editable CLI source is expected in the deployment
     # home, not the delivery checkout.
     source = cli_source.cli_source(config.deploy_home)
     line = cli_source.drift_line(source)
@@ -553,7 +553,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
     else:
         lines.append("cli_source: DRIFT")
         lines.append(f"  {line}")
-    # Issue #149: report the INSTANCES (verified against the real CLI:
+    # Report the INSTANCES (verified against the real CLI:
     # `systemctl show` rejects the bare template name, and `journalctl
     # -u` with a template-name glob fails when no instance exists —
     # instance names always work).
@@ -618,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
         "--version", action="version",
         version=f"orbi {__version__}",
     )
-    # Issue #140: the subcommand is OPTIONAL — with no subcommand the
+    # The subcommand is OPTIONAL — with no subcommand the
     # installed CLI runs one Runner tick (the systemd ExecStart is the
     # bare `orbi`), exactly like `python3 -m
     # orbi.runner`.
@@ -703,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format=log_format())
 
     if args.command is None:
-        # Issue #140: no subcommand = the Runner tick. Delegate to the
+        # No subcommand = the Runner tick. Delegate to the
         # Runner's own main: it re-parses `--config` and owns the whole
         # tick contract (unit-drift preflight, transport preflight,
         # slot, claim, fail-fast) — the same behavior the
@@ -711,7 +711,7 @@ def main(argv: list[str] | None = None) -> int:
         return runner.main(["--config", str(args.config)])
 
     if args.command == "check":
-        # Issue #163: the prerequisite gate owns its config handling — a
+        # The prerequisite gate owns its config handling — a
         # missing or invalid orbi.toml is a `config` finding with the
         # repair action, never a traceback. Read-only: no config is
         # created here (`orbi setup` owns that).
@@ -730,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
             pilot_setup.ensure_config(args.config)
         config = load_config(
             args.config,
-            # Issue #535: the engine-source sync is a git operation — a
+            # The engine-source sync is a git operation — a
             # missing provider key must never block it (the Runner's own
             # start enforces the key), so it loads the config with the
             # doctor's lenient provider flags.
@@ -742,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         validate_config(config)
-        # Issue #697: every command path (doctor included) enforces the
+        # Every command path (doctor included) enforces the
         # same single-source-repo contract as runner.main, so a config
         # the Runner will reject is reported instead of all-green.
         validate_execution_source_repos(config.source_repos)
@@ -753,7 +753,7 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.error("config_invalid reason=%s", exc)
         return 1
     except FileNotFoundError as exc:
-        # Issue #163: a PyPI first run (`orbi setup` in a fresh dir with
+        # A PyPI first run (`orbi setup` in a fresh dir with
         # the just-created example config) fails validation on a missing
         # deployment path (prompts/, deploy_home, ...); the user gets the
         # structured failure line, never a traceback.
@@ -822,7 +822,7 @@ def main(argv: list[str] | None = None) -> int:
         except engine_source.EngineSourceError as exc:
             # The structured line (reason + fix) is the message; the
             # non-zero exit fails the ExecStartPre, so the service does
-            # not start (fail closed, Issue #535).
+            # not start (fail closed).
             LOGGER.error("%s", exc)
             return 1
     elif args.command == "doctor":

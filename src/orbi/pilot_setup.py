@@ -1,4 +1,4 @@
-"""One-time setup for Orbi (Issue #117).
+"""One-time setup for Orbi.
 
 `orbi setup` is the config-driven, idempotent, fail-fast
 initialization entry for a new machine or new task-pool repository:
@@ -66,7 +66,6 @@ from orbi.progress import quote_value
 from orbi.journal import event
 
 # Bumped whenever the setup output contract changes shape.
-# Issue #152 added the `cli=` line (the editable install step).
 SETUP_VERSION = 3
 
 PROVIDER_FILE_NAME = "pi-providers.json"
@@ -99,24 +98,24 @@ REQUIRED_LABELS = (
     MERGED_LABEL,
     BLOCKED_LABEL,
     "p0",
-    # Epic marker (Issue #93): the claim scan skips `ai-epic` Issues
+    # Epic marker: the claim scan skips `ai-epic` Issues
     # (`epic_not_claimed`), so the label is platform state the setup
     # entry must guarantee — same as every delivery-state label.
     "ai-epic",
-    # Release task marker (Issue #98): the ready scan picks up
+    # Release task marker: the ready scan picks up
     # `ai-ready`+`ai-release` Issues and `process_issue` routes them to
     # the deterministic release state machine (never `run_pi`), so the
     # label is platform state the setup entry must guarantee.
     "ai-release",
-    # Content-only marker (Issue #209/#537): the pure content agent
+    # Content-only marker: the pure content agent
     # delivers text directly in the Issue (no execution, no git), so
     # setup must provision this explicit, auditable type.
     "ai-content-only",
-    # Ops marker (Issue #537): a full-execution session (shell/gh/
+    # Ops marker: a full-execution session (shell/gh/
     # network, the ops playbook) whose deliverable is evidence posted to
     # the Issue, so setup must provision this explicit, auditable type.
     "ai-ops-only",
-    # Human acceptance gate (Issue #763): the label only a human applies
+    # Human acceptance gate: the label only a human applies
     # to confirm a delivery's acceptance checklist — the Runner never
     # adds or removes it, but setup provisions it so the gate is ready
     # before the operator turns `human_review_gate` on.
@@ -127,16 +126,16 @@ COLOR_PATTERN = re.compile(r"^[0-9a-fA-F]{6}$")
 # Permissions that may create/edit labels (GitHub viewerPermission).
 WRITE_PERMISSIONS = frozenset({"WRITE", "MAINTAIN", "ADMIN"})
 
-# Required local commands (checked with shutil.which). Issue #140:
+# Required local commands (checked with shutil.which). The
 # the installed `orbi` CLI is a prerequisite too — the systemd
 # entry it documents (and the service's ExecStart) must exist.
-# Issue #156: `uv` is a prerequisite too — the CLI editable step
-# (Issue #152) calls `uv tool install`, so a machine that has the CLI
+# `uv` is a prerequisite too — the CLI editable step
+# calls `uv tool install`, so a machine that has the CLI
 # but no uv must fail HERE (with actionable install guidance), not
 # mid-install with an indirect error.
 REQUIRED_COMMANDS = ("git", "gh", "uv", "orbi")
 
-# Actionable install guidance per required command (Issue #156): the
+# Actionable install guidance per required command: the
 # missing-command error must tell the user how to install the
 # prerequisite. The uv entry is the official installer command, verified
 # against https://docs.astral.sh/uv/getting-started/installation/.
@@ -175,7 +174,7 @@ class SetupError(RuntimeError):
 
 
 class CheckError(RuntimeError):
-    """One failed `orbi check` prerequisite (read-only gate, Issue #163).
+    """One failed `orbi check` prerequisite (read-only gate).
 
     ``check`` names the failed step, ``reason`` the concrete finding,
     ``fix`` the repair action and ``docs`` the official documentation
@@ -191,7 +190,7 @@ class CheckError(RuntimeError):
 
 
 def format_check_failure(exc: CheckError) -> str:
-    """The one parseable stderr line for a failed gate (Issue #163)."""
+    """The one parseable stderr line for a failed gate."""
     return (
         f"check_failed check={exc.check} "
         f"reason={quote_value(exc.reason)} "
@@ -199,13 +198,13 @@ def format_check_failure(exc: CheckError) -> str:
     )
 
 
-# The Python floor the `orbi check` gate enforces (Issue #163). Pinned
+# The Python floor the `orbi check` gate enforces. Pinned
 # against the PEP 621 `requires-python` by tests/test_cli_packaging.py:
 # pip enforces the same floor at install time, the gate re-states it at
 # runtime so a hand-rolled interpreter cannot silently run the CLI.
 REQUIRED_PYTHON = (3, 14)
 
-# Official documentation links the check failures carry (Issue #163):
+# Official documentation links the check failures carry:
 # every failure names its repair action AND the official doc.
 DOCS_LINKS = {
     "python": "https://www.python.org/downloads/",
@@ -240,7 +239,7 @@ CHECK_COMMAND_DOCS = {
 
 
 def packaged_example_bytes() -> bytes:
-    """The example config SHIPPED IN THE PACKAGE (Issue #163).
+    """The example config SHIPPED IN THE PACKAGE.
 
     A PyPI install carries no checkout, so the example travels inside
     the wheel (`src/orbi/example_config.toml`, declared as package
@@ -259,7 +258,7 @@ def ensure_config(path: Path) -> Path:
 
     The ADJACENT `.orbi.example.toml` wins (a deployment home may keep
     its own example); without one the example shipped in the package is
-    used (Issue #163: a PyPI install has no checkout-adjacent file).
+    used.
     Both unavailable is a broken install: fail fast, no partial config.
     """
     path = Path(path)
@@ -358,12 +357,12 @@ def load_label_defs(path: Path) -> list[dict]:
 
 def install_cli_step(repo_dir: Path, module_file: Path, *,
                      run_command) -> dict:
-    """Install or verify the editable uv tool install (Issue #152).
+    """Install or verify the editable uv tool install.
 
     The official local deployment is the EDITABLE tool install: the
     tool env imports the ``orbi`` package from the deployment
     checkout (the editable finder maps the whole ``src/orbi/``
-    package directory, Issue #168), so the ``ExecStartPre`` checkout
+    package directory), so the ``ExecStartPre`` checkout
     sync is picked up by the NEXT CLI process automatically (no
     per-version reinstall, no second copy of the source in
     site-packages). ``module_file`` is the RUNNING process's import
@@ -416,7 +415,7 @@ def check_commands(run_command, unit_name: str | None = None) -> dict:
     """Verify the required commands and the systemctl --user bus.
 
     ``git``, ``gh``, ``uv`` and the installed ``orbi`` CLI must be on
-    the PATH (Issue #156: ``uv`` is
+    the PATH (``uv`` is
     checked explicitly because the CLI editable step calls
     ``uv tool install``); a missing command fails fast with the
     actionable install guidance for that command (``COMMAND_INSTALL_
@@ -459,7 +458,7 @@ def check_auth(run_command) -> None:
 def token_is_installation(run_command) -> bool:
     """Is the gh credential a GitHub App installation token (``ghs_``)?
 
-    Issue #613: ``viewerPermission`` is only meaningful for a user
+    ``viewerPermission`` is only meaningful for a user
     token; an installation token reports an empty field there. The
     token prefix (verified against gh 2.100.0 ``gh auth token``) is the
     credential shape's ground truth. An unreadable token is NOT an
@@ -475,7 +474,7 @@ def token_is_installation(run_command) -> bool:
 def probe_label_capability(repo: str, run_command) -> None:
     """Prove the credential can manage labels with a one-shot probe.
 
-    Issue #613: create a uniquely-named probe label and delete it again
+    Create a uniquely-named probe label and delete it again
     (verified against the real API on 2026-09-09: create → 201 JSON,
     delete → 204, both for a user token here and for the installation
     token in the Issue scene). A create failure is a readable fail
@@ -513,7 +512,7 @@ def check_repo(repo: str, run_command) -> dict:
     non-zero, a readable repo returns ``nameWithOwner``,
     ``viewerPermission`` and ``defaultBranchRef``). The viewer
     permission must allow label mutation (WRITE/MAINTAIN/ADMIN).
-    Issue #613: an installation token (``ghs_``) reports an empty
+    An installation token (``ghs_``) reports an empty
     ``viewerPermission`` although its issues:write manages labels, so
     the empty field on an installation token is decided by a one-shot
     create+delete label probe instead of the meaningless field; a user
@@ -666,7 +665,7 @@ def unit_is_enabled(run_command, instance: str) -> bool:
     ``systemctl --user is-enabled`` exits non-zero with the state word on
     stdout (``disabled``, ``masked``, ...) for a unit that is NOT enabled —
     that non-zero exit is documented systemd behavior, not a command
-    failure (Issue #339). A genuine systemctl failure (no user bus: empty
+    failure. A genuine systemctl failure (no user bus: empty
     stdout, error on stderr) re-raises so setup fails fast.
     """
     try:
@@ -761,7 +760,7 @@ def ensure_worktrees_ignored(repo_dir: Path, *, run_command) -> bool:
 def check_checkout(repo_dir: Path, base_branch: str,
                    source_repos: Sequence[str], *,
                    run_command, mode: str = "ssh") -> dict:
-    """Local checkout check including the git transport (Issue #114).
+    """Local checkout check including the git transport.
 
     Reports the ``origin`` remote, its transport, the current branch
     and whether the local HEAD equals the freshly fetched
@@ -803,7 +802,7 @@ def check_checkout(repo_dir: Path, base_branch: str,
                 "first: the timer's ExecStartPre fast-forward refuses "
                 "a dirty worktree, so the Runner could never start"
             )
-        # Issue #171: the checkout check's fetch updates the shared
+        # The checkout check's fetch updates the shared
         # remote-tracking ref, so it runs under the SAME base-sync
         # lock the Runner and the Pi prompt-side fetches use (no
         # unlocked fetch path exists).
@@ -935,7 +934,7 @@ def check_optional_proxy(run_command) -> dict:
 
 
 def check_python_version() -> None:
-    """The running interpreter satisfies the packaging floor (Issue #163)."""
+    """The running interpreter satisfies the packaging floor."""
     if sys.version_info[:2] < REQUIRED_PYTHON:
         floor = ".".join(str(part) for part in REQUIRED_PYTHON)
         raise CheckError(
@@ -948,7 +947,7 @@ def check_python_version() -> None:
 
 
 def check_pi_command() -> None:
-    """The `pi` CLI (one Pi session per task) is on the PATH (Issue #163).
+    """The `pi` CLI (one Pi session per task) is on the PATH.
 
     Deliberately NOT part of the setup ``REQUIRED_COMMANDS`` gate: setup
     provisions GitHub/systemd state, while Pi is the model-facing
@@ -966,7 +965,7 @@ def check_pi_command() -> None:
 
 
 def run_checks(config_path: Path, *, run_command) -> list[str]:
-    """The `orbi check` gate: every prerequisite, fail fast (Issue #163).
+    """The `orbi check` gate: every prerequisite, fail fast.
 
     Read-only: no label, no unit, no git mutation, and NO config
     creation (`orbi setup` owns that) — a missing or invalid orbi.toml
@@ -1130,13 +1129,13 @@ def run_setup(config: RunnerConfig, installed_dir: Path | None, *,
                 )
         targets = list(repos)
     repo_dir = config.repo_dir
-    # Issue #330: labels.toml, the CLI editable install and the unit
+    # Labels.toml, the CLI editable install and the unit
     # templates live in the deployment home; the delivery checkout
     # (repo_dir) may be a foreign repo without any of them.
     deploy_home = config.deploy_home
     defs = load_label_defs(deploy_home / LABELS_FILE)
     check_commands(run_command, config.unit_name)
-    # Issue #152: the CLI source step precedes every other step — the
+    # The CLI source step precedes every other step — the
     # running CLI must import from the deployment checkout, otherwise
     # the unit migration below (and the pre-start self-heal it
     # repairs) could never run the new code (the #152 deadlock).
@@ -1195,7 +1194,7 @@ def format_setup(result: dict) -> list[str]:
             f"setup={result['setup']} version={result['version']} "
             f"base_branch={result['base_branch']}"
         ),
-        # Issue #152: the editable install step result (verified = the
+        # The editable install step result (verified = the
         # running CLI already imports from the checkout; installed =
         # the editable force reinstall ran).
         (

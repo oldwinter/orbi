@@ -1,4 +1,4 @@
-"""CLI source consistency for Orbi (Issue #152).
+"""CLI source consistency for Orbi.
 
 The official local deployment is the EDITABLE uv tool install:
 
@@ -7,7 +7,7 @@ The official local deployment is the EDITABLE uv tool install:
 
 The tool env's Python imports the ``orbi`` package directly from
 the deployment checkout (the setuptools editable finder maps the WHOLE
-package directory ``src/orbi/`` onto the checkout — Issue #168),
+package directory ``src/orbi/`` onto the checkout),
 so the ``ExecStartPre`` checkout sync
 (``git fetch origin main && git merge --ff-only origin/main``) is
 picked up by the NEXT CLI process automatically: there is no second
@@ -24,7 +24,7 @@ checkout drifts the same way.
 This module is READ-ONLY: it reports the running process's
 ``orbi`` import source against the configured ``repo_dir`` and
 the exact fix command. The fix is a HUMAN/setup step (``orbi
-setup`` runs it idempotently). Since Issue #158 the Runner ALSO
+setup`` runs it idempotently). The Runner ALSO
 refreshes the editable install at start (``refresh_cli_install``)
 when the packaging inputs changed — under the SAME base-sync flock
 the ``ExecStartPre`` preflight takes, so two concurrent service
@@ -44,7 +44,7 @@ from orbi.progress import quote_value
 # required 3.14 interpreter instead of requiring a system Python executable.
 PYTHON_INTERPRETER = "python3" if shutil.which("python3") else "3.14"
 
-# The runtime package directory inside a checkout (Issue #168 src
+# The runtime package directory inside a checkout (the src
 # layout): the editable install maps this WHOLE directory, so a newly
 # added package module is importable without regenerating any module
 # list (the #158 stale-finder root cause).
@@ -144,8 +144,8 @@ def drift_line(source: dict) -> str | None:
     )
 
 
-# --- the editable CLI install refresh (moved from `orbi.runner`,
-# --- Issue #785: the install domain belongs to the CLI-source module) ---
+# --- the editable CLI install refresh (the install domain belongs to
+# --- the CLI-source module) ---
 
 import fcntl  # noqa: E402
 import hashlib  # noqa: E402
@@ -159,8 +159,8 @@ CLI_INSTALL_LOGGER = logging.getLogger("orbi.cli_install")
 
 # The uv install timeout (seconds): a local editable build of this
 # zero-dependency package takes seconds; a hang (a wedged uv or a
-# full disk) must fail the start, never block it forever (Issue #95:
-# blocking commands carry a timeout).
+# full disk) must fail the start, never block it forever (blocking
+# commands carry a timeout).
 UV_INSTALL_TIMEOUT_SECONDS = 300
 
 
@@ -174,10 +174,10 @@ def packaging_fingerprint(repo_dir: Path) -> str:
     `pyproject.toml` is the packaging input that decides the editable
     metadata (the entry points, the version, the dependencies) — so
     its content hash is the refresh trigger. Ordinary Python source
-    content is NOT part of it: since the src layout (Issue #168) the
+    content is NOT part of it: since the src layout the
     editable finder maps the WHOLE `src/orbi/` package
     directory, so a newly added package module needs no reinstall
-    (the whole point of the editable install, Issue #152). A checkout
+    (the whole point of the editable install). A checkout
     without `pyproject.toml` cannot be tool-installed: fail fast,
     never guess a fingerprint.
     """

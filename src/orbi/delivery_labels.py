@@ -1,4 +1,4 @@
-"""Delivery label lifecycle and scheduling policy (Issue #175).
+"""Delivery label lifecycle and scheduling policy.
 
 The single source of truth for the delivery label states, the event →
 label patch transition rules, and the pickup/resume/human-intervention
@@ -27,12 +27,12 @@ LIFECYCLE_STATES = frozenset({
 # `p0` and `bug` only order the ready pickup; `ai-epic` marks a
 # coordination Issue the claim scan never touches; `ai-release` routes
 # to the deterministic release state machine; `ai-ops-only` routes to
-# the full-execution ops session (Issue #537: shell/gh/network like a
+# the full-execution ops session (shell/gh/network like a
 # dev ticket, the ops playbook instead of the dev one, the deliverable
 # is evidence posted to the Issue); `ai-content-only` marks a pure
 # content task (the content agent, no execution, the deliverable is
 # posted to the Issue); `ai-human-review` is the human acceptance gate
-# (Issue #763) — the Runner never adds or removes it (the `ai-release`
+# — the Runner never adds or removes it (the `ai-release`
 # shape: no event's patch names it in either direction). None of them
 # is a delivery state, and `blockedBy` (a GitHub relation, not a label)
 # is handled by the dependency scan.
@@ -100,7 +100,7 @@ def label_patch(event: str, current_labels) -> tuple[list[str], list[str]]:
     if event == EVENT_RELEASE_WAITING:
         return ([READY_LABEL], [IN_PROGRESS_LABEL])
     if event == EVENT_HUMAN_REVIEW_WAITING:
-        # Issue #763: the human acceptance gate holds the delivery — the
+        # The human acceptance gate holds the delivery — the
         # same clean, recoverable tick as the release waiting: the
         # ticket returns to `ai-ready` and a stale in-flight label is
         # cleared. The opened-PR state anchor (`ai-pr-opened` /
@@ -114,7 +114,7 @@ def label_patch(event: str, current_labels) -> tuple[list[str], list[str]]:
         )
         return ([READY_LABEL], to_remove)
     if event == EVENT_REQUEUE:
-        # Issue #608: the external takeover delivery ended without a merge
+        # The external takeover delivery ended without a merge
         # (the contributor withdrew the PR, or a maintainer closed it) —
         # the Issue returns to the ready queue and the next claim redoes
         # the fix internally. Every delivery-state label is cleared so the
@@ -155,7 +155,7 @@ def is_pickup_eligible(current_labels) -> bool:
 
 def is_resumable(current_labels) -> bool:
     """True when the Issue is in an opened-PR state awaiting review or the
-    next review session (`ai-pr-opened` or `ai-fix-needed`, Issue #70/#82).
+    next review session (`ai-pr-opened` or `ai-fix-needed`).
 
     `ai-in-progress` alone is NOT resumable here: an implement-phase Issue
     has neither opened-PR label, so it never matches (the in-flight restart
@@ -167,5 +167,5 @@ def is_resumable(current_labels) -> bool:
 
 def needs_human_intervention(current_labels) -> bool:
     """True when the Issue is terminally blocked (`ai-blocked`): it needs a
-    human decision before any automatic resume (Issue #50)."""
+    human decision before any automatic resume."""
     return BLOCKED_LABEL in set(current_labels)

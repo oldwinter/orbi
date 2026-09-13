@@ -1,4 +1,4 @@
-"""The human acceptance gate's checklist (Issue #763).
+"""The human acceptance gate's checklist.
 
 The gate's carrier is the human-only label `ai-human-review`
 (`orbi.delivery_labels`); this module is its readable face: the two
@@ -29,7 +29,7 @@ from orbi.delivery_labels import HUMAN_REVIEW_LABEL
 CHECKLIST_MARKER = "orbi:human-review"
 _CHECKLIST_SCHEMA = 1
 
-# Column-2 items (Issue #763 section 4: the machine-unverifiable
+# Column-2 items (the machine-unverifiable
 # minimum). Each fires on a data condition of the delivered diff, not
 # on a repo-agnostic "humans must check this" template.
 _INTENT_ITEM = (
@@ -154,7 +154,7 @@ def render_checklist_comment(*, run_id: str, pr_url: str,
                              checklist: dict) -> str:
     """Render the Issue comment: run marker, both columns, machine block.
 
-    Hard constraints (Issue #763): no line may start with
+    Hard constraints: no line may start with
     `Orbi review round ` (`review_rounds_so_far` counts it and the
     checklist would burn the bounded review budget); an empty column 2
     says 无需人工介入 explicitly and does not require the label; the
