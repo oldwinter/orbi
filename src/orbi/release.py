@@ -168,12 +168,9 @@ def parse_release_declaration(body: str) -> dict:
 
     `version` is the exact tag name (no spaces) and `base_branch` the
     branch the release commit is frozen from. The declaration carries
-    NO local test contract: test acceptance is the GitHub
-    Actions CI result on the release commit (the #268 CI-wait gate), so
-    `test_command` is not part of the contract — a legacy body that
-    still declares it is accepted with the field ignored (one
-    `release_test_command_ignored` evidence line at run time) and never
-    executed. `scope` lists the Issue/PR numbers verified one by one.
+    NO test contract: test acceptance is the GitHub
+    Actions CI result on the release commit (the #268 CI-wait gate).
+    `scope` lists the Issue/PR numbers verified one by one.
     Optional `version_file` selects a supported ecosystem metadata file
     (the default is `pyproject.toml`) or `none` to skip version metadata
     changes; its existence in the frozen release tree is verified at
@@ -251,10 +248,7 @@ def parse_release_declaration(body: str) -> dict:
                     )
                 scope_open = True
                 fields["scope"] = ""
-            # `test_command` stays a KNOWN key: a legacy
-            # body may still declare it — accepted, ignored, never
-            # executed.
-            elif key in ("version", "base_branch", "test_command",
+            elif key in ("version", "base_branch",
                          "scope_from_milestone", "version_file"):
                 fields[key] = value
             else:
@@ -322,8 +316,6 @@ def parse_release_declaration(body: str) -> dict:
     return {
         "version": fields["version"],
         "base_branch": fields["base_branch"],
-        # A legacy field, accepted and ignored — never executed.
-        "test_command": fields.get("test_command"),
         "scope": scope,
         "scope_from_milestone": fields.get("scope_from_milestone"),
         "version_file": version_file,
@@ -1219,7 +1211,8 @@ def publish_release(*, repo: str, tag: str, version: str,
 MILESTONE_OPEN_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 
-def close_release_milestone(repo: str, version: str, *, run_id: str | None = None) -> str:
+def close_release_milestone(repo: str, version: str, *, run_id: str | None = None,
+                            release_issue: int | None = None) -> str:
     """Close the Milestone whose title is exactly `version`.
 
     Runs on the release success path (after the tag is pushed, the
@@ -1241,6 +1234,16 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
     - `open` with 0 open issues -> closed via the official REST
       contract `PATCH /repos/{owner}/{repo}/milestones/{number}`
       with `state=closed` (OpenAPI `issues/update-milestone`).
+
+    `release_issue` is THIS release's own ticket number.
+    The gate never counts it as unfinished work: it is being closed by
+    this very release, so a stale-open listing of exactly that ticket
+    is the known index lag, and waiting out the backoff for
+    it would make the milestone close depend on the index refresh
+    timing. Every gate read drops it before the 0-open-issues
+    judgment; a refusal then names only the REAL leftovers and
+    annotates the exclusion. Without `release_issue` the gate is
+    unchanged.
 
     The list query asks for `state=all`: the default `state=open`
     would hide already-closed Milestones and break the idempotent
@@ -1278,13 +1281,29 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
             f"Milestone #{number} ({html_url}) already closed — "
             "idempotent success, nothing to do"
         )
-    open_issues = milestone_open_issues(repo, int(number))
+    excluded_tickets: list[int] = []
+
+    def open_leftovers() -> list[dict]:
+        # The gate judges the milestone's REAL unfinished
+        # work — never this release's own ticket.
+        issues = milestone_open_issues(repo, int(number))
+        if release_issue is None:
+            return issues
+        leftovers = [
+            item for item in issues
+            if item.get("number") != release_issue
+        ]
+        if len(leftovers) != len(issues):
+            excluded_tickets.append(release_issue)
+        return leftovers
+
+    open_issues = open_leftovers()
     epic_evidence: list[str] = []
     if run_id is not None and open_issues:
         # Every listed Epic is verified from its children and blockers before
         # the authoritative exact-Milestone list is checked again.
         epic_evidence = reconcile_release_epics(repo, int(number), version, run_id)
-        open_issues = milestone_open_issues(repo, int(number))
+        open_issues = open_leftovers()
     retries = 0
     while open_issues and retries < len(MILESTONE_OPEN_RETRY_DELAYS):
         # The release Issue close succeeded seconds ago; a non-empty read
@@ -1293,21 +1312,31 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
         # fires only once the list stays non-empty across all retries.
         time.sleep(MILESTONE_OPEN_RETRY_DELAYS[retries])
         retries += 1
-        open_issues = milestone_open_issues(repo, int(number))
+        open_issues = open_leftovers()
     if open_issues:
         listing = ", ".join(
             f"#{i.get('number')} {i.get('title')}" for i in open_issues
         )
+        excluded = (
+            f" (this release's own ticket #{release_issue} is excluded "
+            "from this gate — it is being closed by this release)"
+            if release_issue is not None else ""
+        )
         raise RuntimeError(
             f"release {version}: Milestone #{number} ({html_url}) still "
             f"has {len(open_issues)} open issue(s) — closing it would hide "
-            f"unfinished work; open issues: {listing}"
+            f"unfinished work; open issues: {listing}{excluded}"
         )
     close_milestone(repo, int(number))
     epic_suffix = f"; {'; '.join(epic_evidence)}" if epic_evidence else ""
+    excluded_suffix = (
+        f"; release ticket #{release_issue} excluded — it is being "
+        "closed by this release"
+        if excluded_tickets else ""
+    )
     return (
         f"Milestone #{number} ({html_url}) closed after release "
-        f"{version} (0 open issues){epic_suffix}"
+        f"{version} (0 open issues){epic_suffix}{excluded_suffix}"
     )
 
 
@@ -1698,9 +1727,9 @@ def process_release(issue: dict, config: RunnerConfig,
 
     1. Strictly parse the `## Release` declaration from the Issue
        body (version, base_branch, scope or
-       scope_from_milestone — exactly one of the two; a
-       legacy `test_command` field is ignored with one evidence
-       line — the declaration carries no local test contract).
+       scope_from_milestone — exactly one of the two;
+       the declaration carries no test contract — test acceptance
+       is the CI result).
     2. Freeze the base — the release commit is exactly
        `origin/<base_branch>` (fetched under the base-sync lock).
     2b. Prove the declared (or defaulted) `version_file` exists at the
@@ -1805,21 +1834,14 @@ def process_release(issue: dict, config: RunnerConfig,
     open_milestone_evidence: list[str] = []
     try:
         declaration = parse_release_declaration(issue["body"])
-        if declaration["test_command"] is not None:
-            # A legacy `test_command` line is accepted and
-            # ignored with this single evidence line — it is never
-            # executed; test acceptance is the CI-wait gate.
-            event(
-                "release_test_command_ignored",
-                value=declaration["test_command"],
-            )
         base_branch = declaration["base_branch"]
-        event(
-            "release_task",
-            f"base_branch={base_branch} run_id={run_id} "
-            f"priority={priority}",
-            issue=number,
-        )
+        # The started milestone below and the failure comment
+        # read THIS value — base_branch known, base_sha not yet (the
+        # post-gate reassignment further down adds base_sha). The journal
+        # refactor deleted the assignment and both comments lost the only
+        # field naming the frozen branch.
+        run_info = f"base_branch={base_branch} run_id={run_id} priority={priority}"
+        event("release_task", run_info, issue=number)
         apply_label_patch(
             number, repo=source_repo, event=EVENT_CLAIM,
             current_labels={label.get("name") for label in issue.get(
@@ -2081,17 +2103,19 @@ def process_release(issue: dict, config: RunnerConfig,
             )
         try:
             milestone_evidence = close_release_milestone(
-                source_repo, tag, run_id=run_id,
+                source_repo, tag, run_id=run_id, release_issue=int(number),
             )
         except Exception as exc:
             # The tag and GitHub Release are already published at this point.
             # Milestone closure is evidence only and must not rewrite that
-            # irreversible release result as ai-blocked.
+            # irreversible release result as ai-blocked. The
+            # wording states plainly that the third release criterion was
+            # missed — the milestone was NOT closed.
             LOGGER.exception(
                 "issue=%s release_milestone_evidence_failed", number,
             )
             milestone_evidence = (
-                "milestone evidence unavailable: " + str(exc)
+                "milestone NOT closed: " + str(exc)
             )
         try:
             comment_issue(

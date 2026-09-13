@@ -114,8 +114,7 @@ def _is_deploy_path(path: str) -> bool:
 
 
 def build_checklist(*, test_result: str | None,
-                    changed_files: list[str] | None,
-                    test_command: str | None) -> dict:
+                    changed_files: list[str] | None) -> dict:
     """Split the delivery's evidence into the two checklist columns.
 
     `test_result` is the worktree's `.orbi/test.log` summary (or None);
@@ -129,9 +128,10 @@ def build_checklist(*, test_result: str | None,
     column2: list[str] = []
     if test_result:
         column1.append(f"测试结果：{test_result}")
-        suite = test_command or "仓库测试套件"
+        # No declared test command — the suite is the
+        # repository's own test suite (the agent infers the method).
         column1.append(
-            f"覆盖层：{suite} —— 自动化断言覆盖到代码与接口层；"
+            f"覆盖层：仓库测试套件 —— 自动化断言覆盖到代码与接口层；"
             f"改动共 {len(changed_files or [])} 个文件"
         )
     if test_result is None:
@@ -150,7 +150,6 @@ def build_checklist(*, test_result: str | None,
 
 
 def render_checklist_comment(*, run_id: str, pr_url: str,
-                             test_command: str | None,
                              checklist: dict) -> str:
     """Render the Issue comment: run marker, both columns, machine block.
 
@@ -162,13 +161,14 @@ def render_checklist_comment(*, run_id: str, pr_url: str,
     """
     column1 = checklist["column1"]
     column2 = checklist["column2"]
-    suite = test_command or "仓库测试套件"
+    # The review instruction names the repository's own test
+    # suite — no declared test command exists to quote.
     lines = [
         f"<!-- orbi:run={run_id} -->",
         "**Orbi human review checklist**",
         "",
         "复核方式：阅读 PR 的完整 diff（"
-        f"{pr_url}），在本地跑仓库测试（`{suite}`），再确认下面两栏。",
+        f"{pr_url}），在本地跑仓库测试（`仓库测试套件`），再确认下面两栏。",
         "",
         "栏一 · AI 已验证（证据，不是待办）：",
     ]

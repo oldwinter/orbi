@@ -53,15 +53,21 @@ MAX_REPO_CONFIG_BYTES = 64 * 1024
 # context window and the run artifacts).
 MAX_REPO_CONTEXT_BYTES = 256 * 1024
 
-# Decision D2: the whitelist v1 — the delivery-policy keys a repository
+# Decision D2: the whitelist — the delivery-policy keys a repository
 # file may declare. Everything else is rejected.
 POLICY_KEYS = (
     "base_branch",
     "active_milestone",
-    "test_command",
     "context_files",
     "dispatch_label",
 )
+
+# `test_command` left the whitelist — the merge gate reads
+# the GitHub Actions check runs and the agent infers the test method
+# itself, so the config must not teach it. A file that still declares
+# the removed key keeps delivering: it is ignored, never rejected and
+# never stored (orbi-cloud / orbi-website still carry the legacy line).
+LEGACY_IGNORED_KEYS = frozenset({"test_command"})
 
 # Decision D2: permanently host-only keys (identity/security). These are a
 # subset of "every non-whitelist key is rejected"; they are listed so the
@@ -124,7 +130,6 @@ class RepoPolicy:
 
     base_branch: str | None = None
     active_milestone: str | None = None
-    test_command: str | None = None
     context_files: tuple[str, ...] | None = None
     dispatch_label: str | None = None
     sha: str | None = None
@@ -137,7 +142,8 @@ def parse_repo_config(text: str, *, source: str = REPO_CONFIG_PATH) -> RepoPolic
     validated values). A TOML error, an unknown key, a host-only key or a
     wrong type raises :class:`RepoConfigError` naming the offending
     key(s) — the claim then fails fast with a readable reason (Issue
-    #527 acceptance).
+    #527 acceptance). A key in :data:`LEGACY_IGNORED_KEYS` is skipped
+    instead of rejected.
     """
     try:
         data = tomllib.loads(text)
@@ -149,7 +155,10 @@ def parse_repo_config(text: str, *, source: str = REPO_CONFIG_PATH) -> RepoPolic
             f"{source}: host-only key(s) are not allowed: "
             + ", ".join(host_only)
         )
-    unknown = sorted(key for key in data if key not in POLICY_KEYS)
+    unknown = sorted(
+        key for key in data
+        if key not in POLICY_KEYS and key not in LEGACY_IGNORED_KEYS
+    )
     if unknown:
         raise RepoConfigError(
             f"{source}: unknown key(s): " + ", ".join(unknown)
@@ -164,7 +173,6 @@ def parse_repo_config(text: str, *, source: str = REPO_CONFIG_PATH) -> RepoPolic
     return RepoPolicy(
         base_branch=cast("str | None", values.get("base_branch")),
         active_milestone=cast("str | None", values.get("active_milestone")),
-        test_command=cast("str | None", values.get("test_command")),
         context_files=(
             tuple(cast("list[str]", context_files))
             if context_files is not None
@@ -238,11 +246,6 @@ def resolve_policy(config: RunnerConfig, policy: RepoPolicy) -> RunnerConfig:
             policy.active_milestone
             if policy.active_milestone is not None
             else config.active_milestone
-        ),
-        test_command=(
-            policy.test_command
-            if policy.test_command is not None
-            else config.test_command
         ),
         repo_context_files=(
             policy.context_files

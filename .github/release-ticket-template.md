@@ -55,4 +55,3 @@ vX.Y.Z 收哪些票、为什么这样切版。
 ```
 
 - `version_file` 支持全集：`pyproject.toml`（默认）、`package.json`、`pom.xml`、`build.gradle`、`build.gradle.kts`、`gradle.properties`、`Cargo.toml`、`composer.json`、`pubspec.yaml`、`none`。
-- legacy `test_command`：#569 起接受但忽略，永不执行；测试判据是 release commit 上的 GitHub Actions CI 结果（#268 CI-wait 门禁）。

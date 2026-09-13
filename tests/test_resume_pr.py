@@ -21,6 +21,7 @@ from orbi import progress
 from orbi import scene as scene_mod
 from tests.test_progress_wiring import make_fake_gh
 from tests.fakes.github import FakeGh
+from tests.fakes.gitops import FakeGit
 from seam import seam
 import orbi.journal as journal
 import orbi.github as github
@@ -565,7 +566,10 @@ def test_pick_resumable_delivery_returns_newest_issue_with_scene(
         # `body` (Issue #787): the scene classification reads the
         # delivery markers, so the #726 external routing of a marker
         # ticket with no trusted scene comment is reachable.
-        "--json", "number,title,state,url,labels,body", "--limit", "1",
+        # Issue #809: the page is max_concurrency + 1 candidates — at
+        # most max_concurrency deliveries can be held by live co-runners,
+        # so a free candidate is always inside the page when one exists.
+        "--json", "number,title,state,url,labels,body", "--limit", "2",
     ]
     assert calls[1] == [
         "gh", "issue", "view", "9", "--repo", "owner/repo",
@@ -606,7 +610,10 @@ def test_pick_resumable_delivery_scans_fix_needed_and_awaiting_review(
         # `body` (Issue #787): the scene classification reads the
         # delivery markers, so the #726 external routing of a marker
         # ticket with no trusted scene comment is reachable.
-        "--json", "number,title,state,url,labels,body", "--limit", "1",
+        # Issue #809: the page is max_concurrency + 1 candidates — at
+        # most max_concurrency deliveries can be held by live co-runners,
+        # so a free candidate is always inside the page when one exists.
+        "--json", "number,title,state,url,labels,body", "--limit", "2",
     ]]
 
 
@@ -641,32 +648,124 @@ def test_pick_resumable_delivery_returns_none_when_queue_empty(
     ) is None
 
 
-def test_pick_resumable_delivery_skips_when_another_runner_is_live(
+def test_pick_resumable_delivery_skips_only_the_held_delivery(
     monkeypatch, tmp_path,
 ):
-    """A slot held by ANOTHER process proves a live runner is working
-    (Issue #39 slot semantics, Issue #70 review round 1): the
-    `ai-pr-opened`/`ai-fix-needed` delivery is in flight, not stranded,
-    so no second resume may start a second review Pi in the same
-    worktree/branch/run. This runner's own slot (its own PID) does not
-    block the scan."""
+    """Issue #809, acceptance 2 (the semantic that must NOT regress): a
+    delivery a live other runner HOLDS — its slot file names the
+    (repo, issue) — is never resumed here. That is the #70 round-1
+    protection at the right granularity: no second review Pi in the
+    same worktree/branch/run, no second `gh pr merge
+    --match-head-commit` on the already-merged PR. The pre-#809 guard
+    abandoned the WHOLE scan whenever any slot was held; now only the
+    held candidate is skipped and the scan still reads the queue — the
+    held candidate's comments are never even fetched (an in-flight
+    delivery is not touched)."""
     gh_calls = []
     monkeypatch.setattr(seam, "run_command",
         lambda command, **kwargs: gh_calls.append(command) or "[]",
     )
-    monkeypatch.setattr(runner, "slot_occupancy",
-                        lambda slot_dir, capacity: [(1, 4242)])
+    monkeypatch.setattr(runner, "slot_held_deliveries",
+                        lambda slot_dir, capacity: {("owner/repo", 9)})
     assert runner.pick_resumable_delivery(
         "owner/repo", tmp_path / "slots", 1,
     ) is None
-    assert gh_calls == [], "no gh traffic while another runner is live"
-    # Own PID: the scan still runs (this runner holds its own slot).
-    monkeypatch.setattr(runner, "slot_occupancy",
-                        lambda slot_dir, capacity: [(1, os.getpid())])
-    assert runner.pick_resumable_delivery(
+    assert len(gh_calls) == 1, "only the queue query, no candidate reads"
+    assert gh_calls[0][:3] == ["gh", "issue", "list"]
+
+
+def test_pick_resumable_delivery_reviews_free_pr_while_other_in_flight(
+    monkeypatch, tmp_path,
+):
+    """Issue #809, acceptance 1: a delivery A in flight (another live
+    runner's slot names it) must not stop the review of a DIFFERENT
+    opened-PR delivery B. The pre-#809 guard returned None for the
+    whole scan and the tick fell through to a fresh claim — the
+    reported starvation (nine MERGEABLE PRs, the oldest 90 minutes,
+    zero review ticks while new PRs kept opening)."""
+    monkeypatch.setattr(
+        runner, "slot_held_deliveries",
+        lambda slot_dir, capacity: {("owner/repo", 7)},
+    )
+    monkeypatch.setattr(seam, "run_command", make_pick_fake(
+        issue_payload(),
+        gh_comments_payload(["human note", opened_pr_comment()]),
+    ))
+    issue, scene = runner.pick_resumable_delivery(
         "owner/repo", tmp_path / "slots", 1,
-    ) is None
-    assert len(gh_calls) == 1
+    )
+    assert issue["number"] == 9
+    assert scene["run_id"] == FAKE_RUN_ID
+    assert scene["pr_url"] == FAKE_PR_URL
+
+
+def test_pick_resumable_delivery_skips_held_and_reviews_next_free(
+    monkeypatch, tmp_path,
+):
+    """Issue #809, acceptance 4: the scan skips every HELD candidate and
+    reviews the newest FREE one, so the PR backlog drains even while
+    several deliveries are in flight — the drain rate scales with the
+    concurrency instead of dropping to zero."""
+    issues = [
+        {"number": 9, "title": "held", "state": "OPEN",
+         "url": "https://github.com/owner/repo/issues/9",
+         "labels": [{"name": "ai-pr-opened"}]},
+        {"number": 10, "title": "free", "state": "OPEN",
+         "url": "https://github.com/owner/repo/issues/10",
+         "labels": [{"name": "ai-pr-opened"}]},
+    ]
+    views = []
+
+    def fake_run(command, **kwargs):
+        if command[1] == "issue":
+            if command[2] == "list":
+                return json.dumps(issues)
+            if command[2] == "view":
+                views.append(command[3])
+                return gh_comments_payload(
+                    [opened_pr_comment(run_id="b2c3d4e5")],
+                )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(runner, "slot_held_deliveries",
+                        lambda slot_dir, capacity: {("owner/repo", 9)})
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    issue, scene = runner.pick_resumable_delivery(
+        "owner/repo", tmp_path / "slots", 2,
+    )
+    assert issue["number"] == 10
+    assert scene["run_id"] == "b2c3d4e5"
+    # Only the FREE candidate's comments were read; the held one was
+    # skipped before any candidate read.
+    assert views == ["10"]
+    # The fake is a contract, not a sink: its strict arm is driven here.
+    with pytest.raises(AssertionError, match="unexpected command"):
+        fake_run(["gh", "release", "view"])
+    with pytest.raises(AssertionError, match="unexpected command"):
+        fake_run(["gh", "issue", "edit", "9"])
+
+
+def test_pick_resumable_delivery_ignores_holds_of_other_repos(
+    monkeypatch, tmp_path,
+):
+    """Issue #809, acceptance 3 (the real deployment): two source repos
+    share ONE slot dir (the same deploy_home derives it), so the held
+    set carries deliveries of BOTH repos. A hold of repo A never blocks
+    repo B's review — the skip matches on (repo, issue), never on the
+    shared slot dir."""
+    monkeypatch.setattr(
+        runner, "slot_held_deliveries",
+        lambda slot_dir, capacity: {("orbi-build/orbi-cloud", 367)},
+    )
+    monkeypatch.setattr(seam, "run_command", make_pick_fake(
+        issue_payload(),
+        gh_comments_payload(["human note", opened_pr_comment()]),
+    ))
+    issue, scene = runner.pick_resumable_delivery(
+        "owner/repo", tmp_path / "slots", 2,
+    )
+    assert issue["number"] == 9
+    assert scene["run_id"] == FAKE_RUN_ID
 
 
 def test_pick_resumable_delivery_blocks_issue_without_scene_comment(
@@ -785,6 +884,79 @@ def test_pick_resumable_delivery_blocks_issue_when_scene_is_malformed(
     # ...but no run marker: no valid run id exists, so none is guessed.
     assert "orbi:run=" not in body
     assert "issue=9 resume scene is malformed" in caplog.text
+
+
+def test_pick_resumable_delivery_routes_corrupted_marker_and_next_candidate(
+    monkeypatch, tmp_path,
+):
+    """A corrupted trusted scene on a marker-bearing ticket is routed
+    through the #726 external takeover (never `ai-blocked`), and the
+    scan CONTINUES to the next candidate: with the #809 page the route
+    of one candidate no longer ends the scan — the next free opened-PR
+    delivery is still reviewed this tick."""
+    issues = [
+        {"number": 9, "title": "marker", "state": "OPEN",
+         "url": "https://github.com/owner/repo/issues/9",
+         "body": "<!-- orbi:external-pr:55 -->\nfix the thing",
+         "labels": [{"name": "ai-pr-opened"}]},
+        {"number": 10, "title": "free", "state": "OPEN",
+         "url": "https://github.com/owner/repo/issues/10",
+         "body": "b",
+         "labels": [{"name": "ai-pr-opened"}]},
+    ]
+    edits: list[list[str]] = []
+    comments: list[str] = []
+
+    def fake_run(command, **kwargs):
+        if command[1] == "issue":
+            if command[2] == "list":
+                return json.dumps(issues)
+            if command[2] == "view":
+                number = command[3]
+                if command[-1] == "comments":
+                    body = (
+                        # Trusted but corrupted: no run_id in the scene.
+                        "Orbi opened PR: "
+                        "https://github.com/owner/repo/pull/9 "
+                        "(base_branch=main base_sha=abc123def456)"
+                        if number == "9" else opened_pr_comment(
+                            run_id="c3d4e5f6",
+                        )
+                    )
+                    return gh_comments_payload([body])
+                if command[-1] == "labels":
+                    return json.dumps({"labels": [{"name": "ai-pr-opened"}]})
+            if command[2] == "edit":
+                edits.append(command)
+                return ""
+            if command[2] == "comment":
+                comments.append(command[-1])
+                return ""
+        if command[1] == "pr" and command[2] == "view":
+            return json.dumps({"state": "OPEN"})
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    found = runner.pick_resumable_delivery(
+        "owner/repo", tmp_path / "slots", 2,
+    )
+    assert found is not None
+    issue, scene = found
+    assert issue["number"] == 10
+    assert scene["run_id"] == "c3d4e5f6"
+    # The corrupted marker ticket was routed to the takeover queue, not
+    # blocked.
+    assert any(
+        "edit" in command and "9" in command and "ai-ready" in command
+        for command in edits
+    ), edits
+    assert not any("ai-blocked" in command for command in edits)
+    assert any(
+        "external contribution PR #55" in body for body in comments
+    )
+    # The fake is a contract, not a sink: its strict arm is driven here.
+    with pytest.raises(AssertionError, match="unexpected command"):
+        fake_run(["gh", "issue", "view", "9", "--json", "state"])
 
 
 def test_pick_resumable_delivery_resumes_from_the_v1_scene_block(
@@ -1310,8 +1482,15 @@ def test_main_continues_to_ready_delivery_after_scene_failure(
     monkeypatch.setattr(
         runner, "sync_active_milestone_variable", lambda *a, **k: None,
     )
+    # The held slot is a real file: `main` names the selected delivery in
+    # it right after selection (Issue #809).
+    slot_file = tmp_path / "slot-1"
+    mark_fd = os.open(slot_file, os.O_RDWR | os.O_CREAT, 0o644)
     monkeypatch.setattr(runner, "acquire_slot", lambda *a, **k: type(
-        "Slot", (), {"release": lambda self: None},
+        "Slot", (), {
+            "fd": mark_fd,
+            "release": lambda self: os.close(mark_fd),
+        },
     )())
     monkeypatch.setattr(
         runner, "pick_issue",
@@ -1334,6 +1513,12 @@ def test_main_continues_to_ready_delivery_after_scene_failure(
     # ...and the same tick delivered the next ready Issue.
     assert processed[0][0] is ready
     assert processed[0][2] == "owner/repo"
+    # The selected delivery (the fresh claim of issue 10) was named in
+    # the held slot file for the other runners' resume scans (Issue
+    # #809).
+    assert slot_file.read_text(encoding="utf-8").splitlines()[1] == (
+        "owner/repo#10"
+    )
     # The fake rejects anything but its own traffic.
     with pytest.raises(AssertionError, match="unexpected command"):
         fake_run(["gh", "pr", "list"])
@@ -1360,8 +1545,18 @@ def test_main_ends_cleanly_after_handled_resume_scene_failure(
     monkeypatch.setattr(runner, "check_unit_drift", lambda *a, **k: None)
     monkeypatch.setattr(runner, "check_transport", lambda *a, **k: {})
     monkeypatch.setattr(runner.runner_health, "run_health_check", lambda *a, **k: None)
+    # The held slot is a real file: `main` names the resumed delivery in
+    # it right after selection, BEFORE any verification work (Issue
+    # #809) — asserted below even though the scene turns out stale.
+    slot_file = tmp_path / "slot-1"
+    mark_fd = os.open(slot_file, os.O_RDWR | os.O_CREAT, 0o644)
+
+    def release_slot(self):
+        os.close(mark_fd)
+        released.append(True)
+
     monkeypatch.setattr(runner, "acquire_slot", lambda *a, **k: type(
-        "Slot", (), {"release": lambda self: released.append(True)},
+        "Slot", (), {"fd": mark_fd, "release": release_slot},
     )())
     monkeypatch.setattr(
         runner, "pick_next_delivery",
@@ -1381,6 +1576,10 @@ def test_main_ends_cleanly_after_handled_resume_scene_failure(
     )
     assert runner.main(["--config", str(config_path)]) == 0
     assert released == [True]
+    # The resumed delivery was named in the held slot file (Issue #809).
+    assert slot_file.read_text(encoding="utf-8").splitlines()[1] == (
+        "owner/repo#9"
+    )
 
 
 def make_resume_config(tmp_path) -> dict:
@@ -1899,6 +2098,130 @@ def test_verify_resumed_pr_external_scene_reads_branch_from_worktree(
     assert edits == [(9, "owner/repo", "ai-in-progress", None)]
 
 
+def test_verify_resumed_pr_recreates_missing_worktree_from_remote_branch(
+    monkeypatch, tmp_path,
+):
+    """Issue #807: the worktree is a local cache of the remote delivery
+    state (the branch and the PR live on GitHub), so a missing
+    directory is recreated from the remote branch and the resume
+    continues — the recovery the #90/#50 comment promised but the code
+    never performed (the beta incident: every tick re-emitted the
+    identical `worktree missing` failure and the delivery never
+    advanced). The REAL verify_pr runs on the rebuilt worktree."""
+    fake_git = FakeGit(tmp_path, base_branch="main")
+    fake_gh = FakeGh("owner/repo")
+    fake_gh.add_issue(9, title="ship")
+    remote_head = fake_git.commit([fake_git.base_sha])
+    fake_git.origin[FAKE_BRANCH] = remote_head
+    fake_gh.add_pr(
+        9, head=FAKE_BRANCH, base="main", oid=remote_head, url=FAKE_PR_URL,
+        body=f"{run_marker_body()}\n\nFixes #9\n\nPlan",
+    )
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return fake_git(command, **kwargs)
+        return fake_gh(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    url = runner.verify_resumed_pr(
+        make_resume_scene(), make_resume_issue(),
+        make_resume_config(tmp_path), "owner/repo",
+    )
+    assert url == FAKE_PR_URL
+    # The worktree was REBUILT from the remote branch: the derived path
+    # exists again, carries the branch and sits at the origin head.
+    worktree = expected_resume_worktree(tmp_path)
+    assert worktree.is_dir()
+    assert fake_git.worktrees[str(worktree)]["branch"] == FAKE_BRANCH
+    assert fake_git.worktrees[str(worktree)]["head"] == remote_head
+    # The in-flight backfill label transition (Issue #178) ran on the
+    # resumed delivery.
+    assert "ai-in-progress" in fake_gh.issues[9]["labels"]
+    assert "ai-pr-opened" not in fake_gh.issues[9]["labels"]
+
+
+def test_verify_resumed_pr_branch_gone_from_origin_is_terminal(
+    monkeypatch, tmp_path,
+):
+    """Issue #807: when the delivery branch is gone from the remote
+    there is nothing to recreate the worktree from — an external
+    precondition (the remote delivery state itself is destroyed): the
+    Issue is ai-blocked ALONE with the explicit reason, never the fix
+    loop that used to re-emit the identical failure every tick."""
+    fake_git = FakeGit(tmp_path, base_branch="main")
+    fake_gh = FakeGh("owner/repo")
+    fake_gh.add_issue(9, title="ship", labels=("ai-pr-opened",))
+    # No delivery branch on origin and no worktree: nothing to resume.
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return fake_git(command, **kwargs)
+        return fake_gh(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    with pytest.raises(
+        runner.UnrecoverableDeliveryError,
+        match="no longer exists on origin",
+    ) as excinfo:
+        runner.verify_resumed_pr(
+            make_resume_scene(), make_resume_issue(),
+            make_resume_config(tmp_path), "owner/repo",
+        )
+    assert type(excinfo.value) is runner.ResumeBranchGoneError
+    labels = fake_gh.issues[9]["labels"]
+    assert "ai-blocked" in labels
+    assert "ai-pr-opened" not in labels
+    body = fake_gh.issues[9]["comments"][-1]["body"]
+    assert "Orbi failed:" in body
+    assert f"delivery branch {FAKE_BRANCH} no longer exists" in body
+    assert str(expected_resume_worktree(tmp_path)) in body
+    # The blocked comment states why automatic recovery is impossible.
+    assert "cannot be recovered automatically" in body
+    # Nothing is left to preserve: the preserved-objects suffix of the
+    # other blocked scenes would contradict the reason.
+    assert "are preserved" not in body
+
+
+def test_verify_resumed_pr_external_scene_recreates_worktree_from_scene_pr(
+    monkeypatch, tmp_path,
+):
+    """Issue #807 + #608: an external takeover resumes the contributor's
+    own head branch — a fact the gone worktree can no longer carry, so
+    the scene PR is the remaining authority (headRefName) and the
+    worktree is rebuilt from that branch on origin."""
+    fake_git = FakeGit(tmp_path, base_branch="main")
+    fake_gh = FakeGh("owner/repo")
+    fake_gh.add_issue(9, title="ship")
+    external_head = fake_git.commit([fake_git.base_sha])
+    fake_git.origin["fix/outer"] = external_head
+    external_url = "https://github.com/xqliu/orbi/pull/592"
+    fake_gh.add_pr(
+        592, head="fix/outer", base="main", oid=external_head,
+        url=external_url,
+    )
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return fake_git(command, **kwargs)
+        return fake_gh(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    scene = make_resume_scene(external_url)
+    scene["external"] = "true"
+    url = runner.verify_resumed_pr(
+        scene, make_resume_issue(),
+        make_resume_config(tmp_path), "owner/repo",
+    )
+    assert url == external_url
+    # The rebuilt worktree carries the contributor's head branch (read
+    # from the scene PR) at the fetched origin head.
+    worktree = expected_resume_worktree(tmp_path)
+    assert worktree.is_dir()
+    assert fake_git.worktrees[str(worktree)]["branch"] == "fix/outer"
+    assert fake_git.worktrees[str(worktree)]["head"] == external_head
+
+
 def test_verify_resumed_pr_backfill_label_api_failure_fails_fast(
     monkeypatch, tmp_path, caplog,
 ):
@@ -2368,77 +2691,6 @@ def test_verify_resumed_pr_fails_fast_when_scene_base_differs(
     # must never run on a base mismatch.
     with pytest.raises(
         AssertionError, match="must not run on a base mismatch",
-    ):
-        fake_verify_pr()
-
-
-def test_verify_resumed_pr_worktree_missing_stays_fix_needed(
-    monkeypatch, tmp_path, caplog,
-):
-    """Issue #90 + #50 (pre-verify): the worktree is derived from the
-    configured repo_dir, source repo, Issue number and run id (never
-    read from a comment); a missing directory is a RECOVERABLE failure
-    (the branch still exists on the remote and the worktree can be
-    recreated on the next resume): fail fast BEFORE any git/gh command
-    and mark the Issue ai-fix-needed (never ai-blocked) with the PR
-    and branch preserved."""
-    commands: list = []
-    captured, fake_run = make_resume_failure_fake(monkeypatch)
-
-    def counting(command, **kwargs):
-        commands.append(command)
-        return fake_run(command, **kwargs)
-
-    def fake_verify_pr(*args, **kwargs):
-        raise AssertionError("verify_pr must not run on a missing worktree")
-
-    monkeypatch.setattr(runner, "verify_pr", fake_verify_pr)
-    monkeypatch.setattr(seam, "run_command", counting)
-    monkeypatch.setattr(journal, "_CURRENT_RUN_ID", FAKE_RUN_ID)
-    caplog.set_level("INFO")
-    # The derived worktree does not exist under tmp_path.
-    assert not expected_resume_worktree(tmp_path).is_dir()
-    with pytest.raises(RuntimeError, match="worktree missing"):
-        runner.verify_resumed_pr(
-            make_resume_scene(), make_resume_issue(),
-            make_resume_config(tmp_path), "owner/repo",
-        )
-    # No git command ran against the missing worktree (the only gh
-    # traffic is the fix-needed-scene reporting).
-    assert all(command[0] != "git" for command in commands)
-    assert all(
-        command[:2] == ["gh", "api"]
-        or command[:3] == ["gh", "pr", "comment"]
-        or command[-1] in ("comments", "labels")
-        for command in commands
-    )
-    assert captured["edits"] == [
-        ((9,), {"repo": "owner/repo", "add": "ai-fix-needed",
-                "remove": "ai-pr-opened"}),
-    ]
-    body = captured["comments"][0][1]["body"]
-    assert "Orbi needs a fix:" in body
-    assert run_marker_body() in body
-    assert str(expected_resume_worktree(tmp_path)) in body
-    # The PR and branch are preserved in the failure comment (the
-    # pre-#82 resume_delivery fail-fast scene) ... the failure comment
-    # is written to the Issue AND the PR (Issue #50) ...
-    assert FAKE_PR_URL in body
-    assert FAKE_BRANCH in body
-    assert len(captured["pr_comments"]) == 1
-    # ... and the fix-needed milestone (not the blocked one).
-    posted = [
-        command[command.index("--field") + 1][len("body="):]
-        for command in captured["api"]
-        if "--method" in command and "POST" in command
-    ]
-    assert any("Orbi: fix needed" in body for body in posted)
-    assert not any("Orbi: blocked" in body for body in posted)
-    assert "resume_pr_verification_failed" in caplog.text
-    # The fake proves the contract when called directly: verify_pr
-    # must never run on a missing worktree.
-    with pytest.raises(
-        AssertionError, match="must not run on a missing worktree",
     ):
         fake_verify_pr()
 

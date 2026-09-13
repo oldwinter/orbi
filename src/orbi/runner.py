@@ -56,7 +56,10 @@ from typing import NamedTuple
 from orbi import engine_source
 from orbi.engine_source import EngineSourceError
 from orbi.git_transport import TransportError, check_transport
-from orbi.pilot_slots import acquire_slot, slot_dir_for, slot_occupancy
+from orbi.pilot_slots import (
+    acquire_slot, mark_slot_delivery, slot_dir_for, slot_held_deliveries,
+    slot_occupancy,
+)
 from orbi.pi_activity import (
     activity_snapshot,
     format_duration,
@@ -358,6 +361,18 @@ class ResumePrClosedError(UnrecoverableDeliveryError):
         self.scene_pr_state = scene_pr_state
 
 
+class ResumeBranchGoneError(UnrecoverableDeliveryError):
+    """The resume worktree is missing AND the delivery branch is gone
+    from the remote.
+
+    The remote state (branch + PR) is the delivery's record; with the
+    branch destroyed there is nothing to recreate the local worktree
+    cache from — an external precondition, terminal (`ai-blocked`).
+    The typed error also tells the resume handler to drop the
+    preserved-objects suffix: nothing is left to preserve.
+    """
+
+
 def is_unrecoverable_failure(exc: BaseException) -> bool:
     """Classify one delivery failure.
 
@@ -541,9 +556,8 @@ class RunnerConfig:
     run_id: str = ""
     base_sha: str = ""
     # Repository-policy overlay: written only by
-    # `repo_config.resolve_policy` — `test_command` and `dispatch_label`
-    # are repository-declared keys with no host equivalent.
-    test_command: str | None = None
+    # `repo_config.resolve_policy` — `dispatch_label` is a
+    # repository-declared key with no host equivalent.
     repo_context_files: tuple[str, ...] = ()
     dispatch_label: str | None = None
     # Host config (load_config output). The Path fields and the two
@@ -2576,7 +2590,7 @@ def _route_external_pr_ticket(issue: dict, repo: str) -> bool:
 def pick_resumable_delivery(
     repo: str, slot_dir: Path, max_concurrency: int,
 ) -> tuple[dict, dict] | None:
-    """Return the newest opened-PR delivery and its resume scene.
+    """Return the newest FREE opened-PR delivery and its resume scene.
 
     Both opened-PR states are scanned: `ai-fix-needed`
     (awaiting the next review session after a finding or a base
@@ -2598,24 +2612,35 @@ def pick_resumable_delivery(
     has `ai-ready`+`ai-in-progress` but neither opened-PR label, so it
     never matches). A scene that cannot be recovered is a SINGLE-Issue
     failure: the Issue is marked `ai-blocked` with the
-    concrete reason (`block_scene_failure`) and the scan reports no
-    resumable delivery, so the tick continues with the in-flight and
-    ready scans and exits 0 — one corrupted Issue must never make every
+    concrete reason (`block_scene_failure`) and the scan moves on to the
+    next candidate, so the tick continues with the in-flight and ready
+    scans and exits 0 — one corrupted Issue must never make every
     tick crash while the whole queue waits.
 
-    The scan runs only when no OTHER runner is live (the same guard as
-    `pick_in_progress_issue` slot semantics): a slot held by
-    another process proves a live runner is working, so an opened-PR
-    delivery is in flight, not stranded — resuming it here would start
-    a second review Pi in the same worktree/branch/run, and the second
-    `gh pr merge --match-head-commit` on the already-merged PR would
-    fail and mark the merged Issue `ai-blocked`. This runner's own slot is excluded: `main` took it
-    before the claim scan and holds it for the whole delivery.
+    Only the deliveries a live co-runner CURRENTLY holds are skipped
+    : every holder names its (repo, issue) in its slot file
+    (`pilot_slots.mark_slot_delivery`), so this scan skips exactly the
+    in-flight deliveries. That is the round-1 protection at
+    the right granularity — a held delivery is never resumed here, so a
+    second review Pi never starts in the same worktree/branch/run and a
+    second `gh pr merge --match-head-commit` never hits the merged PR.
+    The pre-#809 guard abandoned the WHOLE scan whenever any slot in the
+    (often shared, multi-repo) slot dir was held: with any concurrency
+    the review never ran while fresh claims kept opening PRs — the
+    reported starvation (nine MERGEABLE PRs, the oldest 90 minutes,
+    zero review ticks). A free delivery is now resumed even while other
+    deliveries are in flight, and the review backlog drains at the
+    concurrency rate instead of only growing. This runner's own slot is
+    excluded: `main` took it before the claim scan and holds it for the
+    whole delivery.
+
+    The query page is `max_concurrency + 1` candidates: at most
+    `max_concurrency` deliveries can be held by live co-runners, so a
+    free candidate is always inside the page when one exists. The scan
+    reviews the newest FREE candidate (held ones are skipped before any
+    candidate read — an in-flight delivery is never touched).
     """
-    mine = os.getpid()
-    for _, holder in slot_occupancy(slot_dir, max_concurrency):
-        if holder is not None and holder != mine:
-            return None
+    held = slot_held_deliveries(slot_dir, max_concurrency)
     # `label:a,b` is GitHub's OR within one label qualifier
     # (verified live: repeating the qualifier matches only the
     # first label). `ai-in-progress` is intentionally NOT excluded:
@@ -2634,79 +2659,86 @@ def pick_resumable_delivery(
             f"label:{FIX_NEEDED_LABEL},{PR_OPENED_LABEL} "
             f"-label:{BLOCKED_LABEL} -label:{MERGED_LABEL}"
         ),
-        json_fields="number,title,state,url,labels,body", limit=1,
+        json_fields="number,title,state,url,labels,body",
+        limit=max_concurrency + 1,
     )
-    if not issues:
-        return None
-    issue = issues[0]
-    if issue.get("state") != "OPEN":
-        return None
-    comments = issue_comments(int(issue["number"]), repo=repo)
-    try:
-        found = resume_scene(comments)
-    except scene.SceneError as exc:
-        # A trusted scene comment exists but is corrupted:
-        # probe the #726 external route first; otherwise this is the
-        # ONLY trigger of `block_scene_failure` — a present-but-broken
-        # scene is a writer bug or tampering and needs a human.
-        if _route_external_pr_ticket(issue, repo):
-            return None
-        block_scene_failure(issue, exc, repo, comments)
-        return None
-    except scene.SceneMissingError as exc:
-        # No trusted comment carries a scene at all — a distinct branch
-        # from corruption. The original #726 incident was
-        # exactly this shape, so the external route is probed first;
-        # un-routed, the same terminal contract applies
-        # through its OWN reporting (explicit reason + human next
-        # step), never `block_scene_failure`. The failure is scoped to
-        # this one Issue: the tick continues.
-        if _route_external_pr_ticket(issue, repo):
-            return None
-        number = int(issue["number"])
-        LOGGER.error("issue=%s resume scene is missing: %s", number, exc)
-        marker = latest_run_marker(comments)
+    for issue in issues:
+        if issue.get("state") != "OPEN":
+            # Left the opened-PR state between the query and this read
+            # (a close/merge race): this candidate is gone, not the scan.
+            continue
+        if (repo, int(issue["number"])) in held:
+            # In flight in another live runner: never a
+            # second review Pi for it — and no candidate read either.
+            continue
+        comments = issue_comments(int(issue["number"]), repo=repo)
         try:
-            apply_label_patch(
-                number, repo=repo, event=EVENT_BLOCKED,
-                current_labels={FIX_NEEDED_LABEL},
+            found = resume_scene(comments)
+        except scene.SceneError as exc:
+            # A trusted scene comment exists but is corrupted:
+            # probe the #726 external route first; otherwise this is the
+            # ONLY trigger of `block_scene_failure` — a present-but-broken
+            # scene is a writer bug or tampering and needs a human.
+            if _route_external_pr_ticket(issue, repo):
+                continue
+            block_scene_failure(issue, exc, repo, comments)
+            continue
+        except scene.SceneMissingError as exc:
+            # No trusted comment carries a scene at all — a distinct branch
+            # from corruption. The original #726 incident was
+            # exactly this shape, so the external route is probed first;
+            # un-routed, the same terminal contract applies
+            # through its OWN reporting (explicit reason + human next
+            # step), never `block_scene_failure`. The failure is scoped to
+            # this one Issue: the scan moves on.
+            if _route_external_pr_ticket(issue, repo):
+                continue
+            number = int(issue["number"])
+            LOGGER.error("issue=%s resume scene is missing: %s", number, exc)
+            marker = latest_run_marker(comments)
+            try:
+                apply_label_patch(
+                    number, repo=repo, event=EVENT_BLOCKED,
+                    current_labels={FIX_NEEDED_LABEL},
+                )
+                comment_issue(
+                    number, repo=repo,
+                    body=(f"{marker}\n" if marker else "") + (
+                        f"Orbi failed: {exc}; no trusted 'Orbi opened PR' "
+                        "scene comment exists on this Issue, so the "
+                        "opened-PR delivery cannot be resumed — this is an "
+                        "external precondition the AI cannot safely judge "
+                        "or fix, so it cannot be recovered automatically "
+                        "(the Issue stays ai-blocked until a human "
+                        "decides) — restore the trusted 'Orbi opened PR' "
+                        "scene comment or relabel the Issue ai-fix-needed"
+                    ),
+                )
+            except Exception:
+                LOGGER.exception("issue=%s failure reporting failed", number)
+            continue
+        # The scan and the dispatch classify with the same pure
+        # function. This scan owns the resumable route only: a candidate
+        # that classifies elsewhere left the opened-PR state between the
+        # query and this read (a relabel race) — this candidate is skipped
+        # and the scan moves on. A candidate with no readable labels fails
+        # open (the is_epic / is_release convention): the trusted scene is
+        # the authority.
+        current_labels = _issue_label_set(issue)
+        if current_labels:
+            found_scene = classify(
+                labels=current_labels, scene=found, pr_state=None,
+                worktree_present=False, branch_present=False,
+                body_markers=body_markers(issue.get("body")),
             )
-            comment_issue(
-                number, repo=repo,
-                body=(f"{marker}\n" if marker else "") + (
-                    f"Orbi failed: {exc}; no trusted 'Orbi opened PR' "
-                    "scene comment exists on this Issue, so the "
-                    "opened-PR delivery cannot be resumed — this is an "
-                    "external precondition the AI cannot safely judge "
-                    "or fix, so it cannot be recovered automatically "
-                    "(the Issue stays ai-blocked until a human "
-                    "decides) — restore the trusted 'Orbi opened PR' "
-                    "scene comment or relabel the Issue ai-fix-needed"
-                ),
-            )
-        except Exception:
-            LOGGER.exception("issue=%s failure reporting failed", number)
-        return None
-    # The scan and the dispatch classify with the same pure
-    # function. This scan owns the resumable route only: a candidate
-    # that classifies elsewhere left the opened-PR state between the
-    # query and this read (a relabel race) — claim nothing this tick.
-    # A candidate with no readable labels fails open (the is_epic /
-    # is_release convention): the trusted scene is the authority.
-    current_labels = _issue_label_set(issue)
-    if current_labels:
-        found_scene = classify(
-            labels=current_labels, scene=found, pr_state=None,
-            worktree_present=False, branch_present=False,
-            body_markers=body_markers(issue.get("body")),
-        )
-        if found_scene is not DeliveryScene.RESUME_REVIEW:
-            event(
-                "claim_yield", issue=int(issue["number"]),
-                reason=f"scene_{found_scene.value}",
-            )
-            return None
-    return issue, found
+            if found_scene is not DeliveryScene.RESUME_REVIEW:
+                event(
+                    "claim_yield", issue=int(issue["number"]),
+                    reason=f"scene_{found_scene.value}",
+                )
+                continue
+        return issue, found
+    return None
 
 
 def block_scene_failure(issue: dict, error: ValueError, repo: str,
@@ -3664,12 +3696,6 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
         ),
         "BASE_BRANCH": config.base_branch,
         "BASE_SHA": config.base_sha,
-        # A repository-declared test command (absent ->
-        # the agent follows its own test contract, as before #527).
-        "TEST_COMMAND": (
-            (config.test_command or "").strip()
-            or "(not declared)"
-        ),
         "RUN_ID": config.run_id,
         # The implementer prompt no longer carries the
         # base-sync lock (the base fetch is the Runner's operation);
@@ -4391,8 +4417,12 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
     PR). Restored: branch and worktree are DERIVED from the
     configured repo_dir, source repo, Issue number and run id (never
     read from the comment), the scene base must still equal the
-    configured base and the worktree must exist
-    — both checked BEFORE any command runs — and the existing
+    configured base — checked BEFORE any command runs — and
+    a missing worktree is RECREATED from the remote delivery branch
+    (the worktree is a local cache of the remote state —
+    branch + PR live on GitHub — so a sandbox rebuild or a deleted
+    cache is restored instead of looping; only a branch gone from the
+    remote is unrecoverable). The existing
     `verify_pr` then validates exactly one open PR of the derived
     branch in the configured source repo, on the configured base,
     carrying the run marker and the `Fixes` keyword, with the EXACT URL
@@ -4446,11 +4476,38 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
                 "mismatch"
             )
         if not worktree.is_dir():
-            # A missing worktree is a RECOVERABLE
-            # failure (the branch still exists on the remote and the
-            # worktree can be recreated on the next resume), so the
-            # handler below keeps the Issue in the automatic fix loop.
-            raise RuntimeError(f"worktree missing: {worktree}")
+            # The worktree is a local cache of the remote
+            # delivery state (the branch and the PR live on GitHub), so
+            # a missing directory is recreated from the remote branch
+            # and the resume continues — the recovery the #90/#50
+            # comment promised. Only a branch that is gone from the
+            # remote is unrecoverable: there is nothing left to
+            # recreate from, a human decision.
+            if external:
+                # The takeover branch is the contributor's
+                # head branch — the worktree that carried it is gone,
+                # so the scene PR is the remaining authority.
+                head = json.loads(run_gh_read_command(
+                    ["gh", "pr", "view", str(_pr_number(scene["pr_url"])),
+                     "--repo", source_repo, "--json", "headRefName"],
+                    cwd=config.repo_dir,
+                ))
+                branch = str(head["headRefName"])
+            if not stable_branch_exists(config.repo_dir, branch):
+                raise ResumeBranchGoneError(
+                    f"resume worktree {worktree} is missing and the "
+                    f"delivery branch {branch} no longer exists on "
+                    "origin; there is no remote state to recreate the "
+                    "worktree from, so automatic recovery is impossible"
+                )
+            create_worktree(
+                config.repo_dir, source_repo, number, run_id,
+                scene["base_sha"], existing_branch=True, branch=branch,
+            )
+            event(
+                "worktree_recreated", issue=number, branch=branch,
+                worktree=str(worktree),
+            )
         if external:
             branch = run_command(
                 ["git", "branch", "--show-current"], cwd=worktree,
@@ -4541,7 +4598,11 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
                     f"the resume verification of PR {scene['pr_url']} "
                     f"failed: {_failure_detail(exc)}"
                 ),
+                # The branch-gone scene destroyed the
+                # delivery state — nothing is left to preserve, and the
+                # preserved-objects note would contradict the reason.
                 blocked_suffix=(
+                    "" if isinstance(exc, ResumeBranchGoneError) else
                     f"; the PR, branch {branch} and worktree {worktree} "
                     "are preserved"
                 ),
@@ -5910,11 +5971,9 @@ def human_review_checklist(
     return human_review.render_checklist_comment(
         run_id=run_id,
         pr_url=pr_url,
-        test_command=config.test_command,
         checklist=human_review.build_checklist(
             test_result=read_test_result(worktree),
             changed_files=delivered_changed_files(worktree, base),
-            test_command=config.test_command,
         ),
     )
 
@@ -5930,7 +5989,6 @@ def _human_review_column2(worktree: Path, config: RunnerConfig) -> list[str]:
     return human_review.build_checklist(
         test_result=read_test_result(worktree),
         changed_files=delivered_changed_files(worktree, base),
-        test_command=config.test_command,
     )["column2"]
 
 
@@ -8105,6 +8163,14 @@ def main(argv: list[str] | None = None) -> int:
                     )
             return 0
         source_repo, issue, scene = selected
+        # Name THIS delivery in the held slot file — the
+        # earliest point after selection, before any verification work.
+        # The other runners' resume scans then skip exactly this
+        # (repo, issue) while it is in flight (implement, review, or the
+        # implement→opened-PR boundary) instead of abandoning their whole
+        # scan; a write failure propagates (fail fast, the delivery has
+        # not started).
+        mark_slot_delivery(slot, source_repo, int(issue["number"]))
         # Resolve the repository-level policy ONCE for the whole
         # delivery. The effective base branch/milestone must drive the
         # resume verification, the claim and the review/merge loop, and a

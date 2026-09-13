@@ -280,3 +280,18 @@ def test_fake_git_fails_fast_on_a_second_branch_creation(fake_git):
         ])
     assert "already exists" in excinfo.value.stderr
     assert excinfo.value.returncode == 255
+
+
+def test_fake_git_fails_fast_on_worktree_reads_outside_a_worktree(
+    fake_git,
+):
+    # The Issue #807 worktree reads (`--show-current`, `rev-parse HEAD`)
+    # resolve against a REGISTERED worktree: anywhere else git exits 128.
+    for command in (
+        ["git", "branch", "--show-current"],
+        ["git", "rev-parse", "HEAD"],
+    ):
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            fake_git(command)
+        assert "not a git repository" in excinfo.value.stderr, command
+        assert excinfo.value.returncode == 128

@@ -134,8 +134,11 @@ def create_worktree(repo_dir: Path, source_repo: str, number: int,
     takeover checks out the contributor's own head branch,
     the identity the takeover PR is frozen on. With `existing_branch`
     the named branch is fetched and reused (a local branch is reused
-    with `--force`, never a second `-b`); without it the branch is
-    created from the frozen base.
+    with `--force`, never a second `-b` — the exit-255 claim failure; a
+    missing branch is created from `origin/<branch>` with `--force` so
+    the stale missing-but-registered entry a deleted worktree leaves
+    behind cannot block the rebuild);
+    without it the branch is created from the frozen base.
 
     A local branch that already exists (the orphan a SIGKILLed run
     leaves with no worktree and no remote counterpart) is
@@ -164,8 +167,8 @@ def create_worktree(repo_dir: Path, source_repo: str, number: int,
             ], cwd=repo_dir)
         else:
             run_command([
-                "git", "worktree", "add", "-b", branch, str(path),
-                f"origin/{branch}",
+                "git", "worktree", "add", "--force", "-b", branch,
+                str(path), f"origin/{branch}",
             ], cwd=repo_dir)
     else:
         # A SIGKILLed run can leave the

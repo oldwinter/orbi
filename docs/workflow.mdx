@@ -59,13 +59,12 @@ ai-ready                a task is dispatched (orbi add, or a human
                         behind the latest base / has a merge conflict, or
                         an AI-recoverable failure of the existing run/PR
                         (Issue #50: a Pi execution failure, a verification
-                        failure, an unpushed local commit, a missing
-                        worktree): the failure comment is written to the
-                        Issue AND the PR with the full scene (run_id, PR,
-                        branch, worktree, session, phase, last activity,
-                        concrete error), and the NEXT tick starts the next
-                        review session on the same run_id, branch,
-                        worktree and PR
+                        failure, an unpushed local commit): the failure
+                        comment is written to the Issue AND the PR with
+                        the full scene (run_id, PR, branch, worktree,
+                        session, phase, last activity, concrete error),
+                        and the NEXT tick starts the next review session
+                        on the same run_id, branch, worktree and PR
   -> merge              clean verdict (its head field equals the PR
                         head, Issue #591) + merge gate (head contains
                         the latest base, CI concluded, PR mergeable,
@@ -78,13 +77,18 @@ ai-ready                a task is dispatched (orbi add, or a human
 
 A failure of an existing run/PR is classified (Issue #50): an
 AI-recoverable failure (a Pi execution failure, a verification failure, an
-unpushed local commit, a missing worktree, a finding that could not be
+unpushed local commit, a finding that could not be
 fixed) keeps the Issue in the automatic fix loop — `ai-fix-needed` with
 the failure comment on the Issue AND the PR carrying the full scene — and
 the next tick resumes the same run, branch, worktree and PR (no
-replacement PR, no re-claim). Only an external precondition the AI cannot
+replacement PR, no re-claim). A missing worktree is not a failure at
+all: the resume rebuilds it from the remote delivery branch and
+continues (Issue #807 — the worktree is a local cache of the remote
+state, branch + PR live on GitHub). Only an external precondition the AI cannot
 safely judge or fix (an unrecoverable scene, a base-branch config change,
-an exhausted review round budget, a PR closed without merge) fails fast:
+an exhausted review round budget, a PR closed without merge, a delivery
+branch deleted from the remote — nothing left to rebuild the worktree
+from) fails fast:
 the Issue is marked `ai-blocked` with the explicit reason why automatic
 recovery is impossible, and the automatic loop never touches it again — a
 human decides the next step.
@@ -318,11 +322,9 @@ DAG, no priority numbers, no separate queues:
      `version`, `base_branch`, and `scope` (a list of `#N` items) or
      `scope_from_milestone`, plus optional `version_file`
      (`pyproject.toml` by default, `package.json`, or `none`). The
-     declaration carries NO local test contract (Issue #569): test
+     declaration carries NO test contract (Issue #569): test
      acceptance is the GitHub Actions CI result on the release commit
-     (the Issue #268 CI-wait gate). A legacy body that still declares
-     `test_command` is accepted with the field ignored (one evidence
-     line) — it is never executed. Missing, duplicated or unknown
+     (the Issue #268 CI-wait gate). Missing, duplicated or unknown
      fields fail fast.
   2. Freeze the base — the release commit is exactly
      `origin/<base_branch>` (fetched under the base-sync lock). Before
@@ -398,6 +400,11 @@ DAG, no priority numbers, no separate queues:
       already-closed is an idempotent success (no reopen); a missing
       Milestone or remaining open Issues fail fast with the version, the
       Milestone number/url and the open issue list (never a silent skip).
+      The release's own ticket is never counted as unfinished work
+      (Issue #808): it is being closed by this release, so a stale-open
+      listing of exactly that ticket — the issue index lags seconds
+      behind the close (Issue #754) — does not block or delay the close,
+      while any other open Issue still refuses it.
       Any failure: `ai-blocked` ALONE (a release is a human decision point
       — no automatic retry), the failure comment carries the run marker
       and the concrete reason, and the exception propagates so the tick
@@ -443,7 +450,6 @@ Only delivery-policy keys are allowed:
 | --- | --- | --- |
 | `base_branch` | string | Delivery base branch for this repository; absent falls back to the matching `[[repositories]].base_branch`, else the host `base_branch`. |
 | `active_milestone` | string | The fresh-claim Milestone scope for this repository. |
-| `test_command` | string | The repository's test command, injected into the implementer prompt. |
 | `context_files` | string[] | Repository-relative context files; existence and a size cap are checked before injection. |
 | `dispatch_label` | string | The claim label for this repository (default `ai-ready`); the delivery lifecycle labels stay host constants. |
 
@@ -451,7 +457,6 @@ Only delivery-policy keys are allowed:
 # .github/orbi.toml
 base_branch = "beta"
 active_milestone = "v0.5.0"
-test_command = "pytest -q"
 context_files = ["AGENTS.md"]
 ```
 

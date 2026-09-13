@@ -12,6 +12,7 @@ criteria:
   base and accepts one that does.
 """
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -188,3 +189,48 @@ def test_verify_pr_passes_through_when_local_head_ahead_of_pr_head(
 def test_git_helper_fails_fast_on_nonzero_exit(clone):
     with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
         git(clone, "rev-parse", "no-such-ref")
+
+
+def test_create_worktree_rebuilds_a_deleted_worktree_from_the_remote_branch(clone):
+    """Issue #807: the worktree is a local cache of the remote delivery
+    state. Deleting an in-flight delivery's worktree directory loses
+    only the cache: the branch still on origin rebuilds it — from
+    origin/<branch> when no local branch survived (a fresh sandbox
+    clone), as-is from the surviving local branch after a plain
+    deletion (which leaves the stale missing-but-registered entry), and
+    from origin/<branch> again when only that stale entry remains."""
+    branch = "orbi/owner-repo-issue-3"
+    git(clone, "checkout", "-b", branch)
+    commit_file(clone, "delivery.txt", "delivery")
+    git(clone, "push", "origin", branch)
+    origin_head = git(clone, "rev-parse", f"origin/{branch}")
+
+    def rebuild() -> Path:
+        return runner.create_worktree(
+            clone, "owner/repo", 3, "run1", "base123",
+            existing_branch=True,
+        )
+
+    # Fresh-clone scene: no local branch, the worktree is built at the
+    # remote head.
+    path = rebuild()
+    assert git(path, "rev-parse", "HEAD") == origin_head
+    assert git(path, "branch", "--show-current") == branch
+
+    # Plain-deletion scene: the directory is removed; the local branch
+    # and the stale registration survive and the worktree is rebuilt
+    # as-is from the branch.
+    shutil.rmtree(path)
+    rebuilt = rebuild()
+    assert rebuilt == path
+    assert git(rebuilt, "branch", "--show-current") == branch
+    assert git(rebuilt, "rev-parse", "HEAD") == origin_head
+
+    # Sandbox-rebuild-with-stale-state scene: the local branch is gone
+    # too and only the stale registration remains — the rebuild clears
+    # it and checks the branch out from origin/<branch>.
+    shutil.rmtree(path)
+    git(clone, "update-ref", "-d", f"refs/heads/{branch}")
+    rebuilt_again = rebuild()
+    assert git(rebuilt_again, "branch", "--show-current") == branch
+    assert git(rebuilt_again, "rev-parse", "HEAD") == origin_head
