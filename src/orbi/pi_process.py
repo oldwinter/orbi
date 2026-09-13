@@ -1295,8 +1295,7 @@ def _stream_pi_once(
                 # One transition line per state change: entering model_wait
                 # (the model is expected to reply next) or leaving it
                 # (the next session event arrived: resumed). No `run=`
-                # field: the `[run_id]` prefix carries the run id
-                #.
+                # field: the `[run_id]` prefix carries the run id.
                 event(
                     "model_wait" if activity["model_wait"] else "resumed",
                     issue=issue_ref, role=role,

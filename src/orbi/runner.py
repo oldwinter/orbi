@@ -3880,8 +3880,7 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
         if len(prs) != 1:
             # A resume cannot safely select a replacement PR. Query the scene
             # PR separately so zero open PRs (a closed/merged or missing
-            # scene PR) have a different outcome from an ambiguous branch
-            #.
+            # scene PR) have a different outcome from an ambiguous branch.
             scene_state = "unknown"
             try:
                 scene_pr = run_gh_read_command([

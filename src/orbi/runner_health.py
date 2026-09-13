@@ -4,7 +4,7 @@ The two 2026-09-04 incidents (#246: three identical delivery failures on one
 Issue, #262: the service crash loop) were both found by humans reading the
 journal in real time. This module gives the Runner a lightweight, active
 self-check that runs at every tick start (a pure bypass — a check failure
-never fails the delivery semantics):
+never fails the delivery):
 
 - crash loop: the service unit crashed >= CRASH_THRESHOLD times within the
   last CRASH_WINDOW_MINUTES (counted from the systemd journal — each crash
@@ -45,8 +45,7 @@ from orbi.progress import format_status_comment, run_marker
 from orbi.systemd_deploy import service_instances
 
 if TYPE_CHECKING:
-    # Annotation-only: `orbi.runner` imports this module at runtime
-    #.
+    # Annotation-only: `orbi.runner` imports this module at runtime.
     from orbi.runner import RunnerConfig
 
 LOGGER = logging.getLogger("orbi.health")

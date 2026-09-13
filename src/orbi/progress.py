@@ -284,8 +284,7 @@ class ProgressPublisher:
     def _update_endpoint(self, comment_id: int) -> str:
         # Update an issue comment: PATCH /repos/{owner}/{repo}/issues/
         # comments/{comment_id} — no issue number. Appending the id to
-        # the list/create endpoint is not a GitHub REST route and 404s
-        #.
+        # the list/create endpoint is not a GitHub REST route and 404s.
         return f"repos/{self.repo}/issues/comments/{comment_id}"
 
     def _list_comments(self) -> list[dict]:
