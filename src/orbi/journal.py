@@ -237,6 +237,8 @@ JOURNAL_EVENTS: dict[str, str] = {
     "review": "an independent review session finished (verdict)",
     "delivery_ci_pending": "the PR head's CI is still pending; the delivery defers to the next tick",
     "review_head_advanced": "the review session pushed a fixed head",
+    "pushed_head_recorded": "a round-start head adoption recorded an engine-pushed head (Issue #833)",
+    "pushed_head_unrecorded": "the engine push history could not be recorded; the merge record degrades to unknown (Issue #833)",
     "review_budget_recovered": "a stale review round counter was recovered",
     "review_rounds_exhausted": "the review round budget is exhausted (fail fast)",
     "review_rounds_exhausted_expected_terminal": "the exhausted budget terminal was already recorded",

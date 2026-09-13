@@ -3164,10 +3164,11 @@ def write_run_state(ctx: RunContext) -> None:
     run refreshes the SAME file (same run id): the file is per-run,
     never per-session.
 
-    An existing `pushed_head` (Issue #833: the last engine-pushed
-    head — the merge record's `external_commits` input) survives the
-    refresh: the resume continues the same delivery line, so its push
-    history is not the refresh's business to drop.
+    An existing `pushed_head`/`pushed_base` (Issue #833: the merge
+    record's `external_commits` inputs — the last engine-pushed head
+    and the foreign head the engine's push line started from) survive
+    the refresh: the resume continues the same delivery line, so its
+    push history is not the refresh's business to drop.
     """
     state: dict = {
         "run_id": ctx.run_id,
@@ -3182,9 +3183,17 @@ def write_run_state(ctx: RunContext) -> None:
         existing = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         existing = None
-    if isinstance(existing, dict) and isinstance(
-            existing.get("pushed_head"), str) and existing["pushed_head"]:
-        state["pushed_head"] = existing["pushed_head"]
+    if isinstance(existing, dict):
+        state.update({
+            key: existing[key]
+            for key in ("pushed_head", "pushed_base")
+            if isinstance(existing.get(key), str) and existing[key]
+        })
+    _write_run_state_file(ctx.worktree, state)
+
+
+def _write_run_state_file(worktree: Path, state: dict) -> None:
+    path = run_state_path(worktree)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
@@ -3192,32 +3201,74 @@ def write_run_state(ctx: RunContext) -> None:
 def record_pushed_head(worktree: Path, head: str) -> None:
     """Record `head` as the last engine-pushed head of this delivery.
 
-    The two write points are the Runner's own branch pushes: the
-    delivery push in `deliver_pr` (the PR-open head) and the review
-    session's fix push (the re-frozen advanced head). An external push
-    never passes through either, which is exactly the distinction the
-    merge record's `external_commits` needs. The state file always
-    exists by the time a push can happen (written at claim time): a
-    missing file is a broken invariant and fails fast, like every
-    other same-run state violation.
+    The three write points are the Runner's own branch-push evidence:
+    the delivery push in `deliver_pr` (the PR-open head), the review
+    session's fix push (the re-frozen advanced head), and the
+    round-start adoption of a head a previous session pushed but whose
+    round ended before the re-freeze record (a findings verdict or a
+    malformed verdict head). An external push never passes through any
+    of them, which is exactly the distinction the merge record's
+    `external_commits` needs. Recording is bypass-safe (Issue #73):
+    the fields only feed the merge record, so a missing or corrupt
+    state file — a recreated worktree, for instance — logs
+    `pushed_head_unrecorded` and continues; the merge record degrades
+    to `unknown` and the delivery is never re-failed by its own
+    observability input.
     """
-    state = read_run_state(worktree)
+    state = _recordable_state(worktree)
     if state is None:
-        raise RuntimeError(
-            f"run state file {run_state_path(worktree)} is missing; the "
-            "engine push history cannot be recorded without the same-run "
-            "state"
-        )
+        return
     state["pushed_head"] = head
-    path = run_state_path(worktree)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    _write_run_state_file(worktree, state)
 
 
-def read_pushed_head(worktree: Path) -> str | None:
-    """The recorded last engine-pushed head, or None when unusable.
+def record_pushed_base(worktree: Path, base: str) -> None:
+    """Record `base` as the head the engine's push line started from.
 
-    The merge record reads this AFTER the merge landed: a missing or
+    The one write point is the external-takeover claim (Issue #608):
+    the taken-over branch carries the contributor's commits, so the
+    merge record's `external_commits` must subtract only what the
+    engine pushes on top of this foreign head, never the head itself.
+    Set once per run: a re-claim of the same run re-derives a moved
+    HEAD (an interrupted delivery), which is not the line's origin.
+    Bypass-safe like `record_pushed_head`.
+    """
+    state = _recordable_state(worktree)
+    if state is None:
+        return
+    if isinstance(state.get("pushed_base"), str) and state["pushed_base"]:
+        return
+    state["pushed_base"] = base
+    _write_run_state_file(worktree, state)
+
+
+def _recordable_state(worktree: Path) -> dict | None:
+    """The run state to record into, or None when recording must skip.
+
+    A missing file is a normal state here (the #90/#50 worktree
+    recreation loses `.orbi/`), a corrupt one fails the resume readers
+    before any record point can run — neither may fail a push or a
+    merge for the sake of the merge record's own input.
+    """
+    try:
+        state = read_run_state(worktree)
+    except ValueError as exc:
+        state = None
+        error = str(exc)
+    else:
+        error = "the run state file is missing"
+    if state is None:
+        event(
+            "pushed_head_unrecorded", level=logging.WARNING,
+            state_path=str(run_state_path(worktree)), error=error,
+        )
+    return state
+
+
+def _read_pushed(worktree: Path, key: str) -> str | None:
+    """One recorded push-history field, or None when unusable.
+
+    The merge record reads these AFTER the merge landed: a missing or
     corrupt record must degrade the metric to `unknown`, never fail a
     landed delivery and never fabricate a count.
     """
@@ -3227,8 +3278,22 @@ def read_pushed_head(worktree: Path) -> str | None:
         return None
     if not state:
         return None
-    head = state.get("pushed_head")
-    return head if isinstance(head, str) and head else None
+    value = state.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def read_pushed_head(worktree: Path) -> str | None:
+    """The recorded last engine-pushed head, or None when unusable."""
+    return _read_pushed(worktree, "pushed_head")
+
+
+def read_pushed_base(worktree: Path) -> str | None:
+    """The recorded engine push-line base, or None when absent.
+
+    None means the engine's first push created the branch, so the
+    merge record's engine interval starts at the merge's base parent.
+    """
+    return _read_pushed(worktree, "pushed_base")
 
 
 def read_run_state(worktree: Path) -> dict | None:
@@ -5199,7 +5264,8 @@ def confirm_merged(worktree: Path, pr: dict, base_branch: str,
 
 
 def merge_commit_metrics(worktree: Path, merge_commit: str,
-                         pushed_head: str | None) -> tuple[str, str]:
+                         pushed_head: str | None,
+                         pushed_base: str | None) -> tuple[str, str]:
     """The merge record's `(external_commits, commits)` field values.
 
     Issue #833: `commits` is the PR branch's total commit count
@@ -5210,14 +5276,16 @@ def merge_commit_metrics(worktree: Path, merge_commit: str,
     `external_commits` subtracts the engine's own push history: the
     recorded last engine-pushed head (`pushed_head`; GitHub rejects
     non-fast-forward pushes, so the engine's heads form an ancestry
-    chain and the per-interval union collapses to the last one).
-    `0` means merged as-is.
+    chain and the per-interval union collapses to the last one), with
+    `pushed_base` (the foreign head an external takeover starts from)
+    excluded so the taken-over commits stay external. `0` means merged
+    as-is.
 
     Both values are the literal string `"unknown"` whenever the count
-    cannot be proven — a missing/corrupt push record, a `pushed_head`
-    that is not an ancestor of the merged head, a missing object, any
-    git failure. A degraded metric must never fail a landed merge and
-    never fabricate a `0`.
+    cannot be proven — a missing/corrupt push record, a recorded head
+    or base that is not an ancestor of the merged head, a missing
+    object, any git failure. A degraded metric must never fail a
+    landed merge and never fabricate a `0`.
     """
     try:
         commits = int(run_command(
@@ -5228,15 +5296,20 @@ def merge_commit_metrics(worktree: Path, merge_commit: str,
             return "unknown", str(commits)
         if not _is_ancestor(pushed_head, f"{merge_commit}^2", cwd=worktree):
             return "unknown", str(commits)
-        engine = int(run_command(
-            ["git", "rev-list", "--count", f"{merge_commit}^1..{pushed_head}"],
-            cwd=worktree,
-        ))
+        command = ["git", "rev-list", "--count", pushed_head,
+                   "--not", f"{merge_commit}^1"]
+        if pushed_base is not None:
+            if not _is_ancestor(pushed_base, f"{merge_commit}^2",
+                                cwd=worktree):
+                return "unknown", str(commits)
+            command.append(pushed_base)
+        engine = int(run_command(command, cwd=worktree))
     except (subprocess.CalledProcessError, ValueError):
         return "unknown", "unknown"
-    # `pushed_head` is an ancestor of M^2 (checked above), so
-    # (M^1..pushed_head) is a subset of (M^1..M^2) and the subtraction
-    # cannot go negative.
+    # The engine count's positive set is reachable from `pushed_head`
+    # (an ancestor of M^2) and every negation only shrinks it, so it is
+    # a subset of the `commits` window and the subtraction cannot go
+    # negative.
     return str(commits - engine), str(commits)
 
 
@@ -5793,6 +5866,26 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             )
     round = rounds + 1
     pr = freeze_pr(worktree, branch, base_branch)
+    # A fix push whose round ended before the re-freeze record (a
+    # findings verdict, or a malformed verdict head) still left an
+    # engine-pushed head on the remote (Issue #833). When the frozen
+    # remote head is exactly this worktree's checked-out head, only
+    # this worktree's own sessions push it — adopt it into the push
+    # history. The adoption is internal-only: an external takeover's
+    # worktree legitimately starts on the contributor's foreign head,
+    # whose base the claim recorded instead; an external push leaves
+    # the local head behind and is never adopted. The recorded-head
+    # check runs first: the common already-recorded round never pays a
+    # git call.
+    if (not scene.get("external")
+            and read_pushed_head(worktree) != pr["head_oid"]
+            and pr["head_oid"] == run_command(
+                ["git", "rev-parse", "HEAD"], cwd=worktree)):
+        record_pushed_head(worktree, pr["head_oid"])
+        event(
+            "pushed_head_recorded", pr=pr["number"],
+            head=pr["head_oid"], round=round,
+        )
     if recovery_at is not None:
         # Only the explicit recovery path reaches this branch. Check the
         # latest PR CI before spending the newly granted review budget.
@@ -5981,6 +6074,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
     # never re-failed by its own record.
     external_commits, pr_commits = merge_commit_metrics(
         worktree, confirmed["merge_commit"], read_pushed_head(worktree),
+        read_pushed_base(worktree),
     )
     # The merged publishing is bypass — the GitHub merge
     # already landed; a 404 here must not stop the `ai-merged`
@@ -6832,6 +6926,16 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         # resumed one (same run id, never a second marker).
         ctx = replace(ctx, worktree=worktree)
         write_run_state(ctx)
+        if external_takeover:
+            # The takeover's engine push line starts on the
+            # contributor's own head (Issue #608): the merge record's
+            # external_commits (Issue #833) must subtract only what the
+            # engine pushes on top of this foreign head, never the head
+            # itself. No session has run yet, so HEAD is exactly that
+            # head; the record is set once per run.
+            record_pushed_base(worktree, run_command(
+                ["git", "rev-parse", "HEAD"], cwd=worktree,
+            ))
         # The new session starts from the existing work —
         # the uncommitted changes and the previous session's progress —
         # instead of a fresh redo. A clean worktree without a previous

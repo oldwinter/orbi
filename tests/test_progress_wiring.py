@@ -1590,6 +1590,13 @@ def _run_review_and_merge(monkeypatch, tmp_path, *, verdict,
             # fixture is about progress traffic, the counts' real-git
             # evidence lives in test_review_merge.
             return "1"
+        if command[0] == "git" and command[1] == "rev-parse" \
+                and command[2] == "HEAD":
+            # The round-start head adoption (Issue #833) compares the
+            # frozen PR head with the worktree head; this fixture has
+            # no recorded push and a non-git worktree, so no adoption
+            # runs — its real-git evidence lives in test_review_merge.
+            return "local-head"
         if command[:2] == ["gh", "api"]:
             if "--method" not in command:
                 return json.dumps([])

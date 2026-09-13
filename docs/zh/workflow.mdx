@@ -134,15 +134,22 @@ Orbi merged PR: <url> (merge_commit=… review_rounds=N external_commits=K commi
   head 加上 Runner 自己推的每一轮 review/fix head；绝不检查 git 作者
   身份）。`0` = merged as-is：合并前没有人改过交付分支的一行。计数在
   合并后通过 merge commit 的父链读取（`M^1` 为 base 端、`M^2` 为 PR
-  head），减去记录的最后一个引擎推送 head。
+  head），减去引擎记录的推送线：最后一个引擎推送 head；外部接管
+  （Issue #608）时再排除接管的贡献者 head（推送线的起点），贡献者的
+  commit 保持为外部。
 - `external_commits=unknown` —— 推送历史无法证实（重建的 worktree 丢了
-  run-state 记录，或记录的 head 不是合并 head 的祖先）。数不出来的历史
-  绝不写成 `0`。
+  run-state 记录；某轮 fix 推送在记录之前回合已结束且历史不完整；或
+  记录的 head/base 不是合并 head 的祖先）。数不出来的历史绝不写成
+  `0`。
 
-引擎推送 head 只在两个点记入 task worktree 的 run state（`pushed_head`，
-Issue #219 文件）——交付推送与 verdict 覆盖的 review/fix 推送——同一
-worktree 的接续都能恢复这份历史；全新的 worktree 从无记录开始，退化为
-`unknown`。
+引擎推送 head 在三个点记入 task worktree 的 run state（`pushed_head`，
+Issue #219 文件）——交付推送、verdict 覆盖的 review/fix 推送、以及
+回合开始时对上一 session 已推送但回合在 re-freeze 记录之前结束的
+head 的采纳——同一 worktree 的接续都能恢复这份历史；全新的 worktree
+从无记录开始，退化为 `unknown`。外部接管在 claim 时一次性记录接管的
+起点 head（`pushed_base`），且其回合开始的采纳永不运行：worktree 本来
+就始于贡献者的 head。记录本身是 bypass：state 文件缺失或损坏只记
+`pushed_head_unrecorded` 日志，交付继续。
 
 ## 交付标签
 

@@ -2504,6 +2504,61 @@ def test_read_run_state_fails_fast_on_unreadable_or_malformed_state(tmp_path):
         runner.read_run_state(worktree)
 
 
+def test_write_run_state_preserves_the_push_history(tmp_path):
+    """The push-history fields (Issue #833) survive a resume's state
+    refresh — the same delivery line keeps its recorded heads."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    runner.write_run_state(
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
+    )
+    runner.record_pushed_head(worktree, "h1")
+    runner.record_pushed_base(worktree, "b1")
+    runner.write_run_state(
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
+    )
+    assert runner.read_pushed_head(worktree) == "h1"
+    assert runner.read_pushed_base(worktree) == "b1"
+
+
+def test_record_pushed_base_is_set_once_per_run(tmp_path):
+    """A re-claim of the same run re-derives a moved HEAD, which is
+    not the push line's origin — the first recorded base wins."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    runner.write_run_state(
+        runner.RunContext(
+            run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3",
+            worktree=worktree, source_repo="owner/repo",
+        ),
+    )
+    runner.record_pushed_base(worktree, "b1")
+    runner.record_pushed_base(worktree, "b2")
+    assert runner.read_pushed_base(worktree) == "b1"
+
+
+def test_record_pushed_head_degrades_without_the_state_file(
+        tmp_path, caplog):
+    """Recording is bypass-safe (Issue #73): a recreated worktree lost
+    `.orbi/` — the record logs `pushed_head_unrecorded` and continues;
+    the merge record degrades to `unknown`, the delivery does not
+    fail."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    caplog.set_level("WARNING")
+    runner.record_pushed_head(worktree, "h1")
+    runner.record_pushed_base(worktree, "b1")
+    assert runner.read_pushed_head(worktree) is None
+    assert runner.read_pushed_base(worktree) is None
+    assert "pushed_head_unrecorded" in caplog.text
+
+
 def make_session_jsonl(worktree: Path, session_id: str = "sess-1") -> Path:
     """A minimal previous session file (Issue #219 resume context)."""
     session_dir = worktree / ".pi-session"

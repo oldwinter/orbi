@@ -2311,14 +2311,15 @@ def _remote_head(clone: Path) -> str:
 
 
 def _run_merge_round(monkeypatch, clone: Path, *, session=None,
-                     scene_review_round: int = 0):
+                     scene_review_round: int = 0, external: bool = False):
     """One review/merge call against the real git clone; returns the
     `Orbi merged PR:` comment body (None when the round does not
     merge). The review session ends at the `stream_pi` seam: `session`
     is the session's stand-in — it may perform the session's own work
     (the fix push, exactly between the round-start freeze and the
     re-freeze) and returns the REVIEW_VERDICT text; the default reviews
-    the current remote head as-is."""
+    the current remote head as-is. `external` runs the round as an
+    external-takeover resume (the scene's `external` field)."""
     if session is None:
         session = lambda: _pass_verdict_text(head=_remote_head(clone))
     monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
@@ -2347,7 +2348,8 @@ def _run_merge_round(monkeypatch, clone: Path, *, session=None,
     merged = runner.review_and_merge_if_clean(
         clone, TASK_BRANCH, "main", config,
         "owner/repo", 4, title="Review task", priority="normal",
-        scene=_scene(review_round=scene_review_round),
+        scene=_scene(review_round=scene_review_round,
+                     external="true" if external else ""),
     )
     if not merged:
         return None
@@ -2496,23 +2498,140 @@ def test_merge_commit_metrics_degrades_on_a_corrupt_or_foreign_record(
         "{not json", encoding="utf-8")
     assert runner.merge_commit_metrics(
         merge_clone, merge_commit, runner.read_pushed_head(merge_clone),
+        runner.read_pushed_base(merge_clone),
     ) == ("unknown", "1")
     # A foreign head (the base tip is not a commit of the PR branch).
     assert runner.merge_commit_metrics(
-        merge_clone, merge_commit, base_tip,
+        merge_clone, merge_commit, base_tip, None,
+    ) == ("unknown", "1")
+    # A foreign base (a takeover record whose base the merged head does
+    # not contain) degrades the same way.
+    assert runner.merge_commit_metrics(
+        merge_clone, merge_commit, delivery, base_tip,
     ) == ("unknown", "1")
     # The honest record subtracts exactly the delivery commit.
     _seed_run_state(merge_clone)
     runner.record_pushed_head(merge_clone, delivery)
     assert runner.merge_commit_metrics(
         merge_clone, merge_commit, runner.read_pushed_head(merge_clone),
+        runner.read_pushed_base(merge_clone),
     ) == ("0", "1")
 
 
-def test_record_pushed_head_fails_fast_without_the_run_state(tmp_path):
-    """The state file always exists by the push write points (written at
-    claim time); a missing file is a broken same-run invariant and
-    fails fast instead of silently losing the push history (Issue
-    #833)."""
-    with pytest.raises(RuntimeError, match="run state file .* is missing"):
-        runner.record_pushed_head(tmp_path, "a" * 40)
+def test_merge_record_takeover_counts_contributor_commits(
+        merge_clone, monkeypatch):
+    """An external takeover (Issue #608) starts the engine's push line
+    on the contributor's own head: the claim records that head as the
+    push-line base, so one engine fix push on top of it reports the
+    contributor's commit as external (Issue #833) — never a fabricated
+    merged-as-is 0."""
+    contributor = _delivery_commit(
+        merge_clone, "contrib.txt", "contributor work")
+    _seed_run_state(merge_clone)
+    runner.record_pushed_base(merge_clone, contributor)
+
+    # The takeover review session fixes on top of the contributor's
+    # head and pushes; the verdict covers the pushed head.
+    def takeover_fix():
+        git(merge_clone, "checkout", TASK_BRANCH)
+        (merge_clone / "reviewer-fix.txt").write_text(
+            "x", encoding="utf-8")
+        git(merge_clone, "add", "reviewer-fix.txt")
+        git(merge_clone, "commit", "-m", "reviewer fix")
+        git(merge_clone, "push", "origin", TASK_BRANCH)
+        return _pass_verdict_text(head=_remote_head(merge_clone))
+
+    body = _run_merge_round(
+        monkeypatch, merge_clone, session=takeover_fix, external=True,
+    )
+    assert body is not None
+    assert "external_commits=1" in body
+    assert "commits=2" in body
+
+
+def test_merge_record_takeover_fix_push_across_rounds_degrades_to_unknown(
+        merge_clone, monkeypatch):
+    """The round-start adoption is internal-only: an external takeover
+    whose fix-push round ends in findings loses that round's head (the
+    re-freeze record never runs), and the honest record is `unknown` —
+    never a fabricated count (Issue #833)."""
+    contributor = _delivery_commit(
+        merge_clone, "contrib.txt", "contributor work")
+    _seed_run_state(merge_clone)
+    runner.record_pushed_base(merge_clone, contributor)
+
+    # Round 1: the takeover session pushes its fix and still emits
+    # findings — the round ends before the re-freeze record.
+    def takeover_push_and_findings():
+        git(merge_clone, "checkout", TASK_BRANCH)
+        (merge_clone / "reviewer-fix.txt").write_text(
+            "x", encoding="utf-8")
+        git(merge_clone, "add", "reviewer-fix.txt")
+        git(merge_clone, "commit", "-m", "reviewer fix")
+        git(merge_clone, "push", "origin", TASK_BRANCH)
+        return _findings_verdict_text(head=_remote_head(merge_clone))
+
+    assert _run_merge_round(
+        monkeypatch, merge_clone, session=takeover_push_and_findings,
+        external=True,
+    ) is None
+
+    # Round 2 (next tick): clean pass over the same pushed head, no new
+    # push — the fix head is engine work, but with the round-1 record
+    # lost the honest value is `unknown` (never a fabricated 0: the
+    # contributor's commit is still not the engine's).
+    body = _run_merge_round(
+        monkeypatch, merge_clone, scene_review_round=1, external=True,
+    )
+    assert body is not None
+    assert "external_commits=unknown" in body
+    assert "commits=2" in body
+
+
+def test_merge_record_engine_fix_push_across_rounds_stays_external_zero(
+        merge_clone, monkeypatch):
+    """A fix push whose round ended without the re-freeze record (the
+    session pushed its fix and still emitted findings, prompt_review's
+    fix-then-findings path) is still the engine's own work: the next
+    round adopts the frozen head — identical to the worktree's
+    checked-out head — into the push history (Issue #833)."""
+    delivery = _delivery_commit(merge_clone, "fix.txt", "delivery")
+    _seed_run_state(merge_clone)
+    runner.record_pushed_head(merge_clone, delivery)
+
+    def push_and_findings():
+        git(merge_clone, "checkout", TASK_BRANCH)
+        (merge_clone / "fix2.txt").write_text(
+            "engine fix round1", encoding="utf-8")
+        git(merge_clone, "add", "fix2.txt")
+        git(merge_clone, "commit", "-m", "engine fix round1")
+        git(merge_clone, "push", "origin", TASK_BRANCH)
+        return _findings_verdict_text(head=_remote_head(merge_clone))
+
+    assert _run_merge_round(
+        monkeypatch, merge_clone, session=push_and_findings,
+    ) is None
+
+    # Round 2 (next tick): clean pass over the SAME pushed head — both
+    # commits are the engine's own.
+    body = _run_merge_round(
+        monkeypatch, merge_clone, scene_review_round=1,
+    )
+    assert body is not None
+    assert "external_commits=0" in body
+    assert "commits=2" in body
+
+
+def test_record_pushed_head_degrades_without_the_run_state(
+        tmp_path, caplog):
+    """Recording is bypass-safe (Issue #73): the fields only feed the
+    merge record, so a recreated worktree's missing state file logs
+    `pushed_head_unrecorded` and continues — the merge record degrades
+    to `unknown` and the delivery is never re-failed by its own
+    observability input (Issue #833)."""
+    caplog.set_level("WARNING")
+    runner.record_pushed_head(tmp_path, "a" * 40)
+    runner.record_pushed_base(tmp_path, "b" * 40)
+    assert runner.read_pushed_head(tmp_path) is None
+    assert runner.read_pushed_base(tmp_path) is None
+    assert "pushed_head_unrecorded" in caplog.text

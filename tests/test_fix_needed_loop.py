@@ -1086,6 +1086,14 @@ def test_exhausted_review_enters_new_budget_after_human_recovery(
     freezes = []
     monkeypatch.setattr(runner, "freeze_pr",
                         lambda *a, **k: freezes.append(1) or frozen)
+    # The frozen head is the delivery's recorded engine push (the
+    # normal in-flight state, Issue #833): the round-start adoption
+    # short-circuits before any git call on the bare worktree.
+    runner.write_run_state(runner.RunContext(
+        run_id=FAKE_RUN_ID, issue=39, branch="branch",
+        worktree=tmp_path, source_repo="owner/repo",
+    ))
+    runner.record_pushed_head(tmp_path, "def")
     monkeypatch.setattr(runner, "log_recovery_ci_status", lambda *a, **k: None)
     monkeypatch.setattr(seam, "_safe_publish", lambda *a, **k: None)
     monkeypatch.setattr(
