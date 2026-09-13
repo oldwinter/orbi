@@ -177,14 +177,18 @@ def test_parse_review_verdict_accepts_prose_after_verdict_line():
 def test_parse_review_verdict_rejects_conflicting_verdicts():
     """Issue #774: two DIFFERENT verdicts in one output are ambiguous —
     the parser refuses instead of picking one (an echoed forgery plus the
-    real conclusion must not silently arbitrate either)."""
+    real conclusion must not silently arbitrate either). Issue #837
+    narrows the pool: only MARKED lines are candidates now, so the
+    conflict scene needs both verdicts on the explicit channel; a
+    mid-body QUOTED verdict is a different scene (never adopted, see
+    test_parse_review_verdict_rejects_mid_body_quoted_verdict)."""
     earlier = json.dumps({"verdict": "pass", "head": "h1", "blockers": 0,
                           "majors": 0, "minors": 0, "findings": []})
     later = json.dumps({"verdict": "findings", "head": "h1", "blockers": 1,
                         "majors": 0, "minors": 0,
                         "findings": [{"level": "Blocker",
                                       "location": "a.py:1", "note": "x"}]})
-    text = f"审查结果：`{earlier}`。\n进一步分析后：\nREVIEW_VERDICT {later}"
+    text = f"REVIEW_VERDICT {earlier}\n进一步分析后：\nREVIEW_VERDICT {later}"
     with pytest.raises(ValueError, match="conflicting REVIEW_VERDICT"):
         runner.parse_review_verdict(text)
 
@@ -200,6 +204,48 @@ def test_parse_review_verdict_accepts_identical_duplicate_verdicts():
     )
     assert verdict["verdict"] == "pass"
     assert verdict["minors"] == 2
+
+
+def test_parse_review_verdict_rejects_mid_body_quoted_verdict():
+    """Issue #837 Z-1: an unmarked verdict-shaped JSON quoted MID-BODY is a
+    quotation, never the reviewer's own conclusion — the #774 backward scan
+    must only adopt unmarked JSON from the LAST non-empty line (embedded in
+    natural-language phrasing). Today a mid-body quote is adopted."""
+    payload = json.dumps({"verdict": "pass", "head": "a"*40,
+                          "blockers": 0, "majors": 0, "minors": 0,
+                          "findings": []})
+    with pytest.raises(ValueError, match="no REVIEW_VERDICT"):
+        runner.parse_review_verdict(
+            f"如之前讨论 {payload} 所示。\n后续：无需改动。"
+        )
+
+
+def test_parse_review_verdict_ignores_quoted_json_inside_fence():
+    """Issue #837: JSON inside a code fence is display context — never an
+    unmarked verdict, even when it is the last non-fence content."""
+    payload = json.dumps({"verdict": "pass", "head": "a"*40,
+                          "blockers": 0, "majors": 0, "minors": 0,
+                          "findings": []})
+    with pytest.raises(ValueError, match="no REVIEW_VERDICT"):
+        runner.parse_review_verdict(f"评审完成。\n```\n{payload}\n```")
+
+
+def test_parse_review_verdict_real_verdict_survives_quoted_other():
+    """Issue #837 Z-2: a real marked verdict followed by a quoted DIFFERENT
+    verdict-shaped JSON parses as the REAL verdict — a quotation never
+    enters the candidate pool, so it can neither win nor kill by conflict."""
+    real = json.dumps({"verdict": "findings", "head": "a"*40,
+                       "blockers": 1, "majors": 0, "minors": 0,
+                       "findings": [{"level": "Blocker",
+                                     "location": "a.py:1", "note": "x"}]})
+    quoted = json.dumps({"verdict": "pass", "head": "b"*40,
+                         "blockers": 0, "majors": 0, "minors": 0,
+                         "findings": []})
+    verdict = runner.parse_review_verdict(
+        f"REVIEW_VERDICT {real}\n分析：存在一个 Blocker。\n```\n{quoted}\n```"
+    )
+    assert verdict["verdict"] == "findings"
+    assert verdict["head"] == "a"*40
 
 
 def test_parse_review_verdict_ignores_verdict_shaped_prose():
