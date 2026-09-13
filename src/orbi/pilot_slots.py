@@ -16,6 +16,14 @@ ownership token:
   A live holder can never lose its slot based on elapsed time or a
   missing write — even if it pauses arbitrarily long before or after
   taking the lock.
+- Delivery identity (Issue #809): after selecting a delivery the holder
+  rewrites its slot file to ``<pid>\\n<repo>#<issue>`` — line 1 stays the
+  holder PID, line 2 names the (repo, issue) the holder is working on.
+  Like the PID, the identity is observational metadata; the flock stays
+  the only ownership token. It lets another runner's resume scan skip
+  exactly the deliveries that are in flight instead of abandoning the
+  whole scan (the pre-#809 whole-slot-dir guard starved every review
+  while any delivery was in flight).
 - Release: closing the descriptor releases the lock, and the kernel
   releases it when the process exits for ANY reason (normal exit,
   SIGTERM, SIGKILL). There is no atexit hook, no signal handler and no
@@ -127,10 +135,75 @@ def slot_occupancy(state_dir: Path, capacity: int) -> list[tuple[int, int | None
     return occupancy
 
 
+def mark_slot_delivery(slot: Slot, repo: str, issue: int) -> None:
+    """Record in the held slot file which delivery the holder is working.
+
+    Issue #809: called by the runner immediately after selecting a
+    delivery — a fresh claim (the implement phase is in flight), a
+    resume (the review is in flight) and the implement→opened-PR
+    boundary are all covered by this one write. The identity is what
+    another runner's resume scan matches on (`slot_held_deliveries`):
+    skip exactly this (repo, issue), never the whole scan. The file is
+    rewritten under the slot's own flock; a write failure propagates
+    (fail fast — the delivery has not started, the next tick re-picks).
+    """
+    os.ftruncate(slot.fd, 0)
+    os.lseek(slot.fd, 0, os.SEEK_SET)
+    os.write(
+        slot.fd, f"{os.getpid()}\n{repo}#{int(issue)}\n".encode("ascii"),
+    )
+
+
+def slot_held_deliveries(state_dir: Path, capacity: int) -> set[tuple[str, int]]:
+    """Return the (repo, issue) deliveries held by LIVE other runners.
+
+    Issue #809: only slots whose flock is held by another pid are read —
+    the lock is the truth, so a free slot's leftover identity is stale by
+    definition and a live holder without a readable identity (not yet
+    selected, or an old runner) contributes nothing (fail open: the scan
+    skips only a delivery that is provably held by someone else). The
+    holder's own pid never appears: a runner holds a delivery only after
+    its scan has finished.
+    """
+    state_dir = Path(state_dir)
+    mine = os.getpid()
+    held: set[tuple[str, int]] = set()
+    for index, holder in slot_occupancy(state_dir, capacity):
+        if holder is None or holder == mine:
+            continue
+        identity = _read_delivery(slot_path(state_dir, index))
+        if identity is not None:
+            held.add(identity)
+    return held
+
+
+def _read_delivery(path: Path) -> tuple[str, int] | None:
+    """Parse the ``<repo>#<issue>`` identity line from one slot file.
+
+    Line 1 is the holder pid, line 2 the optional identity; anything
+    else (a missing, empty or malformed line) means no identity.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if len(lines) < 2:
+        return None
+    repo, sep, number = lines[1].strip().rpartition("#")
+    if not sep or not repo or not number.isdigit():
+        return None
+    return repo, int(number)
+
+
 def _read_pid(path: Path) -> int | None:
-    """Return the observational holder PID from one slot file, if present."""
+    """Return the observational holder PID from one slot file, if present.
+
+    The PID is the file's FIRST line; an identity line (Issue #809) or
+    any other trailing content never breaks the parse.
+    """
     try:
         raw = path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
-    return int(raw) if raw.isdigit() else None
+    first = raw.split("\n", 1)[0].strip() if raw else ""
+    return int(first) if first.isdigit() else None

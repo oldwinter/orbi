@@ -18,6 +18,10 @@ executable records every invocation. These prove the acceptance criteria:
   ``ai-blocked`` and the slot is released;
 - with ``max_concurrency = 2`` two runners hold two different slots and
   claim two different Issues while a third runner is rejected;
+- the review of a FREE opened-PR delivery is not starved by an in-flight
+  delivery (Issue #809): the holder names its (repo, issue) in the slot
+  file, the concurrent tick skips exactly that delivery and reviews the
+  free one instead of falling through to a fresh claim;
 - a SIGKILLed runner releases its slot automatically (the kernel owns
   the flock lock), so an abnormal exit never deadlocks the machine.
 """
@@ -93,6 +97,10 @@ def match_issue(labels, search):
 
 if args[:2] == ["issue", "list"]:
     search = args[args.index("--search") + 1]
+    # Issue #809: the resumable scan asks for a page (max_concurrency+1)
+    # so it can skip held deliveries and still reach a free one — the
+    # fake must honor the limit, not answer one issue regardless.
+    limit = int(args[args.index("--limit") + 1])
     out = [
         # `--state open` only ever returns open Issues, and the real
         # payload carries `state` (the resumable scan checks it).
@@ -104,7 +112,7 @@ if args[:2] == ["issue", "list"]:
         )
         if match_issue(issue["labels"], search)
     ]
-    print(json.dumps(out[:1]))
+    print(json.dumps(out[:limit]))
 elif args[:2] == ["issue", "edit"]:
     num = args[2]
     if "--add-label" in args:
@@ -1508,6 +1516,151 @@ def test_live_review_tick_is_not_resumed_by_second_runner(
     # issue 7, never a duplicate claim.
     assert len(pi_invocations(pi_log)) == 3
     assert slots_held(clone, 2) == [(1, None), (2, None)]
+
+
+def test_review_of_free_pr_is_not_starved_by_an_in_flight_delivery(
+    clone, tmp_path,
+):
+    """Issue #809 acceptance (the reported starvation, end to end): a
+    delivery in flight in another runner must not stop the review of a
+    DIFFERENT opened-PR delivery. The pre-#809 guard made the resumable
+    scan return None whenever ANY slot was held, so every concurrent
+    tick fell through to fresh claims — PRs kept opening and none was
+    ever reviewed (nine MERGEABLE PRs, the oldest 90 minutes).
+
+    The real user path, with real processes and a real slot flock:
+
+    1. two implement ticks open the PRs of issues 7 and 8 (gated, in
+       order), then end and release the slots — both deliveries sit
+       unowned in `ai-pr-opened`, awaiting their review tick;
+    2. the first review tick resumes issue 7 and its review session is
+       held mid-run by the test gate — the delivery is LIVE: the runner
+       holds slot 1 and its slot file names `owner/repo#7`;
+    3. a concurrent tick must review issue 8 NOW (the free delivery) —
+       the held issue 7 is skipped, the scan does NOT fall through to a
+       fresh claim (there is nothing left to claim) — and merge it
+       while issue 7's review is still parked;
+    4. releasing the gate lets the SAME holder finish issue 7's review
+       (absorbing the base that issue 8's merge advanced in-session).
+
+    The multi-repo shape of the real deployment (two source repos on
+    one deploy_home, one slot dir) is the same skip at the identity
+    level: the hold matches on (repo, issue), covered by the unit
+    tests in test_resume_pr.py."""
+    bin_dir = install_fakes(tmp_path)
+    state = tmp_path / "gh-state.json"
+    write_state(state, {"7": ["ai-ready"], "8": ["ai-ready"]})
+    pi_log = tmp_path / "pi.log"
+    config = write_config(clone, tmp_path, 2)
+
+    # ---- Stage two opened-PR deliveries: both implement sessions are
+    # gated so the ticks overlap, then released in order; each tick ends
+    # when its PR opens and releases the slot (Issue #788).
+    pi_gate_7 = tmp_path / "pi-gate-7"
+    pi_gate_8 = tmp_path / "pi-gate-8"
+    first = start_runner(
+        config, bin_dir, state, pi_log, pi_gate=pi_gate_7, drain_stderr=True,
+    )
+    wait_for(
+        lambda: "ai-in-progress" in read_state(state)["issues"]["7"]["labels"],
+        what="first runner to claim issue 7",
+    )
+    second = start_runner(
+        config, bin_dir, state, pi_log, pi_gate=pi_gate_8, drain_stderr=True,
+    )
+    wait_for(
+        lambda: "ai-in-progress" in read_state(state)["issues"]["8"]["labels"],
+        what="second runner to claim issue 8",
+    )
+    pi_gate_7.write_text("go", encoding="utf-8")
+    wait_for(
+        lambda: "ai-pr-opened" in read_state(state)["issues"]["7"]["labels"],
+        what="issue 7 PR to open",
+    )
+    pi_gate_8.write_text("go", encoding="utf-8")
+    wait_for(
+        lambda: "ai-pr-opened" in read_state(state)["issues"]["8"]["labels"],
+        what="issue 8 PR to open",
+    )
+    for process in (first, second):
+        process.wait(timeout=120)
+        assert process.returncode == 0, process.drained_stderr.getvalue()
+    assert slots_held(clone, 2) == [(1, None), (2, None)], (
+        "both implement ticks ended: both deliveries await review unowned"
+    )
+
+    # ---- The review of issue 7 runs and is held mid-run: its runner
+    # holds slot 1 and the slot file names the delivery (Issue #809's
+    # per-delivery hold marker).
+    review_gate = tmp_path / "review-gate"
+    reviewer_7 = start_runner(
+        config, bin_dir, state, pi_log, review_gate=review_gate,
+    )
+    review_waiting = review_gate.with_suffix(".waiting")
+    wait_for(
+        review_waiting.exists, timeout=30,
+        what="issue 7's review to hold the slot mid-run",
+    )
+    held = slots_held(clone, 2)
+    assert held[0][1] is not None and held[1][1] is None
+    slot_lines = (clone / ".orbi" / "slots" / "slot-1").read_text(
+        encoding="utf-8",
+    ).splitlines()
+    assert slot_lines[1] == "owner/repo#7", (
+        "the live holder's slot file names the in-flight delivery"
+    )
+
+    # ---- The concurrent tick reviews the FREE delivery (issue 8) and
+    # merges it while issue 7's review is still parked. Under the
+    # pre-#809 whole-slot-dir guard this tick ended in `no_ready_issue`
+    # — the starvation this test pins.
+    reviewer_8 = start_runner(config, bin_dir, state, pi_log)
+    wait_for(
+        lambda: "ai-merged" in read_state(state)["issues"]["8"]["labels"],
+        timeout=180,
+        what="the concurrent tick to review and merge the FREE delivery",
+    )
+    out, err = reviewer_8.communicate(timeout=120)
+    assert reviewer_8.returncode == 0, err
+    assert "delivery_auto_merged" in err
+    assert "no_ready_issue" not in err
+    assert "capacity_full" not in err
+    # Issue 7's live delivery was untouched: still awaiting its verdict,
+    # never re-resumed, never blocked, never re-claimed.
+    snap = read_state(state)
+    assert "ai-pr-opened" in snap["issues"]["7"]["labels"]
+    assert "ai-merged" not in snap["issues"]["7"]["labels"]
+    assert "ai-blocked" not in snap["issues"]["7"]["labels"]
+    # The held slot still names issue 7 while the parked review runs.
+    assert (clone / ".orbi" / "slots" / "slot-1").read_text(
+        encoding="utf-8",
+    ).splitlines()[1] == "owner/repo#7"
+
+    # ---- Release issue 7's review: the SAME holder absorbs the base
+    # issue 8's merge advanced (in-session, Issue #82) and merges.
+    review_gate.write_text("go", encoding="utf-8")
+    wait_for(
+        lambda: "ai-merged" in read_state(state)["issues"]["7"]["labels"],
+        timeout=180,
+        what="issue 7's review to finish and merge after the gate",
+    )
+    out, err = reviewer_7.communicate(timeout=120)
+    assert reviewer_7.returncode == 0, err
+    assert "delivery_auto_merged" in err
+    snap = read_state(state)
+    assert "ai-merged" in snap["issues"]["7"]["labels"]
+    assert "ai-blocked" not in snap["issues"]["7"]["labels"]
+    # Exactly one Pi per phase: implement + review of each delivery —
+    # never a second review of the held delivery, never a fresh claim
+    # displacing a review.
+    assert len(pi_invocations(pi_log)) == 4
+    started = [
+        c for c in snap["comments"] if "Orbi started Pi:" in c["body"]
+    ]
+    assert sorted(c["issue"] for c in started) == ["7", "8"]
+    assert slots_held(clone, 2) == [(1, None), (2, None)], (
+        "both slots released after both merges"
+    )
 
 
 def test_unit_drift_auto_syncs_and_claims_without_human_intervention(
