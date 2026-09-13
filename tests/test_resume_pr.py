@@ -2805,7 +2805,9 @@ def test_verify_pr_resume_accepts_a_marker_of_the_delivery_line(
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     url = runner.verify_pr(
-        worktree, FAKE_BRANCH, "main", RESUME_RUN_ID, issue=9,
+        RunContext(run_id=RESUME_RUN_ID, issue=9, branch=FAKE_BRANCH,
+                   worktree=worktree, source_repo="owner/repo"),
+        "main",
         repo_dir=tmp_path, pr_repo="owner/repo",
         expected_url=FAKE_PR_URL, require_latest_base=False,
     )
@@ -2902,7 +2904,9 @@ def test_verify_pr_resume_still_rejects_a_foreign_line_marker(
     worktree.mkdir()
     with pytest.raises(RuntimeError, match="stable run marker"):
         runner.verify_pr(
-            worktree, FAKE_BRANCH, "main", RESUME_RUN_ID, issue=9,
+            RunContext(run_id=RESUME_RUN_ID, issue=9, branch=FAKE_BRANCH,
+                       worktree=worktree, source_repo="owner/repo"),
+            "main",
             repo_dir=tmp_path, pr_repo="owner/repo",
             expected_url=FAKE_PR_URL, require_latest_base=False,
         )
@@ -2941,7 +2945,9 @@ def test_verify_pr_resume_ignores_public_comment_markers(
     worktree.mkdir()
     with pytest.raises(RuntimeError, match="stable run marker"):
         runner.verify_pr(
-            worktree, FAKE_BRANCH, "main", RESUME_RUN_ID, issue=9,
+            RunContext(run_id=RESUME_RUN_ID, issue=9, branch=FAKE_BRANCH,
+                       worktree=worktree, source_repo="owner/repo"),
+            "main",
             repo_dir=tmp_path, pr_repo="owner/repo",
             expected_url=FAKE_PR_URL, require_latest_base=False,
         )
