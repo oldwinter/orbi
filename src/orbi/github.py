@@ -549,6 +549,21 @@ def comment_issue(number: int, *, repo: str, body: str) -> None:
                  "--body", format_status_comment(body)])
 
 
+def update_issue_comment(comment_id: int, *, repo: str, body: str) -> None:
+    """Patch one Issue comment in place (Issue #825's repeat counter).
+
+    The route is the one the progress publisher's `_patch_comment` uses:
+    PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}. The body
+    passes through `format_status_comment` like every posted comment —
+    idempotent for a stored body (the stored shape takes the verbatim
+    path and the hidden runner marker is refreshed).
+    """
+    run_command([
+        "gh", "api", f"repos/{repo}/issues/comments/{comment_id}",
+        "--method", "PATCH", "--field", f"body={format_status_comment(body)}",
+    ])
+
+
 def issue_comments(number: int, *, repo: str) -> list[dict]:
     """Return the Issue's comment history (oldest first) from GitHub.
 
@@ -719,6 +734,30 @@ def latest_run_marker(comments: list[dict]) -> str:
         if match:
             return run_marker(match.group(1))
     return ""
+
+
+def line_run_markers(comments: list[dict]) -> frozenset[str]:
+    """Every rendered run marker in the Issue's trusted comments.
+
+    Issue #825: a delivery line may resume under a NEW run id, so the
+    line's identity is the SET of run ids its trusted comments carry —
+    the creating run's marker stays accepted after the rebind. The same
+    trust filter as the resume scene (`_comment_is_trusted`): a copied
+    marker in a public comment widens nothing. A pure scan over the
+    already-fetched comment list.
+    """
+    markers: set[str] = set()
+    for comment in comments:
+        if not _comment_is_trusted(comment):
+            continue
+        body = comment.get("body")
+        if not isinstance(body, str):
+            continue
+        markers.update(
+            run_marker(match.group(1))
+            for match in RUN_MARKER_PATTERN.finditer(body)
+        )
+    return frozenset(markers)
 
 
 def open_pr_for_branch(repo_dir: Path, branch: str) -> dict | None:
