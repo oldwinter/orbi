@@ -939,3 +939,5 @@ def test_failure_repeat_count_and_bump_round_trip():
     with pytest.raises(ValueError, match="does not carry the failure marker"):
         progress.bump_failure_repeat(
             body, "ffffffffffffffff")
+    with pytest.raises(ValueError, match="must be a string"):
+        progress.bump_failure_repeat(None, "01e1f4a35a2fe1e5")
