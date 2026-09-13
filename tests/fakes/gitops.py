@@ -92,6 +92,11 @@ class FakeGit:
         return ""
 
     def _branch_list(self, args: list[str], cwd) -> str:
+        if args == ["--show-current"]:
+            # `git branch --show-current` inside a worktree (verify_pr's
+            # branch-identity read). The seam strips stdout, so the
+            # bare name is the faithful answer.
+            return str(self._worktree_state(cwd)["branch"])
         if len(args) != 2 or args[0] != "--list":
             self._unsupported(["git", "branch", *args])
         name = args[1]
@@ -108,6 +113,10 @@ class FakeGit:
         return ""
 
     def _rev_parse(self, args: list[str], cwd) -> str:
+        if args == ["HEAD"]:
+            # `git rev-parse HEAD` inside a worktree (verify_pr's local
+            # head read). The seam strips stdout: the bare sha.
+            return str(self._worktree_state(cwd)["head"])
         if len(args) != 1:
             self._unsupported(["git", "rev-parse", *args])
         # The adapter only ever reads `origin/<branch>` (freeze_base).
@@ -115,6 +124,13 @@ class FakeGit:
         if name != args[0] and name in self.origin:
             return self.origin[name]
         self._fail(128, f"fatal: ambiguous argument '{args[0]}'")
+
+    def _worktree_state(self, cwd) -> dict:
+        key = _key(cwd) if cwd is not None else "<no cwd>"
+        state = self.worktrees.get(key)
+        if state is None:
+            self._fail(128, f"fatal: not a git repository: {key}")
+        return state
 
     def _merge_base(self, args: list[str], cwd) -> str:
         if args[:1] != ["--is-ancestor"] or len(args) != 3:
@@ -163,11 +179,14 @@ class FakeGit:
         return "\n\n".join(blocks) + ("\n" if blocks else "")
 
     def _worktree_add_new(self, args: list[str], cwd) -> str:
-        # `git worktree add -b <branch> <path> <start-point>` (fresh
-        # branch from the frozen base or from origin/<branch>).
-        if len(args) != 5:
+        # `git worktree add [--force] -b <branch> <path> <start-point>`
+        # (fresh branch from the frozen base or from origin/<branch>;
+        # the --force clears a stale missing-but-registered entry left
+        # by a deleted worktree, Issue #807).
+        rest = args[2:] if args[1:2] == ["--force"] else args[1:]
+        if len(rest) != 4 or rest[0] != "-b":
             self._unsupported(["git", "worktree", *args])
-        _, branch, path, start = args[1:]
+        _, branch, path, start = rest
         if branch in self.local:
             # git exits 255 on an existing branch (Issue #608/#662).
             self._fail(

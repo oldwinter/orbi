@@ -80,13 +80,21 @@ class FakeGh:
     def add_pr(self, number: int, *, head: str, base: str = "main",
                state: str = "OPEN", oid: str = "0" * 40,
                url: str | None = None, checks: tuple[dict, ...] = (),
-               merged_at: str | None = None) -> None:
+               merged_at: str | None = None, body: str = "") -> None:
+        owner, name = self.repo.split("/", 1)
         self.prs[number] = {
             "number": number, "state": state, "headRefName": head,
             "baseRefName": base, "headRefOid": oid,
             "url": url or f"https://github.com/{self.repo}/pull/{number}",
             "statusCheckRollup": list(checks), "comments": [],
             "mergedAt": merged_at,
+            # The fields `_query_open_prs` asks for and the review gates
+            # read: the PR body (run marker / Fixes keyword) and the
+            # head-repo identity (`_pr_head_repo`'s same-repo check).
+            "baseRefOid": "0" * 40,
+            "body": body,
+            "headRepository": {"name": name},
+            "headRepositoryOwner": {"login": owner},
             "_created": self._next_clock(),
         }
 

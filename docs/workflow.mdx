@@ -59,13 +59,12 @@ ai-ready                a task is dispatched (orbi add, or a human
                         behind the latest base / has a merge conflict, or
                         an AI-recoverable failure of the existing run/PR
                         (Issue #50: a Pi execution failure, a verification
-                        failure, an unpushed local commit, a missing
-                        worktree): the failure comment is written to the
-                        Issue AND the PR with the full scene (run_id, PR,
-                        branch, worktree, session, phase, last activity,
-                        concrete error), and the NEXT tick starts the next
-                        review session on the same run_id, branch,
-                        worktree and PR
+                        failure, an unpushed local commit): the failure
+                        comment is written to the Issue AND the PR with
+                        the full scene (run_id, PR, branch, worktree,
+                        session, phase, last activity, concrete error),
+                        and the NEXT tick starts the next review session
+                        on the same run_id, branch, worktree and PR
   -> merge              clean verdict (its head field equals the PR
                         head, Issue #591) + merge gate (head contains
                         the latest base, CI concluded, PR mergeable,
@@ -78,13 +77,18 @@ ai-ready                a task is dispatched (orbi add, or a human
 
 A failure of an existing run/PR is classified (Issue #50): an
 AI-recoverable failure (a Pi execution failure, a verification failure, an
-unpushed local commit, a missing worktree, a finding that could not be
+unpushed local commit, a finding that could not be
 fixed) keeps the Issue in the automatic fix loop — `ai-fix-needed` with
 the failure comment on the Issue AND the PR carrying the full scene — and
 the next tick resumes the same run, branch, worktree and PR (no
-replacement PR, no re-claim). Only an external precondition the AI cannot
+replacement PR, no re-claim). A missing worktree is not a failure at
+all: the resume rebuilds it from the remote delivery branch and
+continues (Issue #807 — the worktree is a local cache of the remote
+state, branch + PR live on GitHub). Only an external precondition the AI cannot
 safely judge or fix (an unrecoverable scene, a base-branch config change,
-an exhausted review round budget, a PR closed without merge) fails fast:
+an exhausted review round budget, a PR closed without merge, a delivery
+branch deleted from the remote — nothing left to rebuild the worktree
+from) fails fast:
 the Issue is marked `ai-blocked` with the explicit reason why automatic
 recovery is impossible, and the automatic loop never touches it again — a
 human decides the next step.

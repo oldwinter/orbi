@@ -21,6 +21,7 @@ from orbi import progress
 from orbi import scene as scene_mod
 from tests.test_progress_wiring import make_fake_gh
 from tests.fakes.github import FakeGh
+from tests.fakes.gitops import FakeGit
 from seam import seam
 import orbi.journal as journal
 import orbi.github as github
@@ -1899,6 +1900,130 @@ def test_verify_resumed_pr_external_scene_reads_branch_from_worktree(
     assert edits == [(9, "owner/repo", "ai-in-progress", None)]
 
 
+def test_verify_resumed_pr_recreates_missing_worktree_from_remote_branch(
+    monkeypatch, tmp_path,
+):
+    """Issue #807: the worktree is a local cache of the remote delivery
+    state (the branch and the PR live on GitHub), so a missing
+    directory is recreated from the remote branch and the resume
+    continues — the recovery the #90/#50 comment promised but the code
+    never performed (the beta incident: every tick re-emitted the
+    identical `worktree missing` failure and the delivery never
+    advanced). The REAL verify_pr runs on the rebuilt worktree."""
+    fake_git = FakeGit(tmp_path, base_branch="main")
+    fake_gh = FakeGh("owner/repo")
+    fake_gh.add_issue(9, title="ship")
+    remote_head = fake_git.commit([fake_git.base_sha])
+    fake_git.origin[FAKE_BRANCH] = remote_head
+    fake_gh.add_pr(
+        9, head=FAKE_BRANCH, base="main", oid=remote_head, url=FAKE_PR_URL,
+        body=f"{run_marker_body()}\n\nFixes #9\n\nPlan",
+    )
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return fake_git(command, **kwargs)
+        return fake_gh(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    url = runner.verify_resumed_pr(
+        make_resume_scene(), make_resume_issue(),
+        make_resume_config(tmp_path), "owner/repo",
+    )
+    assert url == FAKE_PR_URL
+    # The worktree was REBUILT from the remote branch: the derived path
+    # exists again, carries the branch and sits at the origin head.
+    worktree = expected_resume_worktree(tmp_path)
+    assert worktree.is_dir()
+    assert fake_git.worktrees[str(worktree)]["branch"] == FAKE_BRANCH
+    assert fake_git.worktrees[str(worktree)]["head"] == remote_head
+    # The in-flight backfill label transition (Issue #178) ran on the
+    # resumed delivery.
+    assert "ai-in-progress" in fake_gh.issues[9]["labels"]
+    assert "ai-pr-opened" not in fake_gh.issues[9]["labels"]
+
+
+def test_verify_resumed_pr_branch_gone_from_origin_is_terminal(
+    monkeypatch, tmp_path,
+):
+    """Issue #807: when the delivery branch is gone from the remote
+    there is nothing to recreate the worktree from — an external
+    precondition (the remote delivery state itself is destroyed): the
+    Issue is ai-blocked ALONE with the explicit reason, never the fix
+    loop that used to re-emit the identical failure every tick."""
+    fake_git = FakeGit(tmp_path, base_branch="main")
+    fake_gh = FakeGh("owner/repo")
+    fake_gh.add_issue(9, title="ship", labels=("ai-pr-opened",))
+    # No delivery branch on origin and no worktree: nothing to resume.
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return fake_git(command, **kwargs)
+        return fake_gh(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    with pytest.raises(
+        runner.UnrecoverableDeliveryError,
+        match="no longer exists on origin",
+    ) as excinfo:
+        runner.verify_resumed_pr(
+            make_resume_scene(), make_resume_issue(),
+            make_resume_config(tmp_path), "owner/repo",
+        )
+    assert type(excinfo.value) is runner.ResumeBranchGoneError
+    labels = fake_gh.issues[9]["labels"]
+    assert "ai-blocked" in labels
+    assert "ai-pr-opened" not in labels
+    body = fake_gh.issues[9]["comments"][-1]["body"]
+    assert "Orbi failed:" in body
+    assert f"delivery branch {FAKE_BRANCH} no longer exists" in body
+    assert str(expected_resume_worktree(tmp_path)) in body
+    # The blocked comment states why automatic recovery is impossible.
+    assert "cannot be recovered automatically" in body
+    # Nothing is left to preserve: the preserved-objects suffix of the
+    # other blocked scenes would contradict the reason.
+    assert "are preserved" not in body
+
+
+def test_verify_resumed_pr_external_scene_recreates_worktree_from_scene_pr(
+    monkeypatch, tmp_path,
+):
+    """Issue #807 + #608: an external takeover resumes the contributor's
+    own head branch — a fact the gone worktree can no longer carry, so
+    the scene PR is the remaining authority (headRefName) and the
+    worktree is rebuilt from that branch on origin."""
+    fake_git = FakeGit(tmp_path, base_branch="main")
+    fake_gh = FakeGh("owner/repo")
+    fake_gh.add_issue(9, title="ship")
+    external_head = fake_git.commit([fake_git.base_sha])
+    fake_git.origin["fix/outer"] = external_head
+    external_url = "https://github.com/xqliu/orbi/pull/592"
+    fake_gh.add_pr(
+        592, head="fix/outer", base="main", oid=external_head,
+        url=external_url,
+    )
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return fake_git(command, **kwargs)
+        return fake_gh(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    scene = make_resume_scene(external_url)
+    scene["external"] = "true"
+    url = runner.verify_resumed_pr(
+        scene, make_resume_issue(),
+        make_resume_config(tmp_path), "owner/repo",
+    )
+    assert url == external_url
+    # The rebuilt worktree carries the contributor's head branch (read
+    # from the scene PR) at the fetched origin head.
+    worktree = expected_resume_worktree(tmp_path)
+    assert worktree.is_dir()
+    assert fake_git.worktrees[str(worktree)]["branch"] == "fix/outer"
+    assert fake_git.worktrees[str(worktree)]["head"] == external_head
+
+
 def test_verify_resumed_pr_backfill_label_api_failure_fails_fast(
     monkeypatch, tmp_path, caplog,
 ):
@@ -2368,77 +2493,6 @@ def test_verify_resumed_pr_fails_fast_when_scene_base_differs(
     # must never run on a base mismatch.
     with pytest.raises(
         AssertionError, match="must not run on a base mismatch",
-    ):
-        fake_verify_pr()
-
-
-def test_verify_resumed_pr_worktree_missing_stays_fix_needed(
-    monkeypatch, tmp_path, caplog,
-):
-    """Issue #90 + #50 (pre-verify): the worktree is derived from the
-    configured repo_dir, source repo, Issue number and run id (never
-    read from a comment); a missing directory is a RECOVERABLE failure
-    (the branch still exists on the remote and the worktree can be
-    recreated on the next resume): fail fast BEFORE any git/gh command
-    and mark the Issue ai-fix-needed (never ai-blocked) with the PR
-    and branch preserved."""
-    commands: list = []
-    captured, fake_run = make_resume_failure_fake(monkeypatch)
-
-    def counting(command, **kwargs):
-        commands.append(command)
-        return fake_run(command, **kwargs)
-
-    def fake_verify_pr(*args, **kwargs):
-        raise AssertionError("verify_pr must not run on a missing worktree")
-
-    monkeypatch.setattr(runner, "verify_pr", fake_verify_pr)
-    monkeypatch.setattr(seam, "run_command", counting)
-    monkeypatch.setattr(journal, "_CURRENT_RUN_ID", FAKE_RUN_ID)
-    caplog.set_level("INFO")
-    # The derived worktree does not exist under tmp_path.
-    assert not expected_resume_worktree(tmp_path).is_dir()
-    with pytest.raises(RuntimeError, match="worktree missing"):
-        runner.verify_resumed_pr(
-            make_resume_scene(), make_resume_issue(),
-            make_resume_config(tmp_path), "owner/repo",
-        )
-    # No git command ran against the missing worktree (the only gh
-    # traffic is the fix-needed-scene reporting).
-    assert all(command[0] != "git" for command in commands)
-    assert all(
-        command[:2] == ["gh", "api"]
-        or command[:3] == ["gh", "pr", "comment"]
-        or command[-1] in ("comments", "labels")
-        for command in commands
-    )
-    assert captured["edits"] == [
-        ((9,), {"repo": "owner/repo", "add": "ai-fix-needed",
-                "remove": "ai-pr-opened"}),
-    ]
-    body = captured["comments"][0][1]["body"]
-    assert "Orbi needs a fix:" in body
-    assert run_marker_body() in body
-    assert str(expected_resume_worktree(tmp_path)) in body
-    # The PR and branch are preserved in the failure comment (the
-    # pre-#82 resume_delivery fail-fast scene) ... the failure comment
-    # is written to the Issue AND the PR (Issue #50) ...
-    assert FAKE_PR_URL in body
-    assert FAKE_BRANCH in body
-    assert len(captured["pr_comments"]) == 1
-    # ... and the fix-needed milestone (not the blocked one).
-    posted = [
-        command[command.index("--field") + 1][len("body="):]
-        for command in captured["api"]
-        if "--method" in command and "POST" in command
-    ]
-    assert any("Orbi: fix needed" in body for body in posted)
-    assert not any("Orbi: blocked" in body for body in posted)
-    assert "resume_pr_verification_failed" in caplog.text
-    # The fake proves the contract when called directly: verify_pr
-    # must never run on a missing worktree.
-    with pytest.raises(
-        AssertionError, match="must not run on a missing worktree",
     ):
         fake_verify_pr()
 
