@@ -10191,31 +10191,46 @@ def test_load_config_accepts_capacity_up_to_max_runner_instances(
 def test_load_config_rejects_capacity_beyond_max_with_the_real_cap(tmp_path):
     """Issue #827: beyond the declaration cap the load fails fast naming
     the REAL cap and reason — never the old hardcoded "Runner timer
-    instance" wording."""
+    instance" wording. Issue #829: the error also carries the CURRENT
+    value (the incident's blast radius: the operator must see what the
+    config wrote, not just the legal range)."""
     config_path = tmp_path / "orbi.toml"
     config_path.write_text(
         'source_repos = ["owner/repo"]\nmax_concurrency = 6\n',
         encoding="utf-8",
     )
-    with pytest.raises(
-        ValueError,
-        match=r"no greater than 5 \(MAX_RUNNER_INSTANCES\)",
-    ):
+    with pytest.raises(ValueError) as excinfo:
         runner.load_config(config_path)
+    message = str(excinfo.value)
+    assert "no greater than 5 (MAX_RUNNER_INSTANCES)" in message
+    assert "got 6" in message
 
 
 @pytest.mark.parametrize(
-    "value",
-    ["0", "-1", "1.5", '"1"', "true", "false", "6"],
+    "value, got",
+    [
+        ("0", "0"),
+        ("-1", "-1"),
+        ("1.5", "1.5"),
+        ('"1"', "'1'"),
+        ("true", "True"),
+        ("false", "False"),
+        ("6", "6"),
+    ],
 )
-def test_load_config_rejects_invalid_max_concurrency(tmp_path, value):
+def test_load_config_rejects_invalid_max_concurrency(tmp_path, value, got):
+    """Issue #829: every rejected value — out of range or of the wrong
+    type — is echoed back verbatim in the error (`got <value>`)."""
     config_path = tmp_path / "orbi.toml"
     config_path.write_text(
         f'source_repos = ["owner/repo"]\nmax_concurrency = {value}\n',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="max_concurrency must be a positive integer"):
+    with pytest.raises(ValueError) as excinfo:
         runner.load_config(config_path)
+    message = str(excinfo.value)
+    assert "max_concurrency must be a positive integer" in message
+    assert f"got {got}" in message
 
 
 # --- main() slot acquisition (Issue #39) --------------------------------------
