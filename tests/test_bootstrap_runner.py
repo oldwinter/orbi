@@ -11722,9 +11722,9 @@ def test_delivery_step_defers_when_ci_pending(
         monkeypatch, tmp_path, caplog,
 ):
     """Issue #788: pending CI on the PR head defers the whole delivery to
-    the next tick — one journal line, NO review session, NO label change,
-    no sleep. "pending" is a state, not a wait."""
-    calls = {"pr": 0, "labels": 0}
+    the next tick — one journal line, NO review session, NO label read,
+    NO label change, no sleep. "pending" is a state, not a wait."""
+    calls = {"pr": 0}
 
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and command[2] == "view":
@@ -11736,11 +11736,8 @@ def test_delivery_step_defers_when_ci_pending(
                      "conclusion": None},
                 ],
             })
-        if command[:2] == ["gh", "issue"] and command[2] == "view":
-            if command[-1] == "comments":
-                return json.dumps({"comments": []})
-            calls["labels"] += 1
-            return json.dumps({"labels": [{"name": "ai-pr-opened"}]})
+        # The defer path performs exactly ONE PR read: no Issue read
+        # (comments or labels), no mutation — the fake rejects the rest.
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(seam, "run_command", fake_run)
@@ -11757,8 +11754,9 @@ def test_delivery_step_defers_when_ci_pending(
     issue = {"number": 39, "title": "task", "body": ""}
     caplog.set_level("INFO")
     runner.delivery_step(PR_URL, issue, config, "owner/repo")
-    # One read, one journal line, then return: no review, no labels.
-    assert calls == {"pr": 1, "labels": 0}
+    # One PR read, one journal line, then return: no review, no label
+    # read, no mutation.
+    assert calls == {"pr": 1}
     assert reviews == []
     assert edits == []
     assert "delivery_ci_pending" in caplog.text
