@@ -77,7 +77,7 @@ system merely to make an end-to-end claim.
 
 - Progress is automatic: no human status command, no polling, no supervision; `orbi status` is a debug attachment only.
 - The journal is the record: a heartbeat at most every 30 seconds, every line prefixed `[run_id]`; a stalled session is recovered automatically, and a frozen `model_wait` past `PI_MODEL_WAIT_DEAD_SECONDS` (default 1800 s; the pre-#228 default was 600 s) is a hung model request — the Runner logs `model_wait_dead` (`upstream_alive` is evidence, never a veto) and kills the Pi session. It never fires while events keep arriving: a slow generation is not a hung request, and none of this is a business task timeout.
-- GitHub: exactly one progress comment per run, PATCHed in place, with short milestone comments; it is a pure bypass — a `progress_publish_failed` never fails the delivery, never marks the Issue `ai-blocked`, and never skips `run_pi` / `wait_for_delivery`. The `Orbi opened PR:` scene comment is NOT a bypass: the next tick's resume parses it, so a failure there fails the delivery fail-fast.
+- GitHub: exactly one progress comment per run, PATCHed in place, with short milestone comments; it is a pure bypass — a `progress_publish_failed` never fails the delivery, never marks the Issue `ai-blocked`, and never skips `run_pi` / `delivery_step`. The `Orbi opened PR:` scene comment is NOT a bypass: the next tick's resume parses it, so a failure there fails the delivery fail-fast.
 - Field reference and full mechanics: `docs/operations.mdx` (EN) / `docs/zh/operations.mdx` (ZH) (the README homepage keeps a one-sentence summary plus the link, Issue #241).
 
 ## Base freshness and deployment (contract)

@@ -57,12 +57,17 @@ def scene_for() -> dict:
     # derives them from its own config, the Issue number and the run id.
     # `external` is the Issue #608 external-takeover marker — empty for
     # a Runner-owned PR, `true` for a contributor-PR takeover.
+    # `review_round` travels with the scene (Issue #788): the round
+    # budget's counter, 0 when the PR opens. (`resume_scene` additionally
+    # stamps `scene_at` — the scene comment's `createdAt` — which this
+    # parse-level projection does not carry.)
     return {
         "run_id": FAKE_RUN_ID,
         "base_branch": "main",
         "base_sha": "abc123def456",
         "pr_url": FAKE_PR_URL,
         "external": "",
+        "review_round": 0,
     }
 
 
@@ -800,7 +805,9 @@ def test_pick_resumable_delivery_resumes_from_the_v1_scene_block(
         "owner/repo", tmp_path / "slots", 1,
     )
     assert issue["number"] == 9
-    assert scene == scene_for()
+    # The scan's scene carries the `scene_at` stamp (the fake comment
+    # payload has no createdAt, so it is None here).
+    assert scene == {**scene_for(), "scene_at": None}
 
 
 def test_pick_resumable_delivery_blocks_on_a_corrupted_v1_block(
@@ -1221,7 +1228,7 @@ def test_main_resumes_resumable_delivery_before_claiming_new(monkeypatch, tmp_pa
     # The dispatch test must not run the real delivery-wait loop (it would
     # call `gh` against the real PR number of the verified URL).
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *a, **k: waits.append((a, k)) or None,
     )
     assert runner.main(["--config", str(config)]) == 0
@@ -1255,7 +1262,7 @@ def test_main_still_claims_new_issue_when_no_resumable(monkeypatch, tmp_path):
     )
     # The dispatch test must not run the real delivery-wait loop (it would
     # call `gh` against the real PR number of FAKE_PR_URL).
-    monkeypatch.setattr(runner, "wait_for_delivery", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "delivery_step", lambda *a, **k: None)
     assert runner.main(["--config", str(config)]) == 0
     assert len(processed) == 1
     assert processed[0][0] is issue
@@ -1314,7 +1321,7 @@ def test_main_continues_to_ready_delivery_after_scene_failure(
         lambda *args, **kwargs: processed.append(args)
         or runner.IssueResult("pr", FAKE_PR_URL),
     )
-    monkeypatch.setattr(runner, "wait_for_delivery", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "delivery_step", lambda *a, **k: None)
     assert runner.main(["--config", str(config)]) == 0
     # The corrupted Issue was scoped to a single-ticket block...
     assert edits == [[
@@ -1368,7 +1375,7 @@ def test_main_ends_cleanly_after_handled_resume_scene_failure(
         ),
     )
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *a, **k: pytest.fail("stale resume must not enter delivery wait"),
     )
     assert runner.main(["--config", str(config_path)]) == 0

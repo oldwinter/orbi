@@ -37,9 +37,14 @@ ai-ready                任务被派发（orbi add，或人工加标签）
                         COLLABORATOR 评论，按 issue_comments_limit 截断
                         并显式标明省略条数）
   -> ai-pr-opened       PR 验收通过（base 新鲜度、run marker、Fixes #N）；
-                        交付现在等待 review
-  -> review             独立 Pi session 审查精确的 base/head SHA，并
-                        在会话内修复 findings（代码、完整测试、分层
+                        该 tick 随即结束并释放槽位（Issue #788）——
+                        交付等待它的评审 tick
+  -> review             一个 tick 一步：可恢复扫描把 opened-PR 交付分类
+                        为 RESUME_REVIEW；PR head 的 CI 仍 pending 时记
+                        一行 journal 直接返回（不 sleep）；否则独立
+                        Pi session——唯一的阻塞阶段，槽位只被占用一段
+                        Pi 运行时长——审查精确的 base/head SHA，并在
+                        会话内修复 findings（代码、完整测试、分层
                         覆盖率门禁（Issue #234）、只 push task
                         branch），然后输出 REVIEW_VERDICT（其 prompt
                         同样携带关联 Issue 的受信任评论时间线——决策
@@ -54,7 +59,9 @@ ai-ready                任务被派发（orbi add，或人工加标签）
                         启动下一个审查会话
   -> merge              clean verdict（其 head 字段等于 PR head，
                         Issue #591）+ merge 门禁（head 包含最新 base、
-                        PR mergeable、远端 head 未变）
+                        CI 已有结论、PR mergeable、远端 head 未变——
+                        每项只读一次：CI pending 或 mergeable UNKNOWN
+                        把合并顺延到下一 tick，Issue #788）
   -> ai-merged          成功终态；PR body 的 Fixes #N 原生关闭 Issue
 ```
 
@@ -76,9 +83,18 @@ ai-ready                任务被派发（orbi add，或人工加标签）
   领取；`ai-blocked` 从不自动恢复。携带回填的 `ai-in-progress` 标签的
   交付仍会被拾取（Issue #178：review 中被杀的 Runner 会留下该标签——
   正向的 opened-PR 限定已保证 implement 阶段的 Issue 不会匹配该扫描）。
-- review/fix 循环有界（5 轮）。超轮仍有 findings 时 Issue 标记
-  `ai-blocked`（超轮是人工决策）；可恢复失败（Issue #50）保持
-  `ai-fix-needed`。无论哪种，PR、branch 和 worktree 原样保留。
+- review/fix 循环有界（5 轮）。已完成轮数存在受信任现场里
+  （`review_round` 字段，Issue #788）：每条轮次评论携带更新后的现场
+  块，下一 tick 从中读出推进后的计数（人工在 block 之后把 Issue 改回
+  ai-fix-needed 的恢复仍会重置预算，Issue #483）。超轮仍有 findings 时
+  Issue 标记 `ai-blocked`（超轮是人工决策）；可恢复失败（Issue #50）
+  保持 `ai-fix-needed`。无论哪种，PR、branch 和 worktree 原样保留。
+- tick 内零等待（Issue #788）：旧进程内等待循环（`wait_for_delivery`、
+  对 CI/mergeability 的轮询、`release_ci_wait_seconds` /
+  `mergeable_wait_seconds`）已移除。所有等待都走 waiting 原语——写状态、
+  返回、释放槽位，下一 tick 重读（`delivery_ci_pending`、
+  `merge_gate_ci_pending`、`merge_gate_mergeable_unknown`）。崩溃恢复
+  路径就是主路径。
 - base 前进由 task branch 上对最新 `origin/<base>` 的普通 `git merge`
   吸收（冲突手工解决），然后重跑完整测试。不 force push、不自动解决
   冲突、不 push 保护分支。

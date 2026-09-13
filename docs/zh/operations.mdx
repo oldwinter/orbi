@@ -66,8 +66,12 @@ service 实例（`orbi@1.timer` → `orbi@1.service`，
    正在运行的长任务从不被热更新或杀掉——一个 service 实例 active 时
    systemd 忽略对**该实例**的后续 start 请求，下一次真正启动取到通道
    跟踪的代码。
-2. **运行一个 tick**：恢复一个已打开的 PR（review/fix/merge），或领取
-   一个 `ai-ready` Issue，然后退出。在任何 slot 或领取之前，tick 还
+2. **运行一个 tick**：恢复一个已打开的 PR（review/fix/merge 步骤），或
+   领取一个 `ai-ready` Issue，然后退出。一个 tick 至多执行一步交付，绝不
+   sleep 等待 GitHub（Issue #788）：implement tick 在 PR 打开后结束并释放
+   槽位；review tick 是唯一在 Pi 运行期间持有槽位的阶段；CI pending 或
+   mergeable UNKNOWN 记一行 journal 即返回——下一 tick 重读（waiting
+   原语）。在任何 slot 或领取之前，tick 还
    运行启动前 **git transport 检查**（Issue #114、#580）：部署 checkout
    的 `origin` remote 必须匹配配置的传输方式（orbi.toml
    `git_transport`：`ssh`——默认，`git@github.com:owner/repo.git`；或
@@ -512,17 +516,17 @@ journalctl --user -u orbi@1.service -u orbi@2.service | grep e07383c2
 | `resume_pr_verification_failed` | 被恢复交付未通过 PR 验证 |
 | `resume_scene_pr_state_lookup_failed` | 恢复现场的 PR 状态查询失败 |
 | `review` | 独立评审 session 结束（裁决） |
-| `review_waiting_ci` | 评审等待 PR head 上的 CI |
-| `review_ci_gate_passed` | 评审 head 上 CI 通过 |
+| `delivery_ci_pending` | PR head 的 CI 仍在 pending；交付顺延到下一 tick |
 | `review_head_advanced` | 评审 session 推送了修复后的 head |
 | `review_budget_recovered` | 过期的评审轮次预算已恢复 |
 | `review_rounds_exhausted` | 评审轮次预算耗尽（fail fast） |
 | `review_rounds_exhausted_expected_terminal` | 预算耗尽的终止状态已被记录 |
 | `review_findings_unfixed` | 评审发现未修复；Issue 转入 ai-fix-needed |
+| `review_merge_deferred` | 合并门把合并顺延到下一 tick |
 | `review_recovery_ci_status` | 观察到用于评审恢复的 CI 状态 |
 | `review_recovery_ci_status_failed` | 评审恢复所需的 CI 状态读取失败 |
-| `merge_gate_waiting_ci` | 合并门等待 CI |
-| `merge_gate_waiting_mergeable` | 合并门等待 GitHub 可合并状态 |
+| `merge_gate_ci_pending` | 合并门发现 CI pending；合并顺延到下一 tick |
+| `merge_gate_mergeable_unknown` | GitHub 可合并状态仍为 UNKNOWN；合并顺延到下一 tick |
 | `merge_gate_behind_base` | 合并门发现 PR 落后于 base |
 | `merge_gate_head_moved` | PR head 在评审之后被移动 |
 | `merge_gate_not_mergeable` | PR 不可合并（冲突或检查失败） |

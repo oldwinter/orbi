@@ -579,7 +579,7 @@ def _safe_publish(*, run_id: str, issue: int, source_repo: str,
     on the side. A publishing failure (404, rate limit, API shape
     change) is logged as `progress_publish_failed` and never fails the
     delivery, never marks the Issue `ai-blocked`, and never skips
-    `run_pi` / `wait_for_delivery`. This is the same semantics as the
+    `run_pi` / `delivery_step`. This is the same semantics as the
     in-stream live-PATCH callback; Issue #60 already applied it to the
     post-PR record, Issue #79 extends it to the whole
     `ProgressPublisher` path (ensure / milestone / finish).

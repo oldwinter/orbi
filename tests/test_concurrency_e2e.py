@@ -6,16 +6,14 @@ executable records every invocation. These prove the acceptance criteria:
 
 - with ``max_concurrency = 1`` a second concurrent runner logs
   ``capacity_full``, claims no Issue, changes no label and never calls Pi;
-- the slot is held for the whole delivery lifecycle (implement → review
-  → merge): after the first runner opens the PR it KEEPS the slot
-  (polling the PR state), so a second concurrent runner still sees
-  ``capacity_full`` and no second Issue is claimed;
+- the slot is held ONLY while a Pi runs (Issue #788): the implement tick
+  ends when the PR opens and RELEASES the slot; the review runs as the
+  next tick's RESUME_REVIEW step, which takes a slot again for exactly
+  its Pi session; while that review holds the slot a concurrent runner
+  is denied and while it is LIVE the resumable scan skips the delivery;
 - the review session fixes findings IN THE SAME SESSION (Issue #82):
   one review Pi per delivery (no cold-start fixer, no third review),
   and the runner re-freezes the fixed head before the merge gate;
-- after the PR is merged the first runner exits and releases the slot,
-  and the next runner claims the NEXT ready Issue (never the same one
-  twice);
 - a PR closed without a merge is a terminal failure: the Issue is marked
   ``ai-blocked`` and the slot is released;
 - with ``max_concurrency = 2`` two runners hold two different slots and
@@ -744,61 +742,80 @@ def set_pr_state(state_path: Path, pr_state: str) -> None:
     atomic_write_json(state_path, state)
 
 
-def test_capacity_one_slot_held_through_review_merge(
+def test_capacity_one_slot_serves_the_review_tick(
     clone, tmp_path,
 ):
-    """The slot is held for the whole delivery lifecycle (Issue #39):
-    after the PR opens the first runner keeps it, runs the independent
-    review — which fixes the finding IN THE SAME SESSION (Issue #82:
-    no cold-start fixer, no third review) — re-freezes the fixed head
-    and auto-merges the PR itself (Issue #34), and only then releases
-    the slot for the next Issue."""
+    """Issue #788: the slot is held only while a Pi RUNS. The implement
+    tick ends when the PR opens — the slot is released — and the NEXT
+    tick (a second runner process here) takes the slot again, classifies
+    the delivery RESUME_REVIEW and runs the independent review (fixing
+    IN THE SESSION, Issue #82) and the merge. While that review Pi is on
+    the slot, a third concurrent runner is denied (`capacity_full`) and
+    claims nothing — the #39 single-slot invariant now guards exactly the
+    Pi sessions."""
     bin_dir = install_fakes(tmp_path)
     state = tmp_path / "gh-state.json"
     write_state(state, {"7": ["ai-ready"], "8": ["ai-ready"]})
     pi_log = tmp_path / "pi.log"
     config = write_config(clone, tmp_path, 1)
 
+    # Tick 1: implement issue 7, open the PR, release the slot, exit.
     first = start_runner(config, bin_dir, state, pi_log)
-    wait_for(
-        lambda: "ai-pr-opened" in read_state(state)["issues"]["7"]["labels"],
-        what="first runner to open the PR",
+    out, err = first.communicate(timeout=120)
+    assert first.returncode == 0, err
+    snap = read_state(state)
+    assert "ai-pr-opened" in snap["issues"]["7"]["labels"]
+    assert snap["issues"]["8"]["labels"] == ["ai-ready"]
+    assert slots_held(clone) == [(1, None)], (
+        "the implement tick releases the slot when the PR opens"
     )
 
-    # The PR is open but NOT merged: the slot is still held. A second
-    # concurrent runner must be denied and must not claim Issue 8.
-    second = start_runner(config, bin_dir, state, pi_log)
-    out, err = second.communicate(timeout=60)
-    assert second.returncode == 0, err
-    assert "capacity_full" in err
-    snap = read_state(state)
-    # Issue 7 is in the review/fix state (ai-in-progress was consumed by
-    # the PR-opened transition); Issue 8 is untouched.
-    assert "ai-pr-opened" in snap["issues"]["7"]["labels"]
-    assert "ai-in-progress" not in snap["issues"]["7"]["labels"]
-    assert snap["issues"]["8"]["labels"] == ["ai-ready"]
-
-    # The first independent review finds a problem and fixes it IN THE
-    # SAME SESSION (Issue #82): the fixed head is pushed, re-frozen and
-    # merged by the SAME holder (still holding the slot) instead of
-    # claiming a new Issue.
+    # Tick 2: the resumable scan classifies issue 7 RESUME_REVIEW; the
+    # review gate holds the review Pi mid-run so the contention scene is
+    # deterministic: the slot is held exactly while the review runs.
+    review_gate = tmp_path / "review-gate"
+    second = start_runner(
+        config, bin_dir, state, pi_log, review_gate=review_gate,
+    )
+    review_waiting = review_gate.with_suffix(".waiting")
     wait_for(
-        lambda: (
-            "ai-merged" in read_state(state)["issues"]["7"]["labels"]
-            and any("Orbi merged PR:" in c["body"]
-                    for c in read_state(state)["comments"])
-        ),
+        review_waiting.exists, timeout=30,
+        what="the resumed review to hold the slot mid-run",
+    )
+    held = slots_held(clone)
+    assert held[0][0] == 1 and held[0][1] is not None, (
+        "the review tick holds the slot while the review Pi runs"
+    )
+
+    # A third concurrent runner is denied while the review holds the
+    # slot: it claims nothing (Issue 8 stays ai-ready).
+    third = start_runner(config, bin_dir, state, pi_log)
+    out, err = third.communicate(timeout=60)
+    assert third.returncode == 0, err
+    assert "capacity_full" in err
+    assert read_state(state)["issues"]["8"]["labels"] == ["ai-ready"]
+
+    # Release the review: the finding is fixed IN THE SESSION (Issue
+    # #82), the head is re-frozen and merged by the SAME holder.
+    review_gate.write_text("go", encoding="utf-8")
+    wait_for(
+        lambda: "ai-merged" in read_state(state)["issues"]["7"]["labels"],
         timeout=180,
-        what="first runner to review, fix in-session and merge",
+        what="the resumed review to fix in-session and merge",
+    )
+    out, err = second.communicate(timeout=120)
+    assert second.returncode == 0, err
+    assert "delivery_auto_merged" in err
+    assert slots_held(clone) == [(1, None)], (
+        "slot must be released after the merge"
     )
     snap = read_state(state)
     assert "ai-merged" in snap["issues"]["7"]["labels"]
     assert "ai-pr-opened" not in snap["issues"]["7"]["labels"]
-    # One Pi invocation per phase of the SAME run: implement, review
-    # (the review fixes in-session) — never a new claim of another
-    # Issue, never a cold-start fixer.
+    # One Pi invocation per phase of the SAME run: implement (tick 1),
+    # review (tick 2, the review fixes in-session) — never a new claim
+    # of another Issue, never a cold-start fixer.
     assert len(pi_invocations(pi_log)) == 2
-    assert snap["issues"]["8"]["labels"] == ["ai-ready"]
     started = [
         c for c in snap["comments"] if "Orbi started Pi:" in c["body"]
     ]
@@ -812,58 +829,35 @@ def test_capacity_one_slot_held_through_review_merge(
         clone, "ls-tree", "--name-only", "origin/main",
     )
 
-    # The auto-merge released the slot; the runner exited cleanly.
-    out, err = first.communicate(timeout=120)
-    assert first.returncode == 0, err
-    assert "delivery_auto_merged" in err
-    assert slots_held(clone) == [(1, None)], (
-        "slot must be released after the merge"
-    )
-
-    # The next runner takes the released slot and claims the NEXT issue;
-    # issue 8's PR is a fresh delivery (back to OPEN), and the full loop
-    # runs again for it.
-    set_pr_state(state, "OPEN")
-    third = start_runner(config, bin_dir, state, pi_log)
-    wait_for(
-        lambda: "ai-merged" in read_state(state)["issues"]["8"]["labels"],
-        timeout=180,
-        what="third runner to deliver issue 8",
-    )
-    snap = read_state(state)
-    assert "ai-merged" in snap["issues"]["8"]["labels"]
-    # Two different Issues were processed; none was claimed twice.
-    started = [
-        c for c in snap["comments"] if "Orbi started Pi:" in c["body"]
-    ]
-    assert sorted(c["issue"] for c in started) == ["7", "8"]
-    out, err = third.communicate(timeout=120)
-    assert third.returncode == 0, err
-    assert "capacity_full" not in err
-    assert "delivery_auto_merged" in err
-    assert slots_held(clone) == [(1, None)]
-
 
 def test_capacity_one_closed_unmerged_pr_releases_slot_and_blocks_issue(
     clone, tmp_path,
 ):
-    """A PR closed without a merge is a terminal failure: the Issue is
-    marked ai-blocked and the slot is released (no permanent hold)."""
+    """A PR closed without a merge is a terminal failure handled by the
+    resume classification (Issue #788: the implement tick already ended
+    when the PR opened): the next tick marks the Issue ai-blocked and
+    releases the slot (no permanent hold, no in-tick waiting)."""
     bin_dir = install_fakes(tmp_path)
     state = tmp_path / "gh-state.json"
     write_state(state, {"7": ["ai-ready"], "8": ["ai-ready"]})
     pi_log = tmp_path / "pi.log"
     config = write_config(clone, tmp_path, 1)
 
+    # Tick 1: open the PR for issue 7; the runner exits, slot released.
     first = start_runner(config, bin_dir, state, pi_log)
-    wait_for(
-        lambda: "ai-pr-opened" in read_state(state)["issues"]["7"]["labels"],
-        what="first runner to open the PR",
-    )
-    # The PR is closed WITHOUT a merge.
-    set_pr_state(state, "CLOSED")
     out, err = first.communicate(timeout=120)
     assert first.returncode == 0, err
+    assert "ai-pr-opened" in read_state(state)["issues"]["7"]["labels"]
+    assert slots_held(clone) == [(1, None)]
+
+    # The PR closes WITHOUT a merge while nobody holds the slot.
+    set_pr_state(state, "CLOSED")
+
+    # Tick 2: the resume classification sees the closed PR: ai-blocked
+    # with the failure comment, exit 0, slot free.
+    second = start_runner(config, bin_dir, state, pi_log)
+    out, err = second.communicate(timeout=120)
+    assert second.returncode == 0, err
     assert "delivery_closed_unmerged" in err
     assert slots_held(clone) == [(1, None)], (
         "slot must be released after the failure"
@@ -877,25 +871,28 @@ def test_capacity_one_closed_unmerged_pr_releases_slot_and_blocks_issue(
     assert len(failure) == 1
     assert "closed without a merge" in failure[0]["body"]
 
-    # The next runner can proceed and claims the next Issue.
-    # Issue 8's PR is a fresh delivery: back to OPEN.
+    # The next tick claims the NEXT Issue and opens its PR; the tick
+    # after that resumes it and merges.
     set_pr_state(state, "OPEN")
-    second = start_runner(config, bin_dir, state, pi_log)
-    wait_for(
-        lambda: "ai-pr-opened" in read_state(state)["issues"]["8"]["labels"],
-        what="second runner to open the PR for issue 8",
-    )
-    # Merge it: the second runner exits and releases the slot.
+    third = start_runner(config, bin_dir, state, pi_log)
+    out, err = third.communicate(timeout=120)
+    assert third.returncode == 0, err
+    assert "ai-pr-opened" in read_state(state)["issues"]["8"]["labels"]
+    assert slots_held(clone) == [(1, None)]
     set_pr_state(state, "MERGED")
-    out, err = second.communicate(timeout=120)
-    assert second.returncode == 0, err
+    fourth = start_runner(config, bin_dir, state, pi_log)
+    out, err = fourth.communicate(timeout=120)
+    assert fourth.returncode == 0, err
     assert "capacity_full" not in err
     assert "delivery_merged" in err
     assert slots_held(clone) == [(1, None)]
 
 
 def test_capacity_two_allows_two_runners_and_rejects_third(clone, tmp_path):
-    """Two slots: two different Issues in parallel, third runner rejected."""
+    """Two slots: two different Issues in parallel, third runner rejected.
+    Issue #788: after the PRs open, both implement ticks END and release
+    their slots — the reviews then run as separate resume ticks, each
+    taking a free slot for exactly its Pi session."""
     bin_dir = install_fakes(tmp_path)
     state = tmp_path / "gh-state.json"
     write_state(state, {"7": ["ai-ready"], "8": ["ai-ready"]})
@@ -955,43 +952,52 @@ def test_capacity_two_allows_two_runners_and_rejects_third(clone, tmp_path):
         lambda: "ai-pr-opened" in read_state(state)["issues"]["8"]["labels"],
         what="issue 8 PR to open",
     )
-    # While both PRs are open (unmerged), both slots are still held: a
-    # third runner is still denied.
-    third = start_runner(config, bin_dir, state, pi_log)
-    out, err = third.communicate(timeout=60)
-    assert third.returncode == 0, err
-    assert "capacity_full" in err
-
-    # Both runners auto-merge their own PRs (the review fixes in-session
-    # and the runner merges the re-frozen head, Issues #34/#82) and
-    # release their slots.
-    wait_for(
-        lambda: "ai-merged" in read_state(state)["issues"]["7"]["labels"]
-        and "ai-merged" in read_state(state)["issues"]["8"]["labels"],
-        timeout=180,
-        what="both runners to auto-merge their PRs",
-    )
+    # Issue #788: with both PRs open, both implement ticks are DONE —
+    # the slots are free again (they were held only for the Pi runs).
     for runner in (first, second):
-        out, err = runner.communicate(timeout=120)
-        # Both runners were started with drain_stderr=True: the drained
-        # buffer carries the journal that communicate() cannot (the
-        # drain thread consumed the pipe).
-        text = runner.drained_stderr.getvalue() + (err or "")
-        assert runner.returncode == 0, text
-        assert "delivery_auto_merged" in text
+        runner.wait(timeout=120)
+        assert runner.returncode == 0, (
+            runner.drained_stderr.getvalue()
+        )
     assert slots_held(clone, 2) == [(1, None), (2, None)]
-    # One Pi per phase of each run (implement, review — the review
-    # fixes in-session, Issue #82): two invocations per Issue at a
-    # minimum. When the first merge advances origin/main while the
-    # second delivery's head is still behind, the second review round
-    # absorbs the base in-session (one extra invocation per affected
-    # delivery) — never a cold-start fixer, never a duplicate claim.
-    assert 4 <= len(pi_invocations(pi_log)) <= 6
+
+    # The review of issue 7 runs as its own resume tick (a NEW runner
+    # process taking the freed slot): the finding is fixed in-session
+    # (Issues #34/#82) and the PR merges.
+    resume_7 = start_runner(config, bin_dir, state, pi_log)
+    wait_for(
+        lambda: "ai-merged" in read_state(state)["issues"]["7"]["labels"],
+        timeout=180,
+        what="the first resume tick to review and merge issue 7",
+    )
+    out, err = resume_7.communicate(timeout=120)
+    assert resume_7.returncode == 0, err
+    assert "delivery_auto_merged" in err
+
+    # The review of issue 8 follows as the next resume tick: its review
+    # session absorbs the freshly advanced base in-session (the fake
+    # review does the same base absorb the real prompt instructs).
+    resume_8 = start_runner(config, bin_dir, state, pi_log)
+    wait_for(
+        lambda: "ai-merged" in read_state(state)["issues"]["8"]["labels"],
+        timeout=180,
+        what="the second resume tick to review and merge issue 8",
+    )
+    out, err = resume_8.communicate(timeout=120)
+    assert resume_8.returncode == 0, err
+    assert slots_held(clone, 2) == [(1, None), (2, None)]
+    # One Pi per phase of each delivery (implement, review — the review
+    # fixes in-session, Issue #82): exactly four invocations, none a
+    # duplicate claim.
+    assert len(pi_invocations(pi_log)) == 4
     started = [
         c for c in read_state(state)["comments"]
         if "Orbi started Pi:" in c["body"]
     ]
     assert sorted(c["issue"] for c in started) == ["7", "8"]
+    snap = read_state(state)
+    assert "ai-merged" in snap["issues"]["7"]["labels"]
+    assert "ai-merged" in snap["issues"]["8"]["labels"]
 
 
 def _run_ref_hammer(
@@ -1287,8 +1293,20 @@ def test_killed_runner_is_resumed_by_the_next_claim_scan(clone, tmp_path):
     # The delivery finished: the in-progress label is gone.
     assert "ai-in-progress" not in snap["issues"]["7"]["labels"]
     assert "ai-pr-opened" in snap["issues"]["7"]["labels"]
-    # The resumed run completes the full lifecycle (review -> fix ->
-    # re-review -> auto-merge in the fake world) and exits cleanly.
+    # The resumed implement tick ends when the PR opens (Issue #788):
+    # the labels are ai-pr-opened, the slot is released, and the review
+    # is the NEXT tick.
+    assert "ai-pr-opened" in read_state(state)["issues"]["7"]["labels"]
+    out, err = second.communicate(timeout=120)
+    assert second.returncode == 0, err
+    assert "no_ready_issue" not in err
+    assert "capacity_full" not in err
+    assert slots_held(clone) == [(1, None)], "slot must be released on exit"
+
+    # The final tick: the resumable scan classifies issue 7
+    # RESUME_REVIEW on the SAME run and delivers (review -> fix ->
+    # auto-merge in the fake world).
+    third = start_runner(config, bin_dir, state, pi_log)
     wait_for(
         lambda: "ai-merged" in read_state(state)["issues"]["7"]["labels"],
         timeout=180,
@@ -1305,8 +1323,8 @@ def test_killed_runner_is_resumed_by_the_next_claim_scan(clone, tmp_path):
     assert len(progress_bodies) == 1
     assert f"<!-- orbi:run={dead_run_id} -->" in progress_bodies[0]
     assert "Orbi delivered" in progress_bodies[0]
-    out, err = second.communicate(timeout=120)
-    assert second.returncode == 0, err
+    out, err = third.communicate(timeout=120)
+    assert third.returncode == 0, err
     assert "no_ready_issue" not in err
     assert "capacity_full" not in err
     assert "delivery_auto_merged" in err
@@ -1316,13 +1334,12 @@ def test_killed_runner_is_resumed_by_the_next_claim_scan(clone, tmp_path):
 def test_stranded_pr_opened_delivery_is_resumed_to_review_and_merge(
     clone, tmp_path,
 ):
-    """Issue #70 acceptance: the runner that opened a PR can die before
-    the review starts (the progress 404 used to label the Issue
-    ai-blocked and skip the review; a killed runner leaves no owner at
-    all). The NEXT tick must resume the SAME delivery through the
-    resumable scan (`ai-pr-opened` is scanned now), run the independent
-    review on the SAME PR and auto-merge it — never re-claim the Issue,
-    never start a second run, never block it."""
+    """Issue #70 acceptance, now the NORMAL path (Issue #788): after the
+    PR opens the implement tick ends — the opened-PR delivery sits
+    UNOWNED (no live runner holds it) until the next tick's resumable
+    scan finds it (`ai-pr-opened` is scanned), recovers the scene, runs
+    the independent review on the SAME PR and auto-merges it — never
+    re-claims the Issue, never starts a second run, never blocks it."""
     bin_dir = install_fakes(tmp_path)
     state = tmp_path / "gh-state.json"
     write_state(state, {"7": ["ai-ready"]})
@@ -1334,10 +1351,8 @@ def test_stranded_pr_opened_delivery_is_resumed_to_review_and_merge(
         lambda: "ai-pr-opened" in read_state(state)["issues"]["7"]["labels"],
         what="first runner to open the PR",
     )
-    # Wait until the trusted opened-PR scene comment exists (it is the
-    # recovery source of the next tick), then kill the runner inside the
-    # delivery wait: the PR stays open and unreviewed, the Issue stays
-    # `ai-pr-opened` — a stranded delivery with no owner.
+    # The trusted opened-PR scene comment is the recovery source of the
+    # next tick.
     wait_for(
         lambda: any(
             "Orbi opened PR:" in c["body"]
@@ -1345,22 +1360,24 @@ def test_stranded_pr_opened_delivery_is_resumed_to_review_and_merge(
         ),
         what="opened-PR scene comment to be posted",
     )
-    first.kill()  # SIGKILL: the delivery wait dies with the process
-    first.wait(timeout=10)
+    # The implement tick ENDS right after the PR opens: the delivery is
+    # stranded by design — `ai-pr-opened`, no owner, slot free.
+    out, err = first.communicate(timeout=120)
+    assert first.returncode == 0, err
     snap = read_state(state)
     assert "ai-pr-opened" in snap["issues"]["7"]["labels"]
     assert "ai-blocked" not in snap["issues"]["7"]["labels"]
     assert "ai-fix-needed" not in snap["issues"]["7"]["labels"]
+    assert slots_held(clone) == [(1, None)]
     worktrees = sorted(
         (clone / ".worktrees").glob("orbi-owner-repo-issue-7-*"),
     )
     assert len(worktrees) == 1
     dead_run_id = worktrees[0].name.rsplit("-", 1)[-1]
 
-    # The NEXT tick (a fresh main()): the resumable scan now finds the
-    # stranded `ai-pr-opened` delivery, recovers the scene, and the
-    # dispatch sends it straight to the delivery wait (independent
-    # review) — no fixer for a clean PR, no fresh claim.
+    # The NEXT tick (a fresh main()): the resumable scan finds the
+    # stranded `ai-pr-opened` delivery, recovers the scene, and runs the
+    # independent review — no fixer for a clean PR, no fresh claim.
     second = start_runner(config, bin_dir, state, pi_log)
     wait_for(
         lambda: "ai-merged" in read_state(state)["issues"]["7"]["labels"],
@@ -1402,113 +1419,94 @@ def test_stranded_pr_opened_delivery_is_resumed_to_review_and_merge(
     )
 
 
-def test_live_pr_opened_delivery_is_not_resumed_by_second_runner(
+def test_live_review_tick_is_not_resumed_by_second_runner(
     clone, tmp_path,
 ):
-    """Issue #70 review round 1 (Major): with `max_concurrency = 2` a
-    second runner must NOT enter the delivery wait of a LIVE
-    `ai-pr-opened` delivery — a slot held by another process proves a
-    live runner is actively processing it (Issue #39 slot semantics).
-    Resuming it would start a second review Pi in the same
-    worktree/branch/run, and the second `gh pr merge
-    --match-head-commit` on the already-merged PR would fail and mark
-    the merged Issue `ai-blocked` (wrong terminal state). Instead the
-    second runner skips the resumable scan and claims the NEXT ready
-    Issue.
+    """Issue #70 review round 1 (Major), on the new architecture
+    (Issue #788): a slot held by another process proves a LIVE runner is
+    processing the opened-PR delivery (Issue #39 slot semantics), so the
+    resumable scan SKIPS it — a second runner never starts a second
+    review Pi in the same worktree/branch/run. Between ticks the
+    delivery is unowned (the scan resumes it); DURING the review tick it
+    is live (the scan skips it and the second runner claims the next
+    ready Issue instead).
 
-    The test-only review gate holds issue 7's fake review until issue 8
-    passes its own initial PR verification. This preserves the real
-    base-freshness check while eliminating an unrelated fake merge race
-    from the resumable-scan assertion."""
+    The test-only review gate holds issue 7's fake review until the
+    assertions below are established."""
     bin_dir = install_fakes(tmp_path)
     state = tmp_path / "gh-state.json"
     write_state(state, {"7": ["ai-ready"], "8": ["ai-ready"]})
     pi_log = tmp_path / "pi.log"
     config = write_config(clone, tmp_path, 2)
 
-    # Keep the first review from merging until issue 8 has completed
-    # its own PR verification. Without this causal boundary, the fake
-    # first merge can advance origin/main while issue 8 is between its
-    # base freeze and verify_pr, correctly triggering the real
-    # freshness gate instead of testing the resumable-scan contract.
+    # Tick 1: implement issue 7 and open its PR; the tick ends and
+    # releases the slot (the delivery is now unowned, by design).
+    first = start_runner(config, bin_dir, state, pi_log)
+    out, err = first.communicate(timeout=120)
+    assert first.returncode == 0, err
+    assert "ai-pr-opened" in read_state(state)["issues"]["7"]["labels"]
+
+    # Tick 2 (slot 1 free again): the resumable scan resumes issue 7.
+    # The review gate holds the review Pi mid-run — the delivery is
+    # LIVE: its runner holds slot 1.
     review_gate = tmp_path / "review-gate"
-    first = start_runner(
+    second = start_runner(
         config, bin_dir, state, pi_log, review_gate=review_gate,
-    )
-    wait_for(
-        lambda: "ai-pr-opened" in read_state(state)["issues"]["7"]["labels"],
-        what="first runner to open the PR for issue 7",
-    )
-    # The first runner is LIVE in the delivery wait (holding slot 1,
-    # PR open and unmerged).
-    wait_for(
-        lambda: any(
-            "Orbi opened PR:" in c["body"]
-            for c in read_state(state)["comments"]
-        ),
-        what="opened-PR scene comment to be posted",
     )
     review_waiting = review_gate.with_suffix(".waiting")
     wait_for(
-        review_waiting.exists, timeout=5,
-        what="first review to wait at the test gate",
+        review_waiting.exists, timeout=30,
+        what="the resumed review of issue 7 to hold the slot mid-run",
     )
+    held = slots_held(clone, 2)
+    assert held[0][1] is not None and held[1][1] is None
 
-    # A second runner takes the free slot 2 while the first is live.
-    # It must skip the resumable scan (another slot is held by a live
-    # runner) and claim issue 8 instead of resuming issue 7's live
-    # delivery.
-    second = start_runner(config, bin_dir, state, pi_log)
-    # Wait for issue 8 to pass its initial base-freshness verification
-    # and open its own PR before allowing issue 7's review to merge.
-    # This leaves the Runner's real freshness gate enabled while making
-    # the fake schedule deterministic.
+    # Tick 3, concurrent with tick 2 on the FREE slot 2: the resumable
+    # scan sees slot 1 held by a live runner and SKIPS issue 7; the
+    # ready scan claims issue 8 instead and opens its PR.
+    third = start_runner(config, bin_dir, state, pi_log)
     wait_for(
         lambda: "ai-pr-opened" in read_state(state)["issues"]["8"]["labels"],
-        what="second runner to open the PR for issue 8",
+        timeout=120,
+        what="the third runner to claim issue 8 and open its PR",
     )
+    out, err = third.communicate(timeout=120)
+    assert third.returncode == 0, err
+    assert "capacity_full" not in err
     snap = read_state(state)
-    # Issue 7's live delivery is untouched: still simply awaiting
-    # review — never re-resumed (no ai-fix-needed from a second
-    # review), never blocked.
+    # Issue 7's live delivery is untouched: simply awaiting the review
+    # verdict — never re-resumed, never blocked.
     assert "ai-pr-opened" in snap["issues"]["7"]["labels"]
     assert "ai-fix-needed" not in snap["issues"]["7"]["labels"]
     assert "ai-blocked" not in snap["issues"]["7"]["labels"]
-    # Issue 8 was independently claimed and opened by the second runner.
+    # Issue 8 was independently claimed and opened by the third runner.
     assert "ai-pr-opened" in snap["issues"]["8"]["labels"]
-    # Exactly one "started Pi" comment per Issue: issue 8's is the
-    # second runner's implement — never a second review of issue 7.
+    # Exactly one "started Pi" comment per Issue: issue 8's is the third
+    # runner's implement — never a second review of issue 7.
     started = [
         c for c in snap["comments"] if "Orbi started Pi:" in c["body"]
     ]
     assert sorted(c["issue"] for c in started) == ["7", "8"]
-    # Release the first review only after the assertions above establish
-    # the intended two-delivery schedule.
-    review_gate.touch()
-    # The second runner never entered the delivery wait of issue 7's
-    # live PR (the finding's repro: it logged `issue=7
-    # delivery_awaiting` for the live runner's PR).
-    out, err = second.communicate(timeout=120)
-    assert second.returncode == 0, err
-    assert "issue=7 delivery_awaiting" not in err
-    # The first runner still owns issue 7's delivery and auto-merges
-    # it itself — no second merge attempt from the second runner.
+
+    # Release the review: the SAME holder fixes in-session and merges
+    # (issue 8's PR was verified before the fake merge could advance
+    # main — no freshness race masks the scan contract).
+    review_gate.write_text("go", encoding="utf-8")
     wait_for(
         lambda: "ai-merged" in read_state(state)["issues"]["7"]["labels"],
         timeout=180,
-        what="first runner to review and merge issue 7",
+        what="the resumed review to fix and merge issue 7",
     )
-    out, err = first.communicate(timeout=120)
-    assert first.returncode == 0, err
+    out, err = second.communicate(timeout=120)
+    assert second.returncode == 0, err
     assert "delivery_auto_merged" in err
     snap = read_state(state)
     assert "ai-merged" in snap["issues"]["7"]["labels"]
     assert "ai-blocked" not in snap["issues"]["7"]["labels"]
-    # The two independent deliveries each run implement plus review;
-    # an additional review is possible when the concurrent merge makes
-    # one branch absorb the freshly advanced base. None is a second
-    # review of issue 7's live delivery.
-    assert 4 <= len(pi_invocations(pi_log)) <= 5
+    # Three Pi invocations total: implement + review (in-session fix) of
+    # issue 7's run, implement of issue 8 — never a second review of
+    # issue 7, never a duplicate claim.
+    assert len(pi_invocations(pi_log)) == 3
     assert slots_held(clone, 2) == [(1, None), (2, None)]
 
 

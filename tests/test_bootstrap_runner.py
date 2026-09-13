@@ -6279,7 +6279,7 @@ def test_main_passes_none_active_milestone_when_unconfigured(
 def test_main_processes_one_issue(monkeypatch, tmp_path):
     issue = {"number": 12, "title": "task", "body": "body"}
     calls = []
-    waits = []
+    steps = []
     _write_prompts(tmp_path)
     config = tmp_path / "orbi.toml"
     config.write_text("source_repos = [\"owner/repo\"]\nprompt = \"prompt.md\"\n", encoding="utf-8")
@@ -6291,16 +6291,16 @@ def test_main_processes_one_issue(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(runner, "process_issue", lambda *args, **kwargs: calls.append((args, kwargs)) or runner.IssueResult("pr", "https://github.com/x/y/pull/12"))
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
-        lambda *args, **kwargs: waits.append((args, kwargs)),
+        runner, "delivery_step",
+        lambda *args, **kwargs: steps.append((args, kwargs)),
     )
     assert runner.main(["--config", str(config)]) == 0
     assert calls[0][0][0] == issue
-    # The slot is held through the delivery wait (implement -> review ->
-    # fix -> merge), not released when the PR opens (Issue #39).
-    assert waits[0][0][:2] == (
-        "https://github.com/x/y/pull/12", issue,
-    )
+    # Issue #788: the PR is open and the scene is written — the tick ends
+    # WITHOUT running the review step in the same tick. The review is the
+    # next tick's RESUME_REVIEW step, so the slot is released here and is
+    # never held waiting for CI or mergeability.
+    assert steps == []
 
 
 def test_main_uses_process_result_kind_without_rechecking_task_type(
@@ -6339,14 +6339,16 @@ def test_main_uses_process_result_kind_without_rechecking_task_type(
             AssertionError("main must not recheck task type")
         ),
     )
-    waits = []
+    steps = []
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
-        lambda *args, **kwargs: waits.append(args),
+        runner, "delivery_step",
+        lambda *args, **kwargs: steps.append(args),
     )
 
     assert runner.main(["--config", str(config)]) == 0
-    assert waits[0][0] == "https://x/y/pull/281"
+    # Issue #788: a fresh claim ends its tick when the PR opens; the
+    # review step runs on a later tick through the resume scan.
+    assert steps == []
 
 
 def test_main_ends_tick_when_process_issue_delivers_nothing(
@@ -6355,7 +6357,7 @@ def test_main_ends_tick_when_process_issue_delivers_nothing(
     """Issue #239: when `process_issue` returns `None` (a terminal
     delivery failure it already handled — the Issue is `ai-blocked` and
     the failure comment is posted), `main` ends the tick cleanly: it
-    returns 0 and NEVER calls `wait_for_delivery` (there is no PR to
+    returns 0 and NEVER calls `delivery_step` (there is no PR to
     wait for). The service must not crash on the handled failure."""
     issue = {"number": 239, "title": "task", "body": "body"}
     waits = []
@@ -6370,7 +6372,7 @@ def test_main_ends_tick_when_process_issue_delivers_nothing(
     )
     monkeypatch.setattr(runner, "process_issue", lambda *args, **kwargs: runner.IssueResult("failed", None))
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *args, **kwargs: waits.append((args, kwargs)),
     )
     assert runner.main(["--config", str(config)]) == 0
@@ -6397,7 +6399,7 @@ def test_main_ticket_only_finishes_without_entering_pr_delivery_wait(
     )
     monkeypatch.setattr(runner, "process_issue", lambda *args: runner.IssueResult("ticket-only", None))
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("ticket-only work must not enter PR delivery wait")
         ),
@@ -6433,7 +6435,7 @@ def test_main_release_success_ends_tick_without_pr_delivery_wait(
     )
     monkeypatch.setattr(runner, "process_issue", lambda *args: runner.IssueResult("release", release_url))
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *args, **kwargs: waits.append(args) or (
             _ for _ in ()
         ).throw(AssertionError(
@@ -6481,7 +6483,7 @@ def test_main_routes_fix_needed_resume_to_delivery_wait(
     )
     waits = []
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *args, **kwargs: waits.append((args, kwargs)),
     )
     assert runner.main(["--config", str(config)]) == 0
@@ -6527,7 +6529,7 @@ def test_main_routes_awaiting_review_resume_to_delivery_wait(
     )
     waits = []
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *args, **kwargs: waits.append((args, kwargs)),
     )
     assert runner.main(["--config", str(config)]) == 0
@@ -10774,7 +10776,7 @@ def test_main_holds_slot_while_processing_issue(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runner, "pick_next_delivery", fake_pick)
     monkeypatch.setattr(runner, "process_issue", lambda *args, **kwargs: runner.IssueResult("pr", "https://x/y/pull/12"))
-    monkeypatch.setattr(runner, "wait_for_delivery", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "delivery_step", lambda *a, **k: None)
     assert runner.main(["--config", str(config)]) == 0
     assert seen["occupancy"] == [(1, os.getpid())]
 
@@ -11642,27 +11644,29 @@ def test_finish_progress_renders_the_fix_needed_scene(monkeypatch):
     assert "- issue: #39 Fix task" in body
 
 
-def test_wait_for_delivery_returns_when_pr_merged(monkeypatch, caplog):
+def test_delivery_step_returns_when_pr_merged(monkeypatch, caplog):
     seen, _ = fake_pr_view(monkeypatch, "MERGED")
     issue = {"number": 39, "title": "task", "body": ""}
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
-    runner.wait_for_delivery(PR_URL, issue, {}, "owner/repo")
+    runner.delivery_step(PR_URL, issue, {}, "owner/repo")
     assert len(seen) == 1
     assert "delivery_merged" in caplog.text
     assert f"pr={PR_URL}" in caplog.text
 
 
-def test_wait_for_delivery_keeps_waiting_while_pr_open(
+def test_delivery_step_runs_one_review_per_tick(
         monkeypatch, tmp_path,
 ):
-    states = ["OPEN", "OPEN", "MERGED"]
+    """Issue #788: one tick, ONE review round, ONE PR state read. The old
+    wait loop re-polled and re-reviewed in-process until merge; the step
+    returns after the round and the next tick's resume scan continues."""
     calls = {"pr": 0, "labels": 0}
 
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and command[2] == "view":
             calls["pr"] += 1
-            return json.dumps({"state": states[calls["pr"] - 1]})
+            return json.dumps({"state": "OPEN", "statusCheckRollup": []})
         if command[:2] == ["gh", "issue"] and command[2] == "view":
             if command[-1] == "comments":
                 return json.dumps({"comments": [
@@ -11683,25 +11687,24 @@ def test_wait_for_delivery_keeps_waiting_while_pr_open(
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
     config = runner.RunnerConfig(repo_dir=tmp_path, base_branch="main")
     # The derived worktree exists: a normal resume reaches the review
     # (Issue #90 fails fast only when the directory is missing).
     (tmp_path / ".worktrees"
      / "orbi-owner-repo-issue-39-a1b2c3d4").mkdir(parents=True)
     # Awaiting review triggers the independent review (Issue #34); the
-    # mock reports findings so the wait keeps polling.
+    # mock reports findings so the next tick runs the next round.
     reviews = []
     monkeypatch.setattr(
         runner, "review_and_merge_if_clean",
         lambda *args, **kwargs: reviews.append((args, kwargs)) or False,
     )
     issue = {"number": 39, "title": "task", "body": ""}
-    runner.wait_for_delivery(PR_URL, issue, config, "owner/repo")
-    # Two OPEN polls (PR state + labels each) before the MERGED poll.
-    assert calls == {"pr": 3, "labels": 2}
-    # One review per OPEN+awaiting-review poll.
-    assert len(reviews) == 2
+    runner.delivery_step(PR_URL, issue, config, "owner/repo")
+    # Exactly ONE PR state read and ONE review round — the step returns
+    # afterwards (no loop, no second poll, no sleep).
+    assert calls == {"pr": 1, "labels": 1}
+    assert len(reviews) == 1
     # The review ran on the derived worktree/branch of the same run.
     worktree, branch, base_branch, review_config, repo, number = reviews[0][0]
     assert branch == "orbi/owner-repo-issue-39"
@@ -11715,66 +11718,53 @@ def test_wait_for_delivery_keeps_waiting_while_pr_open(
         fake_run(["gh", "pr", "list"])
 
 
-def test_wait_for_delivery_sleeps_poll_interval_between_review_rounds(
-        monkeypatch, tmp_path,
+def test_delivery_step_defers_when_ci_pending(
+        monkeypatch, tmp_path, caplog,
 ):
-    """Issue #588: between two review rounds the wait loop yields one
-    `poll_interval`. The loop previously had NO sleep at all — a red CI
-    re-ran full review sessions back-to-back in a hot loop while holding
-    the slot, and `poll_interval` was a dead parameter. The terminal
-    merge return sleeps nothing."""
-    states = ["OPEN", "OPEN", "MERGED"]
+    """Issue #788: pending CI on the PR head defers the whole delivery to
+    the next tick — one journal line, NO review session, NO label change,
+    no sleep. "pending" is a state, not a wait."""
     calls = {"pr": 0, "labels": 0}
-    sleeps = []
 
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and command[2] == "view":
             calls["pr"] += 1
-            return json.dumps({"state": states[calls["pr"] - 1]})
+            return json.dumps({
+                "state": "OPEN",
+                "statusCheckRollup": [
+                    {"name": "tests", "status": "IN_PROGRESS",
+                     "conclusion": None},
+                ],
+            })
         if command[:2] == ["gh", "issue"] and command[2] == "view":
             if command[-1] == "comments":
-                return json.dumps({"comments": [
-                    {
-                        "body": (
-                            "<!-- orbi:run=a1b2c3d4 -->\n"
-                            "Orbi opened PR: "
-                            f"{PR_URL} (base_branch=main "
-                            "base_sha=abc123def456 run_id=a1b2c3d4)"
-                        ),
-                        "authorAssociation": "OWNER",
-                    },
-                ]})
+                return json.dumps({"comments": []})
             calls["labels"] += 1
             return json.dumps({"labels": [{"name": "ai-pr-opened"}]})
-        if command == ["git", "branch", "--show-current"]:
-            return "orbi/owner-repo-issue-39"
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    # The fake rejects anything that is not a pr/issue view.
-    with pytest.raises(AssertionError, match="unexpected command"):
-        fake_run(["gh", "pr", "list"])
-    monkeypatch.setattr(runner.time, "sleep", lambda s: sleeps.append(s))
+    config = runner.RunnerConfig(repo_dir=tmp_path, base_branch="main")
+    reviews = []
     monkeypatch.setattr(
         runner, "review_and_merge_if_clean",
-        lambda *args, **kwargs: False,
+        lambda *args, **kwargs: reviews.append((args, kwargs)) or False,
     )
-    # The derived worktree exists: a normal resume reaches the review
-    # (Issue #90 fails fast only when the directory is missing).
-    (tmp_path / ".worktrees"
-     / "orbi-owner-repo-issue-39-a1b2c3d4").mkdir(parents=True)
+    edits = []
+    monkeypatch.setattr(seam, "edit_issue",
+        lambda *args, **kwargs: edits.append((args, kwargs)),
+    )
     issue = {"number": 39, "title": "task", "body": ""}
-    runner.wait_for_delivery(
-        PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
-        "owner/repo", poll_interval=1.5,
-    )
-    # Two finding rounds -> exactly one sleep before each next poll; the
-    # third poll is MERGED and returns without a further sleep.
-    assert sleeps == [1.5, 1.5]
-    assert calls == {"pr": 3, "labels": 2}
+    caplog.set_level("INFO")
+    runner.delivery_step(PR_URL, issue, config, "owner/repo")
+    # One read, one journal line, then return: no review, no labels.
+    assert calls == {"pr": 1, "labels": 0}
+    assert reviews == []
+    assert edits == []
+    assert "delivery_ci_pending" in caplog.text
 
 
-def test_wait_for_delivery_auto_merges_on_clean_review(
+def test_delivery_step_auto_merges_on_clean_review(
         monkeypatch, caplog, tmp_path,
 ):
     """A clean independent verdict merges the PR itself (Issue #34): the
@@ -11820,7 +11810,7 @@ def test_wait_for_delivery_auto_merges_on_clean_review(
     issue = {"number": 39, "title": "task", "body": ""}
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo",
     )
@@ -11830,7 +11820,7 @@ def test_wait_for_delivery_auto_merges_on_clean_review(
     assert "delivery_auto_merged" in caplog.text
 
 
-def test_wait_for_delivery_passes_p0_priority_to_the_review(
+def test_delivery_step_passes_p0_priority_to_the_review(
         monkeypatch, caplog, tmp_path,
 ):
     """Issue #101: a P0 delivery in an opened-PR state (the resumable
@@ -11881,17 +11871,26 @@ def test_wait_for_delivery_passes_p0_priority_to_the_review(
     }
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo",
     )
-    assert review_calls == [{"title": "p0 task", "priority": "p0"}]
+    # The review receives the priority AND the recovered scene (the
+    # round budget reads the scene, Issue #788).
+    assert review_calls == [{
+        "title": "p0 task", "priority": "p0",
+        "scene": {
+            "run_id": "a1b2c3d4", "base_branch": "main",
+            "base_sha": "abc123def456", "pr_url": PR_URL,
+            "external": "", "review_round": 0, "scene_at": None,
+        },
+    }]
     # The awaiting log line carries the explicit priority field.
     awaiting = [m for m in caplog.messages if "delivery_awaiting" in m]
     assert any("priority=p0" in m for m in awaiting)
 
 
-def test_wait_for_delivery_marks_blocked_when_review_fails(
+def test_delivery_step_marks_blocked_when_review_fails(
         monkeypatch, caplog, tmp_path,
 ):
     """A review that cannot run (unrecoverable scene, missing worktree,
@@ -11958,7 +11957,7 @@ def test_wait_for_delivery_marks_blocked_when_review_fails(
     issue = {"number": 39, "title": "task", "body": ""}
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo",
     )
@@ -12006,7 +12005,7 @@ def test_wait_for_delivery_marks_blocked_when_review_fails(
     assert "- review/fix round: 2" in blocked
 
 
-def test_wait_for_delivery_marks_blocked_when_review_fails_while_fix_needed(
+def test_delivery_step_marks_blocked_when_review_fails_while_fix_needed(
         monkeypatch, caplog, tmp_path,
 ):
     """A review failure while the Issue is `ai-fix-needed` (awaiting the
@@ -12059,7 +12058,7 @@ def test_wait_for_delivery_marks_blocked_when_review_fails_while_fix_needed(
     issue = {"number": 39, "title": "task", "body": ""}
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo",
     )
@@ -12102,7 +12101,7 @@ def test_wait_for_delivery_marks_blocked_when_review_fails_while_fix_needed(
     assert "- role: review" in blocked
 
 
-def test_wait_for_delivery_blocks_when_scene_base_differs_from_config(
+def test_delivery_step_blocks_when_scene_base_differs_from_config(
         monkeypatch, caplog, tmp_path,
 ):
     """Issue #91: the scene freezes the base the PR was opened against.
@@ -12175,7 +12174,7 @@ def test_wait_for_delivery_blocks_when_scene_base_differs_from_config(
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
     # The configured base is main; the scene froze develop.
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo",
     )
@@ -12223,7 +12222,7 @@ def test_wait_for_delivery_blocks_when_scene_base_differs_from_config(
     assert "next step:" in blocked
 
 
-def test_wait_for_delivery_worktree_missing_stays_fix_needed(
+def test_delivery_step_worktree_missing_stays_fix_needed(
         monkeypatch, caplog, tmp_path,
 ):
     """Issue #90 + #50: the resume derives the worktree from the repo,
@@ -12307,7 +12306,7 @@ def test_wait_for_delivery_worktree_missing_stays_fix_needed(
     issue = {"number": 39, "title": "task", "body": ""}
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo",
     )
@@ -12369,7 +12368,7 @@ def test_wait_for_delivery_worktree_missing_stays_fix_needed(
     assert "next step:" in fix_needed
 
 
-def test_wait_for_delivery_worktree_missing_while_fix_needed_keeps_label(
+def test_delivery_step_worktree_missing_while_fix_needed_keeps_label(
         monkeypatch, tmp_path,
 ):
     """Issue #90 + #82 + #50: a missing resume worktree while the
@@ -12433,7 +12432,7 @@ def test_wait_for_delivery_worktree_missing_while_fix_needed_keeps_label(
     )
     issue = {"number": 39, "title": "task", "body": ""}
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo",
     )
@@ -12451,26 +12450,19 @@ def test_wait_for_delivery_worktree_missing_while_fix_needed_keeps_label(
     assert "orbi-owner-repo-issue-39-a1b2c3d4" in body
 
 
-def test_wait_for_delivery_runs_review_when_fix_needed(
+def test_delivery_step_runs_review_when_fix_needed(
     monkeypatch, caplog, tmp_path,
 ):
-    """While holding the slot, a fix-needed delivery runs the SAME
-    independent review as an awaiting-review delivery (Issue #82: the
-    review session fixes findings in the same session — no cold-start
-    fixer): the review reports findings and the wait continues."""
-    states = ["OPEN", "OPEN", "MERGED"]
-    pr_view_calls = {"n": 0}
-    labels_calls = {"n": 0}
+    """A fix-needed delivery runs the SAME independent review as an
+    awaiting-review delivery (Issue #82: the review session fixes
+    findings in the same session — no cold-start fixer). Issue #788: the
+    step runs the round ONCE and returns; the next tick resumes."""
 
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and command[2] == "view":
-            pr_view_calls["n"] += 1
-            return json.dumps({
-                "state": states[pr_view_calls["n"] - 1],
-            })
+            return json.dumps({"state": "OPEN", "statusCheckRollup": []})
         if command[:2] == ["gh", "issue"] and command[2] == "view":
             if command[-1] == "labels":
-                labels_calls["n"] += 1
                 return json.dumps({
                     "labels": [{"name": "ai-fix-needed"}],
                 })
@@ -12490,7 +12482,6 @@ def test_wait_for_delivery_runs_review_when_fix_needed(
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(seam, "run_command", fake_run)
-    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
     # The fake rejects anything that is not a pr/issue view.
     with pytest.raises(AssertionError, match="unexpected command"):
         fake_run(["gh", "release", "list"])
@@ -12499,8 +12490,7 @@ def test_wait_for_delivery_runs_review_when_fix_needed(
     (tmp_path / ".worktrees"
      / "orbi-owner-repo-issue-39-a1b2c3d4").mkdir(parents=True)
     # The independent review runs for the fix-needed state too (Issue
-    # #82) and reports findings, so the wait continues to the MERGED
-    # poll.
+    # #82) and reports findings; the next tick runs the next round.
     reviews = []
     monkeypatch.setattr(
         runner, "review_and_merge_if_clean",
@@ -12510,9 +12500,9 @@ def test_wait_for_delivery_runs_review_when_fix_needed(
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
     config = runner.RunnerConfig(repo_dir=tmp_path, base_branch="main")
-    runner.wait_for_delivery(PR_URL, issue, config, "owner/repo")
-    # One review per OPEN+fix-needed poll (two polls before MERGED).
-    assert len(reviews) == 2
+    runner.delivery_step(PR_URL, issue, config, "owner/repo")
+    # ONE review round per tick (Issue #788): the step returns after it.
+    assert len(reviews) == 1
     # No fixer: the review ran on the derived worktree/branch of the
     # same run.
     worktree, branch, base_branch, review_config, repo, number = reviews[0][0]
@@ -12555,7 +12545,7 @@ def test_issue_labels_returns_names_and_fails_fast(monkeypatch):
         runner.issue_labels(39, "owner/repo")
 
 
-def test_wait_for_delivery_marks_blocked_when_pr_closed_unmerged(
+def test_delivery_step_marks_blocked_when_pr_closed_unmerged(
     monkeypatch, caplog,
 ):
     api_calls: list = []
@@ -12615,7 +12605,7 @@ def test_wait_for_delivery_marks_blocked_when_pr_closed_unmerged(
     issue = {"number": 39, "title": "task", "body": ""}
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("INFO")
-    runner.wait_for_delivery(PR_URL, issue, {}, "owner/repo")
+    runner.delivery_step(PR_URL, issue, {}, "owner/repo")
     # The Issue is marked ai-blocked; the blocked patch clears every
     # delivery-state label that is present — here only `ai-fix-needed`
     # (the delivery was awaiting the next review session) — so the
@@ -12668,7 +12658,7 @@ def test_wait_for_delivery_marks_blocked_when_pr_closed_unmerged(
     assert "- review/fix round: 2" in blocked
 
 
-def test_wait_for_delivery_review_failure_without_bound_run_id(
+def test_delivery_step_review_failure_without_bound_run_id(
         monkeypatch, tmp_path,
 ):
     """When no run id is bound the review-failure comment simply carries
@@ -12697,7 +12687,7 @@ def test_wait_for_delivery_review_failure_without_bound_run_id(
         lambda *args, **kwargs: comments.append((args, kwargs)),
     )
     issue = {"number": 39, "title": "task", "body": ""}
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo",
     )
@@ -12711,7 +12701,7 @@ def test_wait_for_delivery_review_failure_without_bound_run_id(
     assert "orbi:run=" not in body
 
 
-def test_wait_for_delivery_repairs_in_progress_label_and_logs_ci(
+def test_delivery_step_repairs_in_progress_label_and_logs_ci(
         monkeypatch, caplog, tmp_path,
 ):
     """An open PR proves implementation reached delivery: repair a lost
@@ -12725,9 +12715,9 @@ def test_wait_for_delivery_repairs_in_progress_label_and_logs_ci(
                 "state": "OPEN",
                 "statusCheckRollup": [
                     {"name": "tests", "status": "COMPLETED",
-                     "conclusion": "FAILURE"},
-                    {"name": "lint", "status": "IN_PROGRESS",
-                     "conclusion": None},
+                     "conclusion": "SUCCESS"},
+                    {"name": "lint", "status": "COMPLETED",
+                     "conclusion": "SKIPPED"},
                 ],
             })
         if command[:2] == ["gh", "issue"] and command[2] == "view":
@@ -12750,18 +12740,18 @@ def test_wait_for_delivery_repairs_in_progress_label_and_logs_ci(
     (tmp_path / ".worktrees" /
      "orbi-owner-repo-issue-39-a1b2c3d4").mkdir(parents=True)
     caplog.set_level("INFO")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, {"number": 39, "title": "task", "body": ""},
         runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"), "owner/repo",
     )
     assert any("--add-label" in call and "ai-pr-opened" in call
                and "--remove-label" in call and "ai-in-progress" in call
                for call in calls)
-    assert "tests=COMPLETED/FAILURE" in caplog.text
-    assert "lint=IN_PROGRESS" in caplog.text
+    assert "tests=COMPLETED/SUCCESS" in caplog.text
+    assert "lint=COMPLETED/SKIPPED" in caplog.text
 
 
-def test_wait_for_delivery_blocks_when_in_progress_label_repair_fails(
+def test_delivery_step_blocks_when_in_progress_label_repair_fails(
         monkeypatch, caplog,
 ):
     def fake_run(command, **kwargs):
@@ -12778,7 +12768,7 @@ def test_wait_for_delivery_blocks_when_in_progress_label_repair_fails(
             raise RuntimeError("label API unavailable")
     monkeypatch.setattr(seam, "apply_label_patch", fake_patch)
     monkeypatch.setattr(seam, "comment_issue", lambda *a, **k: None)
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, {"number": 39, "title": "task", "body": ""},
         {}, "owner/repo",
     )
@@ -12786,7 +12776,7 @@ def test_wait_for_delivery_blocks_when_in_progress_label_repair_fails(
     assert "delivery_label_repair_failed" in caplog.text
 
 
-def test_wait_for_delivery_keeps_holding_when_no_delivery_label(
+def test_delivery_step_keeps_holding_when_no_delivery_label(
         monkeypatch, caplog,
 ):
     """An OPEN PR whose Issue carries no delivery state label (neither
@@ -12815,14 +12805,14 @@ def test_wait_for_delivery_keeps_holding_when_no_delivery_label(
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", None)
     issue = {"number": 39, "title": "task", "body": ""}
     caplog.set_level("INFO")
-    runner.wait_for_delivery(PR_URL, issue, {}, "owner/repo")
+    runner.delivery_step(PR_URL, issue, {}, "owner/repo")
     # An open PR with no resumable delivery label is unrecoverable: it is
     # blocked immediately instead of retaining the slot indefinitely.
     assert pr_calls["n"] == 1
     assert "delivery_label_inconsistent" in caplog.text
 
 
-def test_wait_for_delivery_logs_awaiting_without_bound_run_id(monkeypatch, caplog):
+def test_delivery_step_logs_awaiting_without_bound_run_id(monkeypatch, caplog):
     """When no run id is bound the wait still works: the failure comment
     simply carries no marker."""
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", None)
@@ -12845,7 +12835,7 @@ def test_wait_for_delivery_logs_awaiting_without_bound_run_id(monkeypatch, caplo
         lambda *args, **kwargs: comments.append((args, kwargs)),
     )
     caplog.set_level("INFO")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, {"number": 39, "title": "t", "body": ""}, {}, "owner/repo",
     )
     assert "Orbi failed:" in comments[0][1]["body"]
@@ -12854,7 +12844,7 @@ def test_wait_for_delivery_logs_awaiting_without_bound_run_id(monkeypatch, caplo
 
 # ---------------------------------------------------- Issue #289
 # `_run_review_round` is the per-round delivery flow extracted from
-# `wait_for_delivery` (one round = label read/repair + resumable gate
+# `delivery_step` (one round = label read/repair + resumable gate
 # + one independent review + failure classification). These tests pin
 # the three-value contract the polling skeleton dispatches on:
 # True = merged this round, False = findings (next round), None = a
@@ -13020,9 +13010,12 @@ def test_run_review_round_returns_none_when_worktree_missing(
     assert "orbi-owner-repo-issue-39-a1b2c3d4" in body
 
 
-def test_main_holds_slot_through_delivery_wait(monkeypatch, tmp_path):
-    """The slot stays occupied while the delivery awaits review: a second
-    concurrent runner must see capacity_full until the PR is merged."""
+def test_main_releases_slot_after_opening_the_pr(monkeypatch, tmp_path):
+    """Issue #788: a fresh claim ends its tick when the PR is open — the
+    slot is released instead of being held through review -> merge. The
+    review is the next tick's RESUME_REVIEW step, which takes the slot
+    again for exactly the Pi session's duration. A concurrent runner can
+    therefore take the slot the moment this tick ends."""
     from orbi import pilot_slots
 
     issue = {"number": 12, "title": "task", "body": "body"}
@@ -13036,31 +13029,18 @@ def test_main_holds_slot_through_delivery_wait(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(runner, "process_issue", lambda *a, **k: runner.IssueResult("pr", PR_URL))
+    monkeypatch.setattr(
+        runner, "delivery_step",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("a fresh claim must not run the review step"),
+        ),
+    )
 
-    started = threading.Event()
-    release = threading.Event()
-
-    def fake_wait(pr_url, iss, cfg, repo, **kwargs):
-        started.set()
-        assert release.wait(timeout=10), "wait must hold the slot"
-
-    monkeypatch.setattr(runner, "wait_for_delivery", fake_wait)
-
-    def run_main():
-        return runner.main(["--config", str(config)])
-
-    thread = threading.Thread(target=run_main)
-    thread.start()
-    assert started.wait(timeout=10)
-    # While the delivery awaits review, the slot is still held: a second
-    # take (another runner) is denied.
+    assert runner.main(["--config", str(config)]) == 0
+    # The tick ended after opening the PR: the slot is free again.
     slot_dir = tmp_path / ".orbi" / "slots"
-    assert pilot_slots.acquire_slot(slot_dir, 1, os.getpid()) is None
-    assert pilot_slots.slot_occupancy(slot_dir, 1) == [(1, os.getpid())]
-    release.set()
-    thread.join(timeout=10)
-    # After the wait ends, the slot is released.
     assert pilot_slots.slot_occupancy(slot_dir, 1) == [(1, None)]
+    assert pilot_slots.acquire_slot(slot_dir, 1, os.getpid()) is not None
 
 
 # --- configurable Pi provider/model/thinking (Issue #119) -------------------
@@ -15498,7 +15478,7 @@ def test_process_issue_keeps_normal_flow_without_release_label(
     monkeypatch.setattr(runner, "deliver_pr",
                         lambda *a, **k: "https://github.com/o/r/pull/1")
     monkeypatch.setattr(seam, "run_command", lambda c, **k: "")
-    monkeypatch.setattr(runner, "wait_for_delivery", Mock())
+    monkeypatch.setattr(runner, "delivery_step", Mock())
     monkeypatch.setattr(seam, "edit_issue", Mock())
     monkeypatch.setattr(runner, "LOGGER", Mock())
     monkeypatch.setattr(runner, "activity_snapshot", lambda p: None)
@@ -20957,7 +20937,7 @@ def test_pick_resumable_closes_marker_ticket_when_pr_already_merged(
         fake_run(["gh", "release", "view"])
 
 
-def test_wait_for_delivery_closes_triage_issue_after_auto_merge(
+def test_delivery_step_closes_triage_issue_after_auto_merge(
     monkeypatch, tmp_path,
 ):
     """Issue #726 gap 2：外部接管走自动评审合并成功（merged=True 返回）
@@ -21003,7 +20983,7 @@ def test_wait_for_delivery_closes_triage_issue_after_auto_merge(
     (tmp_path / ".worktrees"
      / "orbi-owner-repo-issue-39-a1b2c3d4").mkdir(parents=True)
     issue = {"number": 39, "title": "task", "body": ""}
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo", external_takeover=True,
     )
@@ -21125,7 +21105,7 @@ def test_route_external_pr_ignores_tickets_without_marker(
         fake_run(["gh", "release", "view"])
 
 
-def test_wait_for_delivery_closes_triage_issue_on_merged_poll(
+def test_delivery_step_closes_triage_issue_on_merged_poll(
     monkeypatch, tmp_path,
 ):
     """Issue #726 的既有行为钉子：轮询直接发现 PR 已 MERGED（重启后的
@@ -21146,7 +21126,7 @@ def test_wait_for_delivery_closes_triage_issue_on_merged_poll(
     closes: list = []
     monkeypatch.setattr(seam, "run_command", fake_run)
     issue = {"number": 39, "title": "task", "body": ""}
-    runner.wait_for_delivery(
+    runner.delivery_step(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo", external_takeover=True,
     )

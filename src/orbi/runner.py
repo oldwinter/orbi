@@ -140,7 +140,6 @@ from orbi.pi_process import (
     PI_IDLE_WARN_SECONDS,
     PI_MODEL_WAIT_DEAD_SECONDS,
     PI_MODEL_WAIT_PROBE_SECONDS,
-    PI_POLL_INTERVAL,
     ROLE_IMPLEMENT,
     ModelWaitDeadError,
     RateLimitExhaustedError,
@@ -190,6 +189,8 @@ from orbi.github import (
     parse_paginated_issue_array,
     pr_comments,
     pr_delivery_status,
+    pr_delivery_rollup,
+    _check_summaries,
     pr_state,
     pr_view,
     trusted_issue_comments_block,
@@ -225,7 +226,6 @@ from orbi.journal import (
     validate_run_id,
 )
 from orbi.release import (
-    RELEASE_CI_POLL_INTERVAL,
     RELEASE_CI_WAIT_SECONDS,
     RELEASE_DELIVERIES_WAIT_SECONDS,
     RELEASE_SECTION,
@@ -259,13 +259,6 @@ STOP_CHILD_GRACE_SECONDS = 15.0
 # default role of a delivery Pi session and lives in `orbi.pi_process`.
 ROLE_REVIEW = "review"
 ROLE_TICKET = "ticket"
-
-
-# Mergeability is recomputed asynchronously after a push. Poll the PR after
-# its checks settle instead of treating the transient UNKNOWN value as a
-# conflict.
-MERGEABLE_WAIT_SECONDS = 120.0
-MERGEABLE_POLL_INTERVAL = 5.0
 
 
 # Issue #745: {{ISSUE_COMMENTS}} injects the Issue's trusted-comment
@@ -574,7 +567,6 @@ class RunnerConfig:
     model_wait_probe_url: str | None = None
     model_wait_probe_seconds: float = PI_MODEL_WAIT_PROBE_SECONDS
     release_ci_wait_seconds: float = RELEASE_CI_WAIT_SECONDS
-    mergeable_wait_seconds: float = MERGEABLE_WAIT_SECONDS
     release_deliveries_wait_seconds: float = RELEASE_DELIVERIES_WAIT_SECONDS
     pi_providers: Path | None = None
     pi_providers_data: dict | None = None
@@ -693,11 +685,12 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     # bounded by model_wait_dead_seconds only).
     model_wait_probe_url = _model_wait_probe_url(data)
     model_wait_probe_seconds = _model_wait_probe_seconds(data)
-    # Release CI wait (Issue #268): how long the release gate waits for
-    # pending checks on the release commit before failing with its own
-    # timeout reason.
+    # Release CI wait (Issue #268): the release gate's in-tick upper
+    # bound for pending checks on the release commit. The DELIVERY path
+    # has no CI wait anymore (Issue #788): a pending check defers the
+    # delivery to the next tick, so this bound is the release state
+    # machine's pure cap, never a delivery-wait mechanism.
     release_ci_wait_seconds = _release_ci_wait_seconds(data)
-    mergeable_wait_seconds = _mergeable_wait_seconds(data)
     release_deliveries_wait_seconds = _release_deliveries_wait_seconds(data)
     # Runner-self health alert routing (Issue #345): the orbi repo that
     # receives the watchdog's crash_loop / stale_pickup Issues. Absent ->
@@ -814,7 +807,6 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
         model_wait_probe_url=model_wait_probe_url,
         model_wait_probe_seconds=model_wait_probe_seconds,
         release_ci_wait_seconds=release_ci_wait_seconds,
-        mergeable_wait_seconds=mergeable_wait_seconds,
         release_deliveries_wait_seconds=release_deliveries_wait_seconds,
         pi_providers=pi_providers_path,
         pi_providers_data=pi_providers_data,
@@ -1032,23 +1024,6 @@ def _release_ci_wait_seconds(data: dict) -> float:
         raise ValueError(
             "release_ci_wait_seconds must be a positive number of seconds "
             f"(got {value!r})"
-        )
-    return number
-
-
-def _mergeable_wait_seconds(data: dict) -> float:
-    """Load and validate the merge gate's mergeable wait limit."""
-    value = data.get("mergeable_wait_seconds", MERGEABLE_WAIT_SECONDS)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(
-            "mergeable_wait_seconds must be a number "
-            f"(got {type(value).__name__} {value!r})"
-        )
-    number = float(value)
-    if not math.isfinite(number) or number <= 0:
-        raise ValueError(
-            "mergeable_wait_seconds must be a finite positive number of "
-            f"seconds (got {value!r})"
         )
     return number
 
@@ -2475,6 +2450,10 @@ def parse_pr_comment(body: str) -> dict | None:
         "base_sha": found.base_sha,
         "pr_url": found.pr_url,
         "external": found.external,
+        # Issue #788: the review-round counter travels with the scene —
+        # the round comments carry the updated scene block, so the next
+        # resume reads the advanced count instead of re-counting text.
+        "review_round": found.review_round,
     }
 
 
@@ -2487,13 +2466,16 @@ def resume_scene(comments: list[dict]) -> dict:
     failure shapes stay distinct for the caller (Issue #786):
     `scene.SceneError` when a trusted scene comment is corrupted,
     `scene.SceneMissingError` when no trusted comment carries a scene
-    at all. Neither may be guessed at.
+    at all. Neither may be guessed at. The projection adds `scene_at`
+    (the comment's `createdAt`): the #483 human-recovery budget reset
+    compares it against the recovery transition time.
     """
     for comment in reversed(comments):
         if not _comment_is_trusted(comment):
             continue
         found = parse_pr_comment(comment.get("body"))
         if found is not None:
+            found["scene_at"] = comment.get("createdAt")
             return found
     raise scene.SceneMissingError(
         "no 'Orbi opened PR' comment from a trusted author; the "
@@ -4841,85 +4823,61 @@ def _raise_if_preexisting_ci_failure(
         )
 
 
-def check_review_ci(repo: str, commit: str, *, wait_seconds: float) -> str:
-    """Gate a clean review on the PR head's current GitHub check runs.
+def _classify_rollup(rollup: list) -> tuple[list[str], list[str]]:
+    """Split one PR status check rollup into (pending, failed) evidence.
 
-    Review-local tests are advisory; the repository's own CI is the only
-    acceptance gate. An absent check list is intentionally fail-open, matching
-    the release gate, while pending checks are polled with the shared release
-    wait configuration and cadence.
+    A check is pending while its status is anything but a final one
+    (GitHub recomputes mergeability and registers new CheckRuns
+    asynchronously); a completed check with a non-passing conclusion —
+    or a legacy status-context FAILURE/ERROR — is failed. Pure: the
+    pre-review CI gate and the merge gate classify the same rollup the
+    same way.
     """
-    def fetch() -> list[dict]:
-        return commit_check_runs(repo, commit)
+    pending: list[str] = []
+    failed: list[str] = []
+    for check in rollup:
+        status = str(check.get("status", check.get("state", ""))).upper()
+        conclusion = str(check.get("conclusion", "")).upper()
+        name = check.get("name", check.get("context", "check"))
+        if status not in ("COMPLETED", "SUCCESS", "FAILURE", "ERROR"):
+            pending.append(f"check '{name}' is {status or 'UNKNOWN'}")
+        elif status == "COMPLETED" and conclusion not in (
+            "SUCCESS", "NEUTRAL", "SKIPPED",
+        ):
+            failed.append(f"check '{name}' is {status}/{conclusion}")
+        elif status in ("FAILURE", "ERROR"):
+            failed.append(f"check '{name}' is {status}")
+    return pending, failed
 
-    waited = 0.0
-    check_runs = fetch()
-    while True:
-        pending = [
-            f"check '{check.get('name')}' is {check.get('status')}/"
-            f"{check.get('conclusion')}"
-            for check in check_runs if check.get("status") != "completed"
-        ]
-        if not pending:
-            break
-        detail = ", ".join(pending)
-        event(
-            "review_waiting_ci", head=commit, pending=detail,
-            waited=f"{int(waited)}s", limit=f"{int(wait_seconds)}s",
-        )
-        if waited >= wait_seconds:
-            raise RuntimeError(
-                f"review gate: waiting for CI on PR head {commit} timed out "
-                f"after {int(wait_seconds)}s (still pending: {detail})"
-            )
-        step = min(RELEASE_CI_POLL_INTERVAL, wait_seconds - waited)
-        time.sleep(step)
-        waited += step
-        check_runs = fetch()
 
-    failed = [
-        check for check in check_runs
-        if check.get("conclusion") not in ("success", "neutral", "skipped")
-    ]
-    if failed:
-        check = failed[0]
-        reference = check.get("html_url") or check.get("details_url") or "no run URL"
-        raise RuntimeError(
-            f"review gate: CI check '{check.get('name')}' failed on PR head "
-            f"{commit} ({reference})"
-        )
-    if not check_runs:
-        evidence = f"CI on review head {commit}: no check runs (nothing to gate)"
-    else:
-        evidence = (
-            f"CI on review head {commit}: {len(check_runs)} check(s) all "
-            "success/neutral/skipped"
-        )
-    LOGGER.info("%s", evidence)
-    return evidence
+class DeliveryDeferred(Exception):
+    """An intermediate GitHub state asked the delivery to wait.
+
+    Pending CI checks or a still-UNKNOWN mergeability are transient
+    states, never failures (Issue #788): the caller journals the
+    observation and returns — the next tick re-reads the state. The
+    delivery labels stay untouched and the review-round budget does not
+    advance, so a deferred tick costs a couple of read calls only.
+    """
 
 
 def merge_gate(worktree: Path, pr: dict, base_branch: str,
-               *, repo_dir: Path, ci_wait_seconds: float | None = None,
-               mergeable_wait_seconds: float | None = None,
+               *, repo_dir: Path,
                source_repo: str | None = None) -> dict:
     """Merge the reviewed PR only if the gate still holds against latest base.
 
     Re-fetch the latest remote base, require the PR head to contain it, the PR
     to be mergeable, the remote head to still be the reviewed head, and the
-    exact head's GitHub CI checks to be completed successfully. Pending checks
-    are polled with a deadline; failures and timeouts prevent merging. Then
-    merge with `--match-head-commit` so only that exact head can land. No force
-    push, no direct push of the protected branch. The base fetch updates the
-    shared remote-tracking ref, so it runs under the base-sync lock
-    (Issue #171) with the deployment checkout as the lock location.
+    exact head's GitHub CI checks to be completed successfully. Every state
+    is read ONCE (Issue #788): a pending check or an UNKNOWN mergeability is
+    not a failure but an intermediate state — the gate raises
+    `DeliveryDeferred`, the caller returns, and the next tick re-reads; a
+    failed check or a not-mergeable PR prevents the merge. Then merge with
+    `--match-head-commit` so only that exact head can land. No force push, no
+    direct push of the protected branch. The base fetch updates the shared
+    remote-tracking ref, so it runs under the base-sync lock (Issue #171)
+    with the deployment checkout as the lock location.
     """
-    ci_wait_seconds = (ci_wait_seconds if ci_wait_seconds is not None else
-                       pr.get("_ci_wait_seconds", RELEASE_CI_WAIT_SECONDS))
-    mergeable_wait_seconds = (
-        mergeable_wait_seconds if mergeable_wait_seconds is not None else
-        pr.get("_mergeable_wait_seconds", MERGEABLE_WAIT_SECONDS)
-    )
     fetch_base_ref(repo_dir, base_branch, cwd=worktree)
     if not _is_ancestor(f"origin/{base_branch}", pr["head_oid"], cwd=worktree):
         event(
@@ -4931,79 +4889,38 @@ def merge_gate(worktree: Path, pr: dict, base_branch: str,
             f"remote base origin/{base_branch}; absorb the latest base, rerun "
             "tests and review, then retry"
         )
-    def fetch_state() -> dict:
-        return pr_view(pr["number"],
-                       "state,mergeable,headRefOid,statusCheckRollup",
-                       cwd=worktree)
-
-    def check_rollup(state: dict) -> tuple[list[str], list[str]]:
-        rollup = state.get("statusCheckRollup") or []
-        pending: list[str] = []
-        failed: list[str] = []
-        for check in rollup:
-            status = str(check.get("status", check.get("state", ""))).upper()
-            conclusion = str(check.get("conclusion", "")).upper()
-            name = check.get("name", check.get("context", "check"))
-            if status not in ("COMPLETED", "SUCCESS", "FAILURE", "ERROR"):
-                pending.append(f"check '{name}' is {status or 'UNKNOWN'}")
-            elif status == "COMPLETED" and conclusion not in (
-                "SUCCESS", "NEUTRAL", "SKIPPED",
-            ):
-                failed.append(f"check '{name}' is {status}/{conclusion}")
-            elif status in ("FAILURE", "ERROR"):
-                failed.append(f"check '{name}' is {status}")
-        return pending, failed
-
-    waited = 0.0
-    state = fetch_state()
-    while True:
-        pending, failed = check_rollup(state)
-        if failed:
-            failed_names = [item.split(chr(39))[1] for item in failed]
-            _raise_if_preexisting_ci_failure(
-                pr.get("_source_repo", source_repo or ""), failed_names,
-                pr.get("base_oid"),
-            )
-            raise RuntimeError(
-                f"delivery gate: CI check '{failed_names[0]}' "
-                f"failed on PR #{pr['number']}: " + ", ".join(failed)
-            )
-        if not pending:
-            break
+    state = pr_view(pr["number"],
+                    "state,mergeable,headRefOid,statusCheckRollup",
+                    cwd=worktree)
+    pending, failed = _classify_rollup(state.get("statusCheckRollup") or [])
+    if failed:
+        failed_names = [item.split(chr(39))[1] for item in failed]
+        _raise_if_preexisting_ci_failure(
+            pr.get("_source_repo", source_repo or ""), failed_names,
+            pr.get("base_oid"),
+        )
+        raise RuntimeError(
+            f"delivery gate: CI check '{failed_names[0]}' "
+            f"failed on PR #{pr['number']}: " + ", ".join(failed)
+        )
+    if pending:
         detail = ", ".join(pending)
         event(
-            "merge_gate_waiting_ci", pr=pr["number"], pending=detail,
-            waited=f"{int(waited)}s", limit=f"{int(ci_wait_seconds)}s",
+            "merge_gate_ci_pending", pr=pr["number"], pending=detail,
         )
-        if waited >= ci_wait_seconds:
-            raise RuntimeError(
-                f"delivery gate: waiting for CI on PR #{pr['number']} timed "
-                f"out after {int(ci_wait_seconds)}s (still pending: {detail})"
-            )
-        step = min(RELEASE_CI_POLL_INTERVAL, ci_wait_seconds - waited)
-        time.sleep(step)
-        waited += step
-        state = fetch_state()
-
-    mergeable_waited = 0.0
-    while state.get("mergeable") == "UNKNOWN":
-        event(
-            "merge_gate_waiting_mergeable", pr=pr["number"],
-            waited=f"{int(mergeable_waited)}s",
-            limit=f"{int(mergeable_wait_seconds)}s",
+        raise DeliveryDeferred(
+            f"PR #{pr['number']} CI is still running ({detail}); "
+            "the merge is deferred to the next tick"
         )
-        if mergeable_waited >= mergeable_wait_seconds:
-            raise RecoverableMergeGateError(
-                f"PR #{pr['number']} not mergeable: mergeable state timed "
-                f"out after {int(mergeable_wait_seconds)}s"
-            )
-        step = min(MERGEABLE_POLL_INTERVAL,
-                   mergeable_wait_seconds - mergeable_waited)
-        time.sleep(step)
-        mergeable_waited += step
-        state = fetch_state()
-
     mergeable = state.get("mergeable")
+    if mergeable == "UNKNOWN":
+        event(
+            "merge_gate_mergeable_unknown", pr=pr["number"],
+        )
+        raise DeliveryDeferred(
+            f"PR #{pr['number']} mergeable state is UNKNOWN; "
+            "the merge is deferred to the next tick"
+        )
     if mergeable != "MERGEABLE":
         event(
             "merge_gate_not_mergeable", level=logging.ERROR,
@@ -5513,36 +5430,67 @@ def _sync_base_checkout_locked(repo_dir: Path, base_branch: str) -> None:
     )
 
 
+def _round_scene_block(resumed: dict, pr_url: str, round: int) -> str:
+    """The updated scene block a completed round carries to the next resume.
+
+    The round comment is the budget's write path (Issue #788): embedding
+    the scene with `review_round=round` makes THAT comment the latest
+    scene, so the next tick's `resume_scene` reads the advanced count —
+    GitHub stays the only state store, no second record exists.
+    """
+    return scene.render(scene.Scene(
+        run_id=validate_run_id(resumed["run_id"]),
+        base_branch=resumed["base_branch"],
+        base_sha=resumed["base_sha"],
+        pr_url=pr_url,
+        external=resumed.get("external", ""),
+        review_round=round,
+    ))
+
+
 def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
                               config: RunnerConfig, source_repo: str,
-                              number: int, title: str, priority: str) -> bool:
+                              number: int, title: str, priority: str,
+                              *, scene: dict) -> bool:
     """Run one independent review round; merge when the verdict is clean.
 
     `title` is the issue's GitHub title (Issue #100): the review
     progress scenes (ensure, findings, merged) show `#<number> <title>`
     like every other scene; it is required, never fabricated.
 
-    The delivery wait loop (which holds the slot) calls this while the
-    PR is open and the Issue awaits review (`ai-pr-opened`) or awaits the
-    next review session (`ai-fix-needed`). It freezes the PR, runs the
-    independent review (streamed, role=review), and then:
+    `scene` is the delivery's recovered resume scene (run_id, base,
+    PR URL, `review_round`, `scene_at`): the round budget reads the
+    scene's `review_round` field (Issue #788 — the scene is the
+    waiting primitive's state anchor), and every round comment carries
+    the updated scene block, so the next resume continues the count.
+
+    The delivery step calls this while the PR is open and the Issue
+    awaits review (`ai-pr-opened`) or awaits the next review session
+    (`ai-fix-needed`). It freezes the PR, runs the independent review
+    (streamed, role=review), and then:
 
     - clean verdict -> the reviewer may have fixed findings IN THE SAME
       SESSION and pushed the task branch (Issue #82), so the PR is
       RE-FROZEN before the merge gate: the gate (latest-base ancestor,
-      mergeable, head match, `gh pr merge --match-head-commit`) then
-      runs against the head the verdict actually covers; confirm the
-      merge landed on origin/<base>, sync the deployment checkout,
-      label the Issue `ai-merged`; returns True;
+      one-shot CI read, mergeable, head match,
+      `gh pr merge --match-head-commit`) then runs against the head the
+      verdict actually covers; confirm the merge landed on
+      origin/<base>, sync the deployment checkout, label the Issue
+      `ai-merged`; returns True;
+    - an intermediate gate state (CI still pending on the reviewed head,
+      or mergeability still UNKNOWN) -> one journal line and return
+      without a comment or a label change (Issue #788): "pending" is a
+      state, not a failure — the next tick re-reads it, the round budget
+      does not advance; returns False;
     - Blocker/Major findings the reviewer could not fix in-session ->
-      comment them to Issue and PR and label the Issue `ai-fix-needed`;
-      the next wait iteration (or the next tick after a restart) runs
-      the same independent review again — no cold-start fixer, no
-      third review; returns False;
-    - a gate failure because the head is behind the latest base or has
-      a merge conflict -> label the Issue `ai-fix-needed` with the
-      absorb-base finding (the next review session absorbs the latest
-      base in-session); returns False;
+      comment them to Issue and PR (the comment carries the updated
+      scene) and label the Issue `ai-fix-needed`; the next tick resumes
+      the same PR with the next round — no cold-start fixer, no third
+      review; returns False;
+    - a gate failure because the head is behind the latest base, has a
+      merge conflict, or its CI is red -> label the Issue
+      `ai-fix-needed` with the finding (the next review session absorbs
+      the latest base in-session or repairs the red CI); returns False;
     - missing/malformed verdict (including a verdict whose `head` does
       not match the PR head, Issue #591) -> raise; the caller keeps the
       Issue in the automatic fix loop (`ai-fix-needed`, Issue #50: the
@@ -5553,10 +5501,10 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
       with the explicit reason.
     """
     marker = run_marker(config.run_id)
-    comments = issue_comments(number, repo=source_repo)
-    # The run marker is the delivery-attempt boundary. Do not count review
-    # comments from a previous PR/run on the same Issue (Issue #508).
-    rounds = review_rounds_so_far(comments, run_id=config.run_id)
+    # The round budget lives in the scene (Issue #788): `review_round`
+    # counts the COMPLETED rounds, each recorded by the round comment
+    # that carried the updated scene block.
+    rounds = int(scene["review_round"])
     recovery_at = None
     if rounds >= MAX_REVIEW_ROUNDS:
         # Issue #483: a maintainer may repair an external prerequisite and
@@ -5564,10 +5512,11 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         # transition establishes a new budget for this same PR; old review
         # comments remain immutable evidence and are not counted again.
         recovery_at = human_review_recovery_at(number, source_repo)
-        if recovery_at is not None:
-            rounds = review_rounds_so_far(
-                comments, after=recovery_at, run_id=config.run_id,
-            )
+        scene_at = scene.get("scene_at")
+        if recovery_at is not None and (
+            not isinstance(scene_at, str) or recovery_at > scene_at
+        ):
+            rounds = 0
             event(
                 "review_budget_recovered", issue=number,
                 recovery_at=recovery_at, rounds=rounds,
@@ -5642,6 +5591,9 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             f"{verdict['blockers']} blocker(s), {verdict['majors']} "
             "major(s). Findings: "
             + json.dumps(verdict["findings"], ensure_ascii=False)
+            # The completed round advances the scene's budget counter
+            # (Issue #788): the next resume reads it from this comment.
+            + "\n" + _round_scene_block(scene, pr["url"], round)
         )
         comment_issue(number, repo=source_repo, body=body)
         comment_pr(pr["number"], repo=source_repo, body=body)
@@ -5704,10 +5656,11 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         body = (
             f"{marker}\n"
             # Both gate-failure scenes carry the counted `Orbi review
-            # round` prefix (Issue #588): it is the only carrier
-            # `review_rounds_so_far` counts, so a persistently red CI
-            # must consume the budget and exhaust into the bounded
-            # human decision instead of looping forever.
+            # round` prefix (Issue #588) and the updated scene block
+            # (Issue #788): the counted comment is the round budget's
+            # carrier, so a persistently red CI still consumes the
+            # budget and exhausts into the bounded human decision
+            # instead of looping forever.
             + (f"Orbi review round {round} for PR #{pr['number']}: "
                "CI merge gate blocked: "
                f"{message} (run_id={config.run_id})" if ci_failure else
@@ -5716,7 +5669,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             f"the next review session merges the latest "
             f"origin/{base_branch} into the branch in-session, resolves "
             "conflicts, and reruns the full test suite"
-        ))
+        )) + "\n" + _round_scene_block(scene, pr["url"], round)
         # CI evidence is best-effort observability.  A GitHub comment
         # outage must not prevent the required ai-fix-needed transition.
         try:
@@ -5733,25 +5686,21 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         )
 
     try:
-        ci_evidence = check_review_ci(
-            source_repo, refrozen["head_oid"],
-            wait_seconds=config.release_ci_wait_seconds,
-        )
-        event(
-            "review_ci_gate_passed", pr=refrozen["number"],
-            head=refrozen["head_oid"], evidence=ci_evidence,
-        )
-    except RuntimeError as exc:
-        handle_gate_failure(str(exc), ci_failure=True)
-        return False
-    try:
         merged = merge_gate(
             worktree,
-            {**refrozen, "_source_repo": source_repo,
-             "_ci_wait_seconds": config.release_ci_wait_seconds,
-             "_mergeable_wait_seconds": config.mergeable_wait_seconds},
+            {**refrozen, "_source_repo": source_repo},
             base_branch, repo_dir=config.repo_dir,
         )
+    except DeliveryDeferred as exc:
+        # Issue #788: a pending check or an UNKNOWN mergeability on the
+        # reviewed head is an intermediate state, not a failure — the
+        # next tick re-reads it. No comment, no label change, no round
+        # consumed: the scene's counter only advances on round comments.
+        event(
+            "review_merge_deferred", pr=refrozen["number"], round=round,
+            reason=str(exc),
+        )
+        return False
     except RecoverableMergeGateError as exc:
         handle_gate_failure(str(exc), ci_failure=False)
         return False
@@ -6602,7 +6551,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     # the terminal state `ai-blocked` ALONE (docs/workflow.mdx label
     # lifecycle: `ai-pr-opened` is removed on terminal failure) — the same
     # convention as every other terminal failure path (verify_resumed_pr,
-    # wait_for_delivery).
+    # delivery_step).
     pr_opened = False
     try:
         worktree = create_worktree(
@@ -7402,23 +7351,22 @@ def _run_review_round(
 ) -> bool | None:
     """Run ONE review round of an open-PR delivery (Issue #289).
 
-    Extracted from `wait_for_delivery`'s loop body so the wait stays a
-    plain polling skeleton and one round is readable on its own: read
-    the delivery labels ONCE per round, repair a lost `ai-in-progress`
-    transition, gate on the resumable opened-PR states, then recover
-    the trusted scene, validate the frozen base, derive the
-    worktree/branch, run the independent review and classify any
-    failure (Issue #50).
+    The delivery step's round body: read the delivery labels ONCE per
+    round, repair a lost `ai-in-progress` transition, gate on the
+    resumable opened-PR states, then recover the trusted scene,
+    validate the frozen base, derive the worktree/branch, run the
+    independent review and classify any failure (Issue #50).
 
     Returns True when this round merged the PR (terminal success);
-    False when findings remain (`ai-fix-needed`, the label transition
-    happens inside the review itself) and the caller may poll into the
-    next round; and None when a terminal state was already handled and
-    the caller must release the slot and return: an unrecoverable
-    precondition (`ai-blocked`), a recoverable failure's full
-    `ai-fix-needed` scene (the next tick resumes the same run, branch,
-    worktree and PR), a failed `ai-in-progress` label repair, or an
-    open PR without a resumable delivery label (both `ai-blocked`).
+    False when the delivery stays open for a LATER TICK (`ai-fix-needed`
+    after findings or a failed gate, or a deferred merge — the label
+    transition happens inside the review itself, a defer writes none);
+    and None when a terminal state was already handled and the caller
+    must release the slot and return: an unrecoverable precondition
+    (`ai-blocked`), a recoverable failure's full `ai-fix-needed` scene
+    (the next tick resumes the same run, branch, worktree and PR), a
+    failed `ai-in-progress` label repair, or an open PR without a
+    resumable delivery label (both `ai-blocked`).
     """
     number = int(issue["number"])
     title = issue["title"]
@@ -7610,7 +7558,7 @@ def _run_review_round(
         merged = review_and_merge_if_clean(
             worktree, branch, config.base_branch,
             review_config, source_repo, number,
-            title=title, priority=priority,
+            title=title, priority=priority, scene=scene,
         )
     except Exception as exc:
         detail = _failure_detail(exc)
@@ -7679,61 +7627,47 @@ def _close_external_triage_issue(
         )
 
 
-def wait_for_delivery(pr_url: str, issue: dict, config: RunnerConfig,
-                      source_repo: str,
-                      poll_interval: float = PI_POLL_INTERVAL,
-                      external_takeover: bool = False) -> None:
-    """Own the delivery lifecycle: hold the slot until merge or failure.
+def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
+                  source_repo: str, *, external_takeover: bool = False) -> None:
+    """Run ONE step of an opened-PR delivery: the resume path IS the path.
 
-    The slot is acquired by `main` before the claim and must stay
-    occupied through implement -> review -> merge (Issue #39): a
-    delivery whose PR is open still needs the machine, and no other
-    Runner may start a second Pi while it is held. The Runner is the
-    owner of that lifecycle, so it re-checks the delivery every
-    `poll_interval` seconds (the same cadence as the Pi activity poll):
+    The old `wait_for_delivery` held the slot in a sleep loop until the
+    PR merged or failed, and the resume logic ran only when that process
+    died — the most important path was the least-travelled one (Issue
+    #788). The waiting primitive (#381/#763) is now the ONLY mechanism:
+    this function performs at most ONE state transition per tick and
+    returns; `main` releases the slot in its `finally`, and the next
+    tick's `pick_resumable_delivery` classifies the same delivery
+    RESUME_REVIEW and runs the next step. A crash loses at most the
+    current Pi session, and the slot is held only while a Pi actually
+    runs. No sleep exists on this path:
 
-    - PR `MERGED` -> terminal: the delivery is done, the slot is
-      released by the caller and the next tick may claim new work. An
-      EXTERNAL takeover (Issue #608) additionally closes the triage
-      Issue with the merge evidence — the contributor's PR body carries
-      no `Fixes #N` for this Issue, so GitHub never closes it natively
+    - PR `MERGED` -> terminal: the delivery is done. An EXTERNAL
+      takeover (Issue #608) additionally closes the triage Issue with
+      the merge evidence — the contributor's PR body carries no
+      `Fixes #N` for this Issue, so GitHub never closes it natively
       (合并外部 PR 即关票); the close is bookkeeping of an already
       merged fact and its failure is logged, never a rewrite;
     - PR `CLOSED` without merge -> terminal failure: the Issue is
-      marked `ai-blocked` (removing `ai-pr-opened`/`ai-fix-needed`) with
-      a failure comment carrying the run marker, then the slot is
-      released by the caller. An EXTERNAL takeover is the exception
-      (Issue #608): the contributor withdrew the PR or a maintainer
-      rejected it — that is the 放弃/不可修 fallback, so the Issue is
-      requeued to `ai-ready` and the next claim redoes the fix
-      internally;
-    - Issue in an opened-PR state (`ai-pr-opened` awaiting review, or
-      `ai-fix-needed` awaiting the next review session after a finding
-      or a base conflict) -> the Runner runs the independent review of
-      the frozen PR (Issue #34) itself, on the same run, while still
-      holding the slot: the review session fixes Blocker/Major findings
-      IN THE SAME SESSION (Issue #82 — no cold-start fixer, no third
-      review), a clean verdict re-freezes the head and merges the PR
-      via the merge gate, confirms the merge, syncs the deployment
-      checkout and labels the Issue `ai-merged` (terminal, the slot is
-      released); unfixed findings or a behind/conflict gate label the
-      Issue `ai-fix-needed` and the next iteration re-runs the same
-      independent review;
-    - an open PR with `ai-in-progress` -> repair the lost transition to
-      `ai-pr-opened`, then review immediately;
-    - the human acceptance gate (Issue #763, `human_review_gate: true`):
-      while the checklist's column 2 is non-empty and no human has
-      applied `ai-human-review`, the round ends BEFORE any review
-      session — the waiting primitive returns the ticket to `ai-ready`
-      (the opened-PR anchor stays), the wait returns and the slot is
-      released; the next tick re-checks with one label read. The wait
-      never consumes the review-round budget;
-    - any other unrecoverable label inconsistency -> mark the Issue
-      `ai-blocked` and release the slot. It must never hold the slot by
-      polling forever.
-
-    CI status is included in every open-PR heartbeat so pending and failed
-    checks remain visible while the review gate is being reached.
+      marked `ai-blocked` (removing `ai-pr-opened`/`ai-fix-needed`)
+      with a failure comment carrying the run marker. An EXTERNAL
+      takeover is the exception (Issue #608): the contributor withdrew
+      the PR or a maintainer rejected it — that is the 放弃/不可修
+      fallback, so the Issue is requeued to `ai-ready` and the next
+      claim redoes the fix internally;
+    - CI pending on the open PR -> one `delivery_ci_pending` journal
+      line, then return: "pending" is a state, not a sleep. The next
+      tick re-reads it with one PR call (under the gh read retry and
+      rate-limit guards); no label changes, no round consumed;
+    - otherwise -> ONE review round (`_run_review_round`): the label
+      read/repair, the resumable gate, the human acceptance gate
+      (Issue #763, the waiting primitive returns the ticket to
+      `ai-ready` while column 2 is non-empty), the independent review
+      of the frozen PR — the only blocking phase, a Pi subprocess —
+      and the merge gate, whose own intermediate states (pending CI,
+      UNKNOWN mergeability) defer the merge to a later tick the same
+      way. Findings or a failed gate leave `ai-fix-needed`; the next
+      tick resumes the same run, branch, worktree and PR.
     """
     number = int(issue["number"])
     # Issue #100: the progress comment's issue line shows the number
@@ -7756,143 +7690,148 @@ def wait_for_delivery(pr_url: str, issue: dict, config: RunnerConfig,
         source_repo=source_repo, role=ROLE_REVIEW,
     )
 
-    while True:
-        state, ci_checks = pr_delivery_status(pr_url, source_repo)
-        if state == "OPEN":
-            event(
-                "delivery_ci", issue=number, pr=pr_url,
-                checks=",".join(ci_checks) or "none",
+    state, rollup = pr_delivery_rollup(pr_url, source_repo)
+    if state == "OPEN":
+        event(
+            "delivery_ci", issue=number, pr=pr_url,
+            checks=",".join(_check_summaries(rollup)) or "none",
+        )
+    if state == "MERGED":
+        event(
+            "delivery_merged", issue=number, pr=pr_url,
+        )
+        if external_takeover:
+            # Issue #608: merging the external PR closes the triage
+            # Issue (the PR body has no `Fixes #N` for it).
+            _close_external_triage_issue(
+                number, source_repo, pr_url, marker, run_id,
             )
-        if state == "MERGED":
+        return
+    if state == "CLOSED":
+        # The current labels are read ONCE before the transition:
+        # the terminal patch clears every delivery-state label that
+        # is present (`ai-pr-opened`, and `ai-fix-needed` when the
+        # PR was closed while awaiting the next review session).
+        labels = issue_labels(number, source_repo)
+        if external_takeover:
+            # Issue #608: the external PR was closed without a merge
+            # (contributor withdrew, or a maintainer rejected it) —
+            # the 放弃/不可修 fallback. The Issue returns to the
+            # ready queue and the next claim redoes the fix
+            # internally; the closed PR keeps the supersession story
+            # in its thread.
             event(
-                "delivery_merged", issue=number, pr=pr_url,
+                "external_takeover_closed", issue=number, pr=pr_url,
             )
-            if external_takeover:
-                # Issue #608: merging the external PR closes the triage
-                # Issue (the PR body has no `Fixes #N` for it).
-                _close_external_triage_issue(
-                    number, source_repo, pr_url, marker, run_id,
-                )
-            return
-        if state == "CLOSED":
-            # The current labels are read ONCE before the transition:
-            # the terminal patch clears every delivery-state label that
-            # is present (`ai-pr-opened`, and `ai-fix-needed` when the
-            # PR was closed while awaiting the next review session).
-            labels = issue_labels(number, source_repo)
-            if external_takeover:
-                # Issue #608: the external PR was closed without a merge
-                # (contributor withdrew, or a maintainer rejected it) —
-                # the 放弃/不可修 fallback. The Issue returns to the
-                # ready queue and the next claim redoes the fix
-                # internally; the closed PR keeps the supersession story
-                # in its thread.
-                event(
-                    "external_takeover_closed", issue=number, pr=pr_url,
-                )
-                apply_label_patch(
-                    number, repo=source_repo, event=EVENT_REQUEUE,
-                    current_labels=labels,
-                )
-                body = (
-                    f"{marker}\n"
-                    f"Orbi: the external PR {pr_url} was closed without "
-                    f"a merge; the triage Issue #{number} returns to the "
-                    "ready queue and the next claim delivers the fix "
-                    f"internally (run_id={run_id})"
-                )
-                comment_issue(number, repo=source_repo, body=body)
-                # The supersession is explained on the closed PR thread
-                # too: the contributor watches their PR, never the
-                # triage Issue (docs/contributing.mdx, Issue #608).
-                comment_pr(_pr_number(pr_url), repo=source_repo, body=body)
-                return
-            event(
-                "delivery_closed_unmerged", issue=number, pr=pr_url,
-            )
-            # The blocked patch leaves the terminal state `ai-blocked`
-            # alone.
             apply_label_patch(
-                number, repo=source_repo, event=EVENT_BLOCKED,
+                number, repo=source_repo, event=EVENT_REQUEUE,
                 current_labels=labels,
             )
             body = (
-                f"Orbi failed: PR {pr_url} was closed without "
-                "a merge; the delivery is terminally failed"
+                f"{marker}\n"
+                f"Orbi: the external PR {pr_url} was closed without "
+                f"a merge; the triage Issue #{number} returns to the "
+                "ready queue and the next claim delivers the fix "
+                f"internally (run_id={run_id})"
             )
-            if marker:
-                body = f"{marker}\n{body}"
             comment_issue(number, repo=source_repo, body=body)
-            if run_id:
-                # Issue #79: the blocked-scene progress publishing is
-                # bypass — a 404 here must not escape the wait loop
-                # (the terminal bookkeeping above already completed and
-                # the slot must be released).
-                publish(
-                    action=lambda: ProgressPublisher(
-                        number, source_repo, run_id,
-                        run_command=run_command,
-                    ).milestone(
-                        f"blocked: PR {pr_url} was closed without a "
-                        "merge; the delivery is terminally failed"
-                    ),
-                )
-                # The blocked scene carries the actual role and the
-                # completed review rounds (review round 2, PR #42):
-                # Issue #82 — both opened-PR states are review states
-                # (the review session fixes findings in the same
-                # session), so the role is always `review`, and the
-                # trusted review-round comments bound the round count
-                # (GitHub is the only state store).
-                blocked_round = review_rounds_so_far(
-                    issue_comments(number, repo=source_repo),
-                )
-                # The tracked progress comment becomes the blocked scene
-                # (Issue #18): the same terminal body the other failure
-                # paths write, with the next-step reason.
-                publish(
-                    action=lambda: _finish_progress(
-                        number, run_id, source_repo, None, None,
-                        pr_url,
-                        f"PR {pr_url} was closed without a merge; the "
-                        "delivery is terminally failed",
-                        "investigate why the PR was closed and re-open "
-                        "the delivery or start a fresh run on the "
-                        "Issue",
-                        title=title,
-                        outcome="blocked",
-                        role=ROLE_REVIEW, review_round=blocked_round,
-                        priority=priority,
-                    ),
-                )
+            # The supersession is explained on the closed PR thread
+            # too: the contributor watches their PR, never the
+            # triage Issue (docs/contributing.mdx, Issue #608).
+            comment_pr(_pr_number(pr_url), repo=source_repo, body=body)
             return
-        # Issue #289: one OPEN round — the label read/repair, the
-        # resumable gate, one independent review of the frozen PR and
-        # the whole failure classification — lives in
-        # `_run_review_round`. True (merged this round) and None (a
-        # terminal state was already handled: ai-blocked, or the
-        # recoverable ai-fix-needed scene the next tick resumes) both
-        # end the delivery here; only False (findings) keeps polling.
-        merged_this_round = _run_review_round(
-            pr_url, issue, config, source_repo,
+        event(
+            "delivery_closed_unmerged", issue=number, pr=pr_url,
         )
-        if merged_this_round is not False:
-            if merged_this_round is True and external_takeover:
-                # Issue #726: the SUCCESSFUL auto-merge path must close
-                # the triage Issue exactly like the MERGED polling branch
-                # above — previously only the "someone else merged" poll
-                # reached it, so every auto-merged external contribution
-                # leaked a zombie triage ticket.
-                _close_external_triage_issue(
-                    number, source_repo, pr_url, marker, run_id,
-                )
-            return
-        # Back to the next review round: yield the cadence first
-        # (Issue #588). This tail previously had NO sleep — a red CI
-        # or unfixed findings re-ran the full reviewer session
-        # back-to-back in a hot loop while holding the slot, and
-        # poll_interval was a dead parameter.
-        time.sleep(poll_interval)
+        # The blocked patch leaves the terminal state `ai-blocked`
+        # alone.
+        apply_label_patch(
+            number, repo=source_repo, event=EVENT_BLOCKED,
+            current_labels=labels,
+        )
+        body = (
+            f"Orbi failed: PR {pr_url} was closed without "
+            "a merge; the delivery is terminally failed"
+        )
+        if marker:
+            body = f"{marker}\n{body}"
+        comment_issue(number, repo=source_repo, body=body)
+        if run_id:
+            # Issue #79: the blocked-scene progress publishing is
+            # bypass — a 404 here must not escape the step (the
+            # terminal bookkeeping above already completed and the
+            # slot must be released).
+            publish(
+                action=lambda: ProgressPublisher(
+                    number, source_repo, run_id,
+                    run_command=run_command,
+                ).milestone(
+                    f"blocked: PR {pr_url} was closed without a "
+                    "merge; the delivery is terminally failed"
+                ),
+            )
+            # The blocked scene carries the actual role and the
+            # completed review rounds (review round 2, PR #42):
+            # Issue #82 — both opened-PR states are review states
+            # (the review session fixes findings in the same
+            # session), so the role is always `review`, and the
+            # trusted review-round comments bound the round count
+            # (GitHub is the only state store).
+            blocked_round = review_rounds_so_far(
+                issue_comments(number, repo=source_repo),
+            )
+            # The tracked progress comment becomes the blocked scene
+            # (Issue #18): the same terminal body the other failure
+            # paths write, with the next-step reason.
+            publish(
+                action=lambda: _finish_progress(
+                    number, run_id, source_repo, None, None,
+                    pr_url,
+                    f"PR {pr_url} was closed without a merge; the "
+                    "delivery is terminally failed",
+                    "investigate why the PR was closed and re-open "
+                    "the delivery or start a fresh run on the "
+                    "Issue",
+                    title=title,
+                    outcome="blocked",
+                    role=ROLE_REVIEW, review_round=blocked_round,
+                    priority=priority,
+                ),
+            )
+        return
+    # Issue #788: the pre-review CI gate. Pending checks defer the whole
+    # delivery to the next tick — the review never starts against a head
+    # whose CI has not concluded, so no Pi session is spent on a state
+    # that a later read replaces. A failed check still runs the review:
+    # the review session is the fixer (Issue #82), and the merge gate
+    # re-reads the CI of the verdict's head one-shot.
+    pending, _failed = _classify_rollup(rollup)
+    if pending:
+        event(
+            "delivery_ci_pending", issue=number, pr=pr_url,
+            pending="; ".join(pending),
+        )
+        return
+    # Issue #289: one OPEN round — the label read/repair, the
+    # resumable gate, one independent review of the frozen PR and
+    # the whole failure classification — lives in
+    # `_run_review_round`. True (merged this round), False (findings or
+    # a deferred merge, the next tick resumes) and None (a terminal
+    # state was already handled: ai-blocked, or the recoverable
+    # ai-fix-needed scene the next tick resumes) all end the step here;
+    # the next tick's resume scan runs the next step.
+    merged_this_round = _run_review_round(
+        pr_url, issue, config, source_repo,
+    )
+    if merged_this_round is True and external_takeover:
+        # Issue #726: the SUCCESSFUL auto-merge path must close
+        # the triage Issue exactly like the MERGED branch
+        # above — previously only the "someone else merged" poll
+        # reached it, so every auto-merged external contribution
+        # leaked a zombie triage ticket.
+        _close_external_triage_issue(
+            number, source_repo, pr_url, marker, run_id,
+        )
 
 
 def _preflight(config: RunnerConfig) -> None:
@@ -8133,14 +8072,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if repo_policy is not None:
             config = apply_repo_policy(config, source_repo, repo_policy)
-        result = None
         if scene is not None:
             # An open PR is a recoverable review state: resume the
             # same run on the same branch, worktree and PR (Issue #45).
             # Bind the scene's run id first so every journal line and
             # GitHub comment of the resumed delivery carries it
             # (Issue #41). Both opened-PR states go straight to the
-            # delivery wait: `ai-pr-opened` awaits review, and
+            # delivery step: `ai-pr-opened` awaits review, and
             # `ai-fix-needed` awaits the next review session —
             # Issue #82: the review session itself fixes findings in the
             # same session, so there is no cold-start fixer to run
@@ -8164,7 +8102,7 @@ def main(argv: list[str] | None = None) -> int:
             # Issue #89: verify the open PR BEFORE any git/Pi mutation
             # (head repo, base, run marker, exact URL of the recovered
             # scene — the pre-#82 resume_delivery check, restored):
-            # the wait receives the VERIFIED URL, never the comment
+            # the step receives the VERIFIED URL, never the comment
             # string, so a comment can never steer the runner into the
             # wrong PR (Issue #45). A mismatch is terminal: the Issue
             # is marked ai-blocked and the tick stops.
@@ -8190,20 +8128,20 @@ def main(argv: list[str] | None = None) -> int:
             # do not repeat task-type predicates here (Issue #281).
             if result.kind not in ("pr", "external-pr"):
                 return 0
-            pr_url = result.url
-            assert pr_url is not None
-        # The delivery is not done when the PR is open: hold the slot
-        # through review -> merge and release it only after the PR is
-        # merged or terminally failed (Issue #39). An external takeover
-        # (Issue #608) closes the triage Issue itself after the merge —
-        # the contributor's PR carries no `Fixes #N` for it. A resumed
-        # delivery derives the scene from its trusted comment, which
-        # carries the external marker for an external takeover.
-        external_takeover = (
-            result.kind == "external-pr" if result is not None
-            else bool(scene.get("external"))
-        )
-        wait_for_delivery(
+            # Issue #788: the delivery's PR is open and its scene comment
+            # is written — the tick ends here and releases the slot. The
+            # review is the next tick's RESUME_REVIEW step (the waiting
+            # primitive generalized): the resume path is the ONLY review
+            # path, a crash loses at most the current Pi session, and the
+            # slot is never held waiting for CI or mergeability.
+            return 0
+        # An external takeover (Issue #608) closes the triage Issue
+        # itself after the merge — the contributor's PR carries no
+        # `Fixes #N` for it. The resumed delivery derives the scene from
+        # its trusted comment, which carries the external marker for an
+        # external takeover.
+        external_takeover = bool(scene.get("external"))
+        delivery_step(
             pr_url, issue, config, source_repo,
             external_takeover=external_takeover,
         )

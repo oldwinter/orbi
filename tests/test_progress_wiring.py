@@ -1598,8 +1598,8 @@ def _run_review_and_merge(monkeypatch, tmp_path, *, verdict,
     })
     monkeypatch.setattr(runner, "run_review", lambda *a, **k: verdict)
     # CI-as-gate is exercised in test_review_merge; keep this fixture focused
-    # on ProgressPublisher's bypass behavior.
-    monkeypatch.setattr(runner, "check_review_ci", lambda *a, **k: "ci ok")
+    # on ProgressPublisher's bypass behavior. Issue #788: the gate's CI read
+    # is one-shot inside merge_gate itself, so no separate stub is needed.
     edits = []
     monkeypatch.setattr(seam, "edit_issue",
         lambda number, **kwargs: edits.append(kwargs),
@@ -1627,6 +1627,11 @@ def _run_review_and_merge(monkeypatch, tmp_path, *, verdict,
         runner.RunnerConfig(repo_dir=tmp_path, base_branch="main", base_sha="b1", run_id="a1b2c3d4"),
         "xqliu/orbi", 18, title="Publish progress",
         priority="normal",
+        scene={
+            "run_id": "a1b2c3d4", "base_branch": "main", "base_sha": "b1",
+            "pr_url": "u", "external": "", "review_round": 0,
+            "scene_at": None,
+        },
     )
     return merged, edits, calls, posted
 
@@ -1767,10 +1772,10 @@ def test_review_and_merge_findings_publish_failure_does_not_block_issue(
     assert attempted_patches, "the findings finish was not attempted"
 
 
-# --- wait_for_delivery terminal failures stay observable ----------------------
+# --- delivery_step terminal failures stay observable ----------------------
 
 
-def test_wait_for_delivery_closed_unmerged_posts_blocked_milestone(
+def test_delivery_step_closed_unmerged_posts_blocked_milestone(
     monkeypatch,
 ):
     pr_url = "https://github.com/owner/repo/pull/46"
@@ -1791,7 +1796,7 @@ def test_wait_for_delivery_closed_unmerged_posts_blocked_milestone(
     monkeypatch.setattr(seam, "edit_issue", Mock())
     monkeypatch.setattr(seam, "comment_issue", Mock())
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         pr_url, {"number": 39, "title": "t", "body": ""}, {}, "owner/repo",
     )
     posted_bodies = [
@@ -1831,7 +1836,7 @@ def test_wait_for_delivery_closed_unmerged_posts_blocked_milestone(
     assert "- review/fix round: 2" in blocked
 
 
-def test_wait_for_delivery_review_failure_finishes_progress_comment_with_blocked_scene(
+def test_delivery_step_review_failure_finishes_progress_comment_with_blocked_scene(
     monkeypatch,
 ):
     """A review that cannot run is a terminal failure: the Issue is
@@ -1856,7 +1861,7 @@ def test_wait_for_delivery_review_failure_finishes_progress_comment_with_blocked
     monkeypatch.setattr(seam, "edit_issue", Mock())
     monkeypatch.setattr(seam, "comment_issue", Mock())
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         pr_url, {"number": 39, "title": "t", "body": ""},
         runner.RunnerConfig(repo_dir=Path("/srv/repo")), "owner/repo",
     )
@@ -1900,7 +1905,7 @@ def test_wait_for_delivery_review_failure_finishes_progress_comment_with_blocked
 
 def _wait_delivery_fake_gh(monkeypatch, *, pr_state, labels, comments,
                            fail_progress, api_calls, posted):
-    """Fake gh for `wait_for_delivery`: fixed PR state/labels/comments,
+    """Fake gh for `delivery_step`: fixed PR state/labels/comments,
     and a progress API that raises when `fail_progress` matches.
     `api_calls` records every attempt (including the 404'd ones);
     `posted` records only the bodies that were actually posted."""
@@ -1970,7 +1975,7 @@ def _blocked_progress_failures(command) -> bool:
     )
 
 
-def test_wait_for_delivery_closed_unmerged_progress_failure_still_releases(
+def test_delivery_step_closed_unmerged_progress_failure_still_releases(
     monkeypatch, caplog,
 ):
     """Issue #79: the PR is closed without a merge and the blocked-scene
@@ -2001,7 +2006,7 @@ def test_wait_for_delivery_closed_unmerged_progress_failure_still_releases(
 
     # No exception: the loop completed the terminal failure and the
     # slot is released by the caller.
-    runner.wait_for_delivery(
+    runner.delivery_step(
         "https://github.com/owner/repo/pull/46",
         {"number": 39, "title": "t", "body": ""}, {}, "owner/repo",
     )
@@ -2048,7 +2053,7 @@ def test_wait_for_delivery_closed_unmerged_progress_failure_still_releases(
     assert patches, "the blocked-scene finish was not attempted"
 
 
-def test_wait_for_delivery_review_failure_progress_failure_still_releases(
+def test_delivery_step_review_failure_progress_failure_still_releases(
     monkeypatch, caplog,
 ):
     """Issue #79: the independent review cannot run (no trusted scene)
@@ -2079,7 +2084,7 @@ def test_wait_for_delivery_review_failure_progress_failure_still_releases(
 
     # No exception: the loop completed the terminal failure and the
     # slot is released by the caller.
-    runner.wait_for_delivery(
+    runner.delivery_step(
         "https://github.com/owner/repo/pull/46",
         {"number": 39, "title": "t", "body": ""},
         runner.RunnerConfig(repo_dir=Path("/srv/repo")), "owner/repo",
@@ -2232,7 +2237,7 @@ def test_process_issue_external_pr_closed_claims_fresh(monkeypatch, tmp_path):
 
 
 def _external_wait_fake(monkeypatch, *, pr_state, fail_progress=None):
-    """wait_for_delivery fake for the external takeover scenes: the PR
+    """delivery_step fake for the external takeover scenes: the PR
     state drives the MERGED / CLOSED branches; issue close and comments
     are recorded."""
     close_calls = []
@@ -2250,13 +2255,13 @@ def _external_wait_fake(monkeypatch, *, pr_state, fail_progress=None):
     return close_calls, comments
 
 
-def test_wait_for_delivery_external_merge_closes_the_triage_issue(monkeypatch):
+def test_delivery_step_external_merge_closes_the_triage_issue(monkeypatch):
     """Issue #608: merging the external PR closes the triage Issue (the
     PR body carries no `Fixes #N` for it) — 合并外部 PR 即关票."""
     close_calls, _ = _external_wait_fake(monkeypatch, pr_state="MERGED")
     monkeypatch.setattr(seam, "comment_issue", Mock())
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         "https://github.com/xqliu/orbi/pull/592",
         {"number": 608, "title": "t", "body": ""},
         runner.RunnerConfig(repo_dir=Path("/srv/repo"), base_branch="main"),
@@ -2270,7 +2275,7 @@ def test_wait_for_delivery_external_merge_closes_the_triage_issue(monkeypatch):
     assert "external PR" in body
 
 
-def test_wait_for_delivery_external_close_failure_never_rewrites(monkeypatch,
+def test_delivery_step_external_close_failure_never_rewrites(monkeypatch,
                                                                  caplog):
     """The merge already landed: a failed close/comment is logged
     (bypass) — the delivered fact is never rewritten as a failure."""
@@ -2285,7 +2290,7 @@ def test_wait_for_delivery_external_close_failure_never_rewrites(monkeypatch,
     monkeypatch.setattr(seam, "comment_issue", Mock())
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
     caplog.set_level("ERROR")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         "https://github.com/xqliu/orbi/pull/592",
         {"number": 608, "title": "t", "body": ""},
         runner.RunnerConfig(repo_dir=Path("/srv/repo"), base_branch="main"),
@@ -2294,7 +2299,7 @@ def test_wait_for_delivery_external_close_failure_never_rewrites(monkeypatch,
     assert "external_takeover_close_failed" in caplog.text
 
 
-def test_wait_for_delivery_external_closed_requeues_for_internal_redo(
+def test_delivery_step_external_closed_requeues_for_internal_redo(
     monkeypatch,
 ):
     """Issue #608: the external PR was closed without a merge (the
@@ -2320,7 +2325,7 @@ def test_wait_for_delivery_external_closed_requeues_for_internal_redo(
         ),
     )
     monkeypatch.setattr(journal, "_CURRENT_RUN_ID", "a1b2c3d4")
-    runner.wait_for_delivery(
+    runner.delivery_step(
         "https://github.com/xqliu/orbi/pull/592",
         {"number": 608, "title": "t", "body": ""},
         runner.RunnerConfig(repo_dir=Path("/srv/repo"), base_branch="main"),

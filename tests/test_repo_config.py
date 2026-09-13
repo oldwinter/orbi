@@ -715,7 +715,7 @@ def test_main_applies_repo_base_branch_before_resume_verification(
 
     monkeypatch.setattr(runner, "verify_resumed_pr", fake_verify)
     monkeypatch.setattr(
-        runner, "wait_for_delivery",
+        runner, "delivery_step",
         lambda *a, **k: seen.setdefault("wait_base", a[2].base_branch),
     )
 
