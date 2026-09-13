@@ -2199,7 +2199,7 @@ def test_create_worktree_reuses_existing_remote_branch(monkeypatch, tmp_path):
     assert calls == [
         (["git", "fetch", "origin", "orbi/owner-repo-issue-3"], {"cwd": tmp_path, "timeout": journal.GIT_NETWORK_TIMEOUT_SECONDS}),
         (["git", "branch", "--list", "orbi/owner-repo-issue-3"], {"cwd": tmp_path}),
-        (["git", "worktree", "add", "-b", "orbi/owner-repo-issue-3", str(path), "origin/orbi/owner-repo-issue-3"], {"cwd": tmp_path}),
+        (["git", "worktree", "add", "--force", "-b", "orbi/owner-repo-issue-3", str(path), "origin/orbi/owner-repo-issue-3"], {"cwd": tmp_path}),
     ]
 
 
@@ -2252,7 +2252,7 @@ def test_create_worktree_branch_override_checks_out_the_external_head(
     assert calls == [
         (["git", "fetch", "origin", "fix/outer"], {"cwd": tmp_path, "timeout": journal.GIT_NETWORK_TIMEOUT_SECONDS}),
         (["git", "branch", "--list", "fix/outer"], {"cwd": tmp_path}),
-        (["git", "worktree", "add", "-b", "fix/outer", str(path), "origin/fix/outer"], {"cwd": tmp_path}),
+        (["git", "worktree", "add", "--force", "-b", "fix/outer", str(path), "origin/fix/outer"], {"cwd": tmp_path}),
     ]
 
 
@@ -17461,7 +17461,11 @@ def make_release_process_env(monkeypatch, *, body=RELEASE_DECLARATION_BODY,
                         lambda *a: Path("/wt"))
     monkeypatch.setattr(seam, "create_release_worktree",
                         lambda *a: Path("/wt"))
-    monkeypatch.setattr(release, "ProgressPublisher", Mock())
+    publisher_class = Mock()
+    # Issue #811: the milestone-capturing tests read the publisher mock
+    # (`ProgressPublisher.return_value`) through the returned state.
+    state["publisher"] = publisher_class.return_value
+    monkeypatch.setattr(release, "ProgressPublisher", publisher_class)
     monkeypatch.setattr(seam, "_safe_publish", lambda **k: None)
     monkeypatch.setattr(seam, "set_active_run",
                         lambda *a: state["active_runs"].append(a))
@@ -17716,11 +17720,73 @@ def test_process_release_success_end_to_end(monkeypatch):
     assert "<!-- orbi:run=a1b2c3d4 -->" in comment_kwargs["body"]
     assert "run_id=a1b2c3d4" in comment_kwargs["body"]
     assert "https://github.com/o/r/releases/tag/v0.3.0" in comment_kwargs["body"]
+    # Issue #811 regression: the post-gate comments keep the full field
+    # set — the frozen branch and its commit stay on the success record
+    # (rendered by `field_block` as `- key: value` lines).
+    assert "- base_branch: main" in comment_kwargs["body"]
+    assert "- base_sha: abc123" in comment_kwargs["body"]
     assert "PR #123 merged (mergeCommit=aaa111)" in comment_kwargs["body"]
     assert "Issue #124 closed" in comment_kwargs["body"]
     assert "docs release notes for v0.3.0 synced to base" \
         in comment_kwargs["body"]
     assert state["run_ids"][0] == "a1b2c3d4"
+
+
+def test_process_release_started_milestone_carries_base_branch(monkeypatch):
+    """Issue #811: the `**Orbi release started**` milestone names the
+    branch being frozen. The journal refactor deleted the middle
+    `run_info` assignment, so the milestone fell back to the claim-time
+    value (`run_id`/`priority` only) and a multi-branch repo's release
+    notification could no longer prove which line it froze. The
+    milestone is published BEFORE `freeze_base`, so it carries
+    `base_branch` but not yet `base_sha`."""
+    state = make_release_process_env(monkeypatch)
+
+    def run_publish_actions(**kwargs):
+        kwargs["action"]()
+
+    monkeypatch.setattr(seam, "_safe_publish", run_publish_actions)
+    issue = {"number": 99, "title": "Release v0.3.0",
+             "body": RELEASE_DECLARATION_BODY,
+             "labels": [{"name": "ai-ready"}, {"name": "ai-release"}]}
+    release.process_release(
+        issue, runner.RunnerConfig(repo_dir=Path("/r"), base_branch="main"), "o/r",
+    )
+    started = [
+        call.args[0]
+        for call in state["publisher"].milestone.call_args_list
+        if "Orbi release started" in call.args[0]
+    ]
+    assert started == [
+        "**Orbi release started**: base_branch=main "
+        "run_id=a1b2c3d4 priority=normal"
+    ]
+
+
+def test_process_release_failure_comment_carries_base_branch(monkeypatch):
+    """Issue #811: a release failing after the declaration parse (here:
+    `freeze_base`) posts the terminal failure comment WITH the declared
+    `base_branch` — the same middle `run_info` value the started
+    milestone reads."""
+    state = make_release_process_env(monkeypatch)
+
+    def broken_freeze(repo_dir, base_branch):
+        raise RuntimeError("freeze failed")
+
+    monkeypatch.setattr(seam, "freeze_base", broken_freeze)
+    issue = {"number": 99, "title": "Release v0.3.0",
+             "body": RELEASE_DECLARATION_BODY,
+             "labels": [{"name": "ai-ready"}, {"name": "ai-release"}]}
+    result = release.process_release(
+        issue, runner.RunnerConfig(repo_dir=Path("/r"), base_branch="main"), "o/r",
+    )
+    assert result == ""
+    (comment_number, comment_kwargs), = state["comments"]
+    assert comment_number == 99
+    assert "Orbi release failed (ai-blocked)" in comment_kwargs["body"]
+    assert "run_id=a1b2c3d4" in comment_kwargs["body"]
+    assert "base_branch: main" in comment_kwargs["body"]
+    assert "failure: freeze failed" in comment_kwargs["body"]
 
 
 def test_process_release_refreshes_deployment_cli_after_version_bump(
@@ -18051,9 +18117,52 @@ def test_process_release_milestone_failure_keeps_release_successful(monkeypatch)
                                        "remove": "ai-in-progress"})
     (comment_number, comment_kwargs), = state["comments"]
     assert "Orbi released" in comment_kwargs["body"]
-    assert "milestone evidence unavailable" in comment_kwargs["body"]
+    # Issue #808: the wording states the third criterion's miss plainly —
+    # the milestone was NOT closed — instead of the opaque
+    # "milestone evidence unavailable".
+    assert "milestone NOT closed" in comment_kwargs["body"]
     assert "Milestone #5" in comment_kwargs["body"]
     assert "#101" in comment_kwargs["body"]
+
+
+def test_process_release_closes_milestone_despite_stale_release_ticket(monkeypatch):
+    """Issue #808 全链路：成功路径刚关掉 release 票（Issue #99），milestone
+    open 列表仍列出它自己（索引未刷新）——release 票被确定性排除，
+    milestone 正常关闭，评论证据注明排除。v0.2.0 的随机失败就此消除。"""
+    state = make_release_process_env(monkeypatch)
+    harness = runner.run_command
+    # Same full-command contract the seam-level tests pin
+    # (MILESTONE_ISSUES_COMMAND); the dispatch matches the whole argv so
+    # the patch-ratchet's command[:N] pattern (Issue #789) stays frozen.
+    stale_index_command = [
+        "gh", "api", "repos/o/r/issues?milestone=5&state=open&per_page=100",
+        "--paginate", "--slurp",
+    ]
+
+    def stale_release_ticket(command, **kwargs):
+        if command == stale_index_command:
+            return json.dumps(
+                [[{"number": 99, "title": "Release v0.3.0"}]],
+            )
+        return harness(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", stale_release_ticket)
+    monkeypatch.setattr(seam, "run_command", stale_release_ticket)
+    issue = {"number": 99, "title": "Release v0.3.0",
+             "body": RELEASE_DECLARATION_BODY,
+             "labels": [{"name": "ai-ready"}, {"name": "ai-release"}]}
+    result = release.process_release(
+        issue, runner.RunnerConfig(repo_dir=Path("/r"), base_branch="main"), "o/r",
+    )
+    assert result == "https://github.com/o/r/releases/tag/v0.3.0"
+    commands = [c for c, _ in state["commands"]]
+    assert ["gh", "api", "repos/o/r/milestones/5",
+            "--method", "PATCH", "-f", "state=closed"] in commands
+    assert state["edits"][-1] == (99, {"repo": "o/r", "add": "ai-merged",
+                                       "remove": "ai-in-progress"})
+    (comment_number, comment_kwargs), = state["comments"]
+    assert "closed after release v0.3.0" in comment_kwargs["body"]
+    assert "release ticket #99 excluded" in comment_kwargs["body"]
 
 
 def test_process_release_docs_sync_failure_fails_fast_and_blocks(monkeypatch):
@@ -18405,6 +18514,81 @@ def test_close_release_milestone_fails_after_the_backoff_is_exhausted(monkeypatc
     assert "https://github.com/o/r/milestone/5" in str(excinfo.value)
     assert "#101" in str(excinfo.value)
     # Bounded: the delays are exhausted, then the gate fires.
+    assert sleeps == [1.0, 2.0, 4.0]
+    assert not [c for c in calls if "PATCH" in c]
+    with pytest.raises(AssertionError, match="unexpected command"):
+        fake_run(["unexpected"])
+
+
+def test_close_release_milestone_ignores_the_release_ticket_itself(monkeypatch):
+    """Issue #808: 查到的 open issues 只有 release 票自己时视为已满足——
+    票正被本次发版关闭，未刷新的 issue 索引把它算成未完成工作是秒级竞态
+    （v0.2.0 因此没关 milestone）。确定性排除后不睡退避、不等索引刷新，
+    直接关闭；成功证据注明排除，让用户看得见这次裁决。"""
+    calls = []
+    sleeps: list[float] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command == MILESTONE_LIST_COMMAND:
+            return json.dumps([[_milestone(5, "v0.3.0", "open", 1)]])
+        if command == MILESTONE_ISSUES_COMMAND:
+            # The release ticket was closed seconds ago; the stale index
+            # still lists it — and nothing else.
+            return json.dumps([[{"number": 99, "title": "Release v0.3.0"}]])
+        if command == ["gh", "api", "repos/o/r/milestones/5",
+                       "--method", "PATCH", "-f", "state=closed"]:
+            return json.dumps(_milestone(5, "v0.3.0", "closed", 0))
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    monkeypatch.setattr("time.sleep", sleeps.append)
+    evidence = release.close_release_milestone(
+        "o/r", "v0.3.0", release_issue=99,
+    )
+    assert "closed after release v0.3.0" in evidence
+    assert "release ticket #99 excluded" in evidence
+    # Deterministic: no backoff waited for the index to refresh — the
+    # race class is eliminated, not papered over with time.
+    assert sleeps == []
+    assert calls[-1] == ["gh", "api", "repos/o/r/milestones/5",
+                         "--method", "PATCH", "-f", "state=closed"]
+    with pytest.raises(AssertionError, match="unexpected command"):
+        fake_run(["unexpected"])
+
+
+def test_close_release_milestone_refuses_real_leftovers_despite_ticket_exclusion(monkeypatch):
+    """Issue #808 验收 2：守卫语义不放宽——release 票自身被排除后仍有
+    真实 open issue 时照样拒绝关闭；错误列出真实遗留（release 票不出现在
+    未完成列表里），并注明本次排除。"""
+    calls = []
+    sleeps: list[float] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command == MILESTONE_LIST_COMMAND:
+            return json.dumps([[_milestone(5, "v0.3.0", "open", 2)]])
+        if command == MILESTONE_ISSUES_COMMAND:
+            return json.dumps([[{"number": 99, "title": "Release v0.3.0"},
+                                {"number": 101, "title": "leftover one"}]])
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    monkeypatch.setattr("time.sleep", sleeps.append)
+    with pytest.raises(RuntimeError, match="Milestone #5") as excinfo:
+        release.close_release_milestone("o/r", "v0.3.0", release_issue=99)
+    message = str(excinfo.value)
+    assert "v0.3.0" in message
+    assert "https://github.com/o/r/milestone/5" in message
+    # The real leftover is named; the release ticket is annotated as
+    # excluded, never listed as unfinished work.
+    assert "#101 leftover one" in message
+    assert "ticket #99 is excluded" in message
+    assert "#99 Release v0.3.0" not in message
+    # The #754 bounded backoff still ran for the non-empty leftovers,
+    # then the gate refused. No close was attempted.
     assert sleeps == [1.0, 2.0, 4.0]
     assert not [c for c in calls if "PATCH" in c]
     with pytest.raises(AssertionError, match="unexpected command"):

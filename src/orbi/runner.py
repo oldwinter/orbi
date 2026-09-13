@@ -362,6 +362,18 @@ class ResumePrClosedError(UnrecoverableDeliveryError):
         self.scene_pr_state = scene_pr_state
 
 
+class ResumeBranchGoneError(UnrecoverableDeliveryError):
+    """The resume worktree is missing AND the delivery branch is gone
+    from the remote (Issue #807).
+
+    The remote state (branch + PR) is the delivery's record; with the
+    branch destroyed there is nothing to recreate the local worktree
+    cache from — an external precondition, terminal (`ai-blocked`).
+    The typed error also tells the resume handler to drop the
+    preserved-objects suffix: nothing is left to preserve.
+    """
+
+
 def is_unrecoverable_failure(exc: BaseException) -> bool:
     """Issue #50: classify one delivery failure.
 
@@ -4412,8 +4424,12 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
     PR, Issue #45). Restored: branch and worktree are DERIVED from the
     configured repo_dir, source repo, Issue number and run id (never
     read from the comment), the scene base must still equal the
-    configured base (Issue #91) and the worktree must exist (Issue #90)
-    — both checked BEFORE any command runs — and the existing
+    configured base (Issue #91) — checked BEFORE any command runs — and
+    a missing worktree is RECREATED from the remote delivery branch
+    (Issue #807: the worktree is a local cache of the remote state —
+    branch + PR live on GitHub — so a sandbox rebuild or a deleted
+    cache is restored instead of looping; only a branch gone from the
+    remote is unrecoverable). The existing
     `verify_pr` then validates exactly one open PR of the derived
     branch in the configured source repo, on the configured base,
     carrying the run marker and the `Fixes` keyword, with the EXACT URL
@@ -4467,11 +4483,38 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
                 "mismatch"
             )
         if not worktree.is_dir():
-            # Issue #90 + #50: a missing worktree is a RECOVERABLE
-            # failure (the branch still exists on the remote and the
-            # worktree can be recreated on the next resume), so the
-            # handler below keeps the Issue in the automatic fix loop.
-            raise RuntimeError(f"worktree missing: {worktree}")
+            # Issue #807: the worktree is a local cache of the remote
+            # delivery state (the branch and the PR live on GitHub), so
+            # a missing directory is recreated from the remote branch
+            # and the resume continues — the recovery the #90/#50
+            # comment promised. Only a branch that is gone from the
+            # remote is unrecoverable: there is nothing left to
+            # recreate from, a human decision.
+            if external:
+                # Issue #608: the takeover branch is the contributor's
+                # head branch — the worktree that carried it is gone,
+                # so the scene PR is the remaining authority.
+                head = json.loads(run_gh_read_command(
+                    ["gh", "pr", "view", str(_pr_number(scene["pr_url"])),
+                     "--repo", source_repo, "--json", "headRefName"],
+                    cwd=config.repo_dir,
+                ))
+                branch = str(head["headRefName"])
+            if not stable_branch_exists(config.repo_dir, branch):
+                raise ResumeBranchGoneError(
+                    f"resume worktree {worktree} is missing and the "
+                    f"delivery branch {branch} no longer exists on "
+                    "origin; there is no remote state to recreate the "
+                    "worktree from, so automatic recovery is impossible"
+                )
+            create_worktree(
+                config.repo_dir, source_repo, number, run_id,
+                scene["base_sha"], existing_branch=True, branch=branch,
+            )
+            event(
+                "worktree_recreated", issue=number, branch=branch,
+                worktree=str(worktree),
+            )
         if external:
             branch = run_command(
                 ["git", "branch", "--show-current"], cwd=worktree,
@@ -4562,7 +4605,11 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
                     f"the resume verification of PR {scene['pr_url']} "
                     f"failed: {_failure_detail(exc)}"
                 ),
+                # Issue #807: the branch-gone scene destroyed the
+                # delivery state — nothing is left to preserve, and the
+                # preserved-objects note would contradict the reason.
                 blocked_suffix=(
+                    "" if isinstance(exc, ResumeBranchGoneError) else
                     f"; the PR, branch {branch} and worktree {worktree} "
                     "are preserved"
                 ),
