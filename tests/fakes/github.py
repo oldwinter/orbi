@@ -79,12 +79,14 @@ class FakeGh:
 
     def add_pr(self, number: int, *, head: str, base: str = "main",
                state: str = "OPEN", oid: str = "0" * 40,
-               url: str | None = None, checks: tuple[dict, ...] = ()) -> None:
+               url: str | None = None, checks: tuple[dict, ...] = (),
+               merged_at: str | None = None) -> None:
         self.prs[number] = {
             "number": number, "state": state, "headRefName": head,
             "baseRefName": base, "headRefOid": oid,
             "url": url or f"https://github.com/{self.repo}/pull/{number}",
             "statusCheckRollup": list(checks), "comments": [],
+            "mergedAt": merged_at,
             "_created": self._next_clock(),
         }
 
@@ -319,6 +321,19 @@ class FakeGh:
                 1, f"gh: Could not resolve to a pull request with the "
                 f"number of {number}."
             )
+        if sub == "comment":
+            flags = self._flags(args[2:])
+            self._known_flags(
+                flags, ("--repo", "--body"), ["gh", "pr", "comment"]
+            )
+            self._repo_or_fail((flags.get("--repo") or [self.repo])[0])
+            pr["comments"].append({
+                "author": {"login": self.login},
+                "authorAssociation": "NONE",
+                "createdAt": self._next_stamp(),
+                "body": flags["--body"][0],
+            })
+            return ""
         flags = self._flags(args[2:])
         self._known_flags(flags, ("--repo", "--json"), ["gh", "pr", "view"])
         self._repo_or_fail((flags.get("--repo") or [self.repo])[0])

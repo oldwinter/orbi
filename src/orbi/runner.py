@@ -342,6 +342,23 @@ class ReviewRoundsExhausted(UnrecoverableDeliveryError):
     """
 
 
+class ResumePrClosedError(UnrecoverableDeliveryError):
+    """The resumed delivery's scene PR is no longer open (Issue #494).
+
+    Carries the scene PR's GitHub state (`CLOSED` or `MERGED`) so the
+    resume handler routes the ALREADY-DECIDED fact — a merged PR
+    delivered the fix, a closed external PR was withdrawn — instead of
+    blocking every closed scene alike. The routing lives with the
+    caller because only it knows the delivery's takeover flag; the
+    typed error keeps the zero-open-PR classification testable at the
+    `verify_pr` seam.
+    """
+
+    def __init__(self, message: str, *, scene_pr_state: str) -> None:
+        super().__init__(message)
+        self.scene_pr_state = scene_pr_state
+
+
 def is_unrecoverable_failure(exc: BaseException) -> bool:
     """Issue #50: classify one delivery failure.
 
@@ -3898,10 +3915,15 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
                         issue=issue, branch=branch, pr=expected_url,
                         state=scene_state,
                     )
-                    raise UnrecoverableDeliveryError(
+                    # The typed error carries the state so the resume
+                    # handler routes the decided fact (delivered /
+                    # withdrawn) instead of blocking (Issue #788: the
+                    # resumed path is the ONLY path, so these scenes are
+                    # normal between-ticks states).
+                    raise ResumePrClosedError(
                         f"resume PR is {scene_state.lower()} and cannot be "
-                        f"resumed or replaced: {evidence}; a human must "
-                        "decide whether to reopen or create a new delivery"
+                        f"resumed or replaced: {evidence}",
+                        scene_pr_state=scene_state,
                     )
                 event(
                     "resume_pr_missing", level=logging.ERROR,
@@ -4472,6 +4494,41 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
         )
         return verified_url
     except Exception as exc:
+        if isinstance(exc, ResumePrClosedError):
+            # Issue #788: the resumed path IS the path, so a scene PR
+            # that is no longer open is a NORMAL between-ticks state,
+            # not a crash leftover. The fact is already decided on
+            # GitHub — route it here, where the takeover flag is known;
+            # blocking every closed scene alike would make the #608
+            # requeue and the merged-delivery close unreachable (they
+            # used to be the old wait loop's in-process branches).
+            if external and exc.scene_pr_state == "MERGED":
+                event(
+                    "delivery_merged", issue=number, pr=scene["pr_url"],
+                )
+                _close_external_triage_issue(
+                    number, source_repo, scene["pr_url"],
+                    run_marker(run_id), run_id,
+                )
+                raise
+            if external:
+                event(
+                    "external_takeover_closed",
+                    issue=number, pr=scene["pr_url"],
+                )
+                _requeue_closed_external_takeover(
+                    number, source_repo, scene["pr_url"],
+                    run_marker(run_id), run_id,
+                )
+                raise
+            if exc.scene_pr_state == "MERGED":
+                # A human merged the delivery PR (or a crash landed
+                # between the merge and the label write): the `Fixes #N`
+                # keyword closed the Issue natively — nothing to decide.
+                event(
+                    "delivery_merged", issue=number, pr=scene["pr_url"],
+                )
+                raise
         LOGGER.exception(
             "issue=%s resume_pr_verification_failed pr=%s branch=%s",
             number, scene["pr_url"], branch,
@@ -7598,6 +7655,34 @@ def _run_review_round(
     return False
 
 
+def _requeue_closed_external_takeover(
+    number: int, source_repo: str, pr_url: str, marker: str, run_id: str,
+) -> None:
+    """The #608 放弃/不可修 fallback: the external PR was closed without
+    a merge (the contributor withdrew it, or a maintainer rejected it).
+
+    The triage Issue returns to the ready queue and the next claim
+    delivers the fix internally; the supersession is explained on the
+    closed PR thread too, because the contributor watches their PR,
+    never the triage Issue (docs/contributing.mdx). Shared by the
+    delivery step and the resume seam, where the same scene arrives
+    through `ResumePrClosedError` (Issue #788).
+    """
+    apply_label_patch(
+        number, repo=source_repo, event=EVENT_REQUEUE,
+        current_labels=issue_labels(number, repo=source_repo),
+    )
+    body = (
+        f"{marker}\n"
+        f"Orbi: the external PR {pr_url} was closed without "
+        f"a merge; the triage Issue #{number} returns to the "
+        "ready queue and the next claim delivers the fix "
+        f"internally (run_id={run_id})"
+    )
+    comment_issue(number, repo=source_repo, body=body)
+    comment_pr(_pr_number(pr_url), repo=source_repo, body=body)
+
+
 def _close_external_triage_issue(
     number: int, source_repo: str, pr_url: str, marker: str, run_id: str,
 ) -> None:
@@ -7708,11 +7793,6 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
             )
         return
     if state == "CLOSED":
-        # The current labels are read ONCE before the transition:
-        # the terminal patch clears every delivery-state label that
-        # is present (`ai-pr-opened`, and `ai-fix-needed` when the
-        # PR was closed while awaiting the next review session).
-        labels = issue_labels(number, source_repo)
         if external_takeover:
             # Issue #608: the external PR was closed without a merge
             # (contributor withdrew, or a maintainer rejected it) —
@@ -7723,23 +7803,15 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
             event(
                 "external_takeover_closed", issue=number, pr=pr_url,
             )
-            apply_label_patch(
-                number, repo=source_repo, event=EVENT_REQUEUE,
-                current_labels=labels,
+            _requeue_closed_external_takeover(
+                number, source_repo, pr_url, marker, run_id,
             )
-            body = (
-                f"{marker}\n"
-                f"Orbi: the external PR {pr_url} was closed without "
-                f"a merge; the triage Issue #{number} returns to the "
-                "ready queue and the next claim delivers the fix "
-                f"internally (run_id={run_id})"
-            )
-            comment_issue(number, repo=source_repo, body=body)
-            # The supersession is explained on the closed PR thread
-            # too: the contributor watches their PR, never the
-            # triage Issue (docs/contributing.mdx, Issue #608).
-            comment_pr(_pr_number(pr_url), repo=source_repo, body=body)
             return
+        # The current labels are read ONCE before the transition:
+        # the terminal patch clears every delivery-state label that
+        # is present (`ai-pr-opened`, and `ai-fix-needed` when the
+        # PR was closed while awaiting the next review session).
+        labels = issue_labels(number, source_repo)
         event(
             "delivery_closed_unmerged", issue=number, pr=pr_url,
         )
