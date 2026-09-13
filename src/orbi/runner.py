@@ -2852,14 +2852,25 @@ def rewrite_active_milestone_line(config_path: Path, new_value: str) -> None:
     config_path.write_bytes(updated.encode("utf-8"))
 
 
-def arm_release_ticket(repo: str, active_milestone: str) -> None:
+def arm_release_ticket(
+    repo: str, active_milestone: str,
+    dispatch_label: str = READY_LABEL,
+) -> None:
     """Arm one open release ticket for the current milestone on idle.
+
+    The ticket is armed with the repo's dispatch label — the same label
+    `release_fallback_search` requires before the ticket can be claimed —
+    so callers must resolve it from the repository policy, not assume the
+    host default. The search exclusion uses the same label: an armed
+    ticket carries it, and a ticket polluted by a stale arm (labelled
+    `ai-ready` under a custom-dispatch-label repo) no longer matches the
+    exclusion, so the next idle tick re-arms and heals it.
 
     This is an idle-path bypass: callers deliberately catch failures so a
     GitHub label operation cannot change the outcome of the main tick.
     """
     search = (
-        f"label:{RELEASE_LABEL} -label:{READY_LABEL} "
+        f"label:{RELEASE_LABEL} -label:{dispatch_label} "
         f'milestone:"{active_milestone}"'
     )
     issues = list_issues(
@@ -2873,7 +2884,7 @@ def arm_release_ticket(repo: str, active_milestone: str) -> None:
         raise RuntimeError(f"release ticket has invalid issue number: {number!r}")
     run_command([
         "gh", "issue", "edit", str(number), "--repo", repo,
-        "--add-label", READY_LABEL,
+        "--add-label", dispatch_label,
     ], timeout=30)
     event(
         "release_ticket_armed", issue=f"#{number}",
@@ -8528,6 +8539,10 @@ def main(argv: list[str] | None = None) -> int:
                     arm_release_ticket(
                         config.source_repos[0],
                         config.active_milestone,
+                        dispatch_label=_repo_scan_keys(
+                            config, config.source_repos[0],
+                            config.active_milestone,
+                        )[1],
                     )
                 except Exception:
                     LOGGER.exception(
