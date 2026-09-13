@@ -206,7 +206,7 @@ JOURNAL_EVENTS: dict[str, str] = {
     "delivery_ci_triage_lookup_failed": "the CI-failure triage Issue lookup failed",
     "delivery_review_failed": "the review session failed",
     # Dead-loop guard (Issue #825).
-    "failure_comment_deduplicated": "an identical failure was already reported; the journal replaces the comment",
+    "failure_comment_deduplicated": "an identical failure repeat bumped the existing comment's counter; no second comment",
     "failure_streak_escalated": "the same failure reached the consecutive limit; the Issue goes ai-blocked",
     "failure_history_read_failed": "the failure-history read for the dead-loop guard failed (fail-open)",
     # External contributor PRs.

@@ -119,7 +119,9 @@ from orbi.progress import (
     _progress_state,
     _run_info_fields,
     _safe_publish,
+    bump_failure_repeat,
     failure_marker,
+    failure_repeat_count,
     field_block,
     format_status_comment,
     format_elapsed,
@@ -190,6 +192,7 @@ from orbi.github import (
     milestone_open_issues,
     open_blocker_numbers,
     open_pr_for_branch,
+    update_issue_comment,
     parse_issue_array,
     parse_issue_list,
     parse_paginated_issue_array,
@@ -7290,19 +7293,19 @@ def _is_line_failure_comment(body: str, run_id: str,
     )
 
 
-def _failure_reported_before(comments: list, run_id: str,
-                             fingerprint: str) -> bool:
-    """True when any trusted comment already reports this exact
-    (run_id, fingerprint) failure — the #825 dedup key. A pure scan
-    over the already-fetched comment list."""
+def _reported_failure_comment(comments: list, run_id: str,
+                              fingerprint: str) -> dict | None:
+    """The trusted comment already reporting this exact
+    (run_id, fingerprint) failure, or None — the #825 dedup key. A pure
+    scan over the already-fetched comment list."""
     for comment in comments:
         if not _comment_is_trusted(comment):
             continue
         body = comment.get("body")
         if isinstance(body, str) and _is_line_failure_comment(
                 body, run_id, fingerprint):
-            return True
-    return False
+            return comment
+    return None
 
 
 def _failure_streak(comments: list, run_id: str,
@@ -7311,11 +7314,13 @@ def _failure_streak(comments: list, run_id: str,
     trusted comment history (Issue #825). A pure scan over the
     already-fetched comment list.
 
-    A matching failure comment extends the streak; a DIFFERENT failure
-    ends it; a scene block (an opened PR, a completed review round)
-    ends it too — the delivery line advanced, the premises changed.
-    Publisher milestones and human chatter in between are skipped:
-    they change no premise."""
+    A matching failure comment adds its repeat count — the dedup keeps
+    ONE comment per (run_id, fingerprint) and bumps its counter in
+    place, so the counter IS the occurrence count. A DIFFERENT failure
+    ends the streak; a scene block (an opened PR, a completed review
+    round) ends it too — the delivery line advanced, the premises
+    changed. Publisher milestones and human chatter in between are
+    skipped: they change no premise."""
     streak = 0
     for comment in reversed(comments):
         if not _comment_is_trusted(comment):
@@ -7324,7 +7329,7 @@ def _failure_streak(comments: list, run_id: str,
         if not isinstance(body, str):
             continue
         if _is_line_failure_comment(body, run_id, fingerprint):
-            streak += 1
+            streak += failure_repeat_count(body)
             continue
         if FAILURE_MARKER_PATTERN.search(body) or scene.carries_scene_block(
                 body):
@@ -7387,10 +7392,12 @@ def report_delivery_failure(
     `FAILURE_STREAK_LIMIT` consecutive failures escalates to the
     terminal `ai-blocked` outcome with the count and the
     unchanged-precondition verdict in the comment, and an identical
-    failure that was already reported posts no second comment (the
-    journal records it instead). The history read fails open — a read
-    failure degrades to the plain classified report, never a second
-    failure of the reporting path.
+    failure that was already reported bumps the hidden repeat counter
+    of its existing comment in place (the streak scan reads that
+    counter as the occurrence count) instead of posting a second
+    comment; the journal records the repeat. The history read fails
+    open — a read failure degrades to the plain classified report,
+    never a second failure of the reporting path.
     """
     number = int(issue["number"])
     title = issue["title"]
@@ -7404,7 +7411,7 @@ def report_delivery_failure(
     # `ai-blocked`, the human decision point. The history read fails
     # open: the guard must never break the failure report itself.
     fingerprint = runner_health.failure_fingerprint(exc)
-    reported_before = False
+    reported_failure: dict | None = None
     if classify and not blocked and run_id:
         try:
             history = issue_comments(number, repo=source_repo)
@@ -7415,7 +7422,7 @@ def report_delivery_failure(
                 run_id=run_id,
             )
         else:
-            reported_before = _failure_reported_before(
+            reported_failure = _reported_failure_comment(
                 history, run_id, fingerprint,
             )
             streak = _failure_streak(history, run_id, fingerprint)
@@ -7515,11 +7522,27 @@ def report_delivery_failure(
             f"{failure_marker(fingerprint)}\n"
         )
         body = f"{run_marker(run_id)}\n{fail_marker_line}{body}"
-    if run_id and reported_before and not blocked:
-        # The #825 dedup: the identical failure is already reported on
-        # the Issue (and the PR) — the journal is the only new record,
-        # the label patch above and the tracked progress publish below
-        # keep their semantics.
+    if run_id and reported_failure is not None and not blocked:
+        # The #825 dedup: the identical failure already has its Issue
+        # comment — the repeat counter is bumped in that comment IN
+        # PLACE (the dead-loop streak scan reads it as the occurrence
+        # count), no second comment is posted, and the journal records
+        # the repeat. The PR copy stays as first posted; the Issue
+        # comment is the delivery line's failure record. The patch is
+        # the repeat's report and fails like one (the label patch above
+        # and the tracked progress publish below keep their semantics).
+        comment_id = reported_failure.get("id")
+        if not isinstance(comment_id, int):
+            raise ValueError(
+                f"issue={number} failure comment id must be an integer "
+                f"to bump the repeat counter, got {comment_id!r}"
+            )
+        update_issue_comment(
+            comment_id, repo=source_repo,
+            body=bump_failure_repeat(
+                reported_failure["body"], fingerprint,
+            ),
+        )
         event(
             "failure_comment_deduplicated", issue=number,
             run_id=run_id, fingerprint=fingerprint,

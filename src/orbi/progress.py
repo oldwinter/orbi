@@ -146,8 +146,11 @@ def run_marker(run_id: object) -> str:
 
 # One hidden marker per FAILURE FINGERPRINT (Issue #825): rides under
 # the run marker on a recoverable failure comment and is the key the
-# comment-dedup and the dead-loop streak scan match on.
-FAILURE_MARKER_PATTERN = re.compile(r"<!-- orbi:fail=([0-9a-f]{16}) -->")
+# comment-dedup and the dead-loop streak scan match on. The optional
+# `:<count>` suffix is the repeat counter the in-place dedup bumps —
+# the number of identical failures this one comment reports.
+FAILURE_MARKER_PATTERN = re.compile(
+    r"<!-- orbi:fail=([0-9a-f]{16})(?::(\d+))? -->")
 FAILURE_MARKER_TEMPLATE = "<!-- orbi:fail={fingerprint} -->"
 
 
@@ -159,6 +162,36 @@ def failure_marker(fingerprint: str) -> str:
             f"invalid failure fingerprint: {fingerprint!r}"
         )
     return FAILURE_MARKER_TEMPLATE.format(fingerprint=fingerprint)
+
+
+def failure_repeat_count(body: str) -> int:
+    """The repeat count of the body's failure marker (a count-less
+    marker counts 1); 0 when the body carries no marker at all."""
+    if not isinstance(body, str):
+        return 0
+    match = FAILURE_MARKER_PATTERN.search(body)
+    if match is None:
+        return 0
+    return int(match.group(2) or 1)
+
+
+def bump_failure_repeat(body: str, fingerprint: str) -> str:
+    """Return the body with the failure marker's repeat count raised by
+    one — the in-place update of the identical-failure comment (Issue
+    #825). A count-less marker counts 1, so the first bump renders
+    `:2`."""
+    if not isinstance(body, str):
+        raise ValueError("failure comment body must be a string")
+    match = FAILURE_MARKER_PATTERN.search(body)
+    if match is None or match.group(1) != fingerprint:
+        raise ValueError(
+            f"body does not carry the failure marker for {fingerprint!r}"
+        )
+    return (
+        f"{body[:match.start()]}"
+        f"<!-- orbi:fail={fingerprint}:{int(match.group(2) or 1) + 1} -->"
+        f"{body[match.end():]}"
+    )
 
 
 def find_run_comment(comments: list[dict], run_id: str) -> dict | None:

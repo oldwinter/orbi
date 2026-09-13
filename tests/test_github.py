@@ -576,3 +576,23 @@ def test_line_run_markers_empty_without_trusted_markers():
     assert github.line_run_markers([
         {"body": "plain text", "authorAssociation": "OWNER"},
     ]) == frozenset()
+
+
+def test_update_issue_comment_patches_the_publisher_route(monkeypatch):
+    """Issue #825: the in-place repeat-counter patch uses the comment
+    PATCH route the progress publisher already uses
+    (`repos/{repo}/issues/comments/{id}` — appending the id to the
+    issue-scoped endpoint is not a GitHub route and 404s)."""
+    seen = []
+    monkeypatch.setattr(
+        seam, "run_command",
+        lambda command, **kwargs: seen.append(command) or "",
+    )
+    github.update_issue_comment(4711, repo="owner/repo", body="b")
+    assert seen == [
+        [
+            "gh", "api", "repos/owner/repo/issues/comments/4711",
+            "--method", "PATCH",
+            "--field", f"body={github.format_status_comment('b')}",
+        ],
+    ]

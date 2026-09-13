@@ -549,6 +549,21 @@ def comment_issue(number: int, *, repo: str, body: str) -> None:
                  "--body", format_status_comment(body)])
 
 
+def update_issue_comment(comment_id: int, *, repo: str, body: str) -> None:
+    """Patch one Issue comment in place (Issue #825's repeat counter).
+
+    The route is the one the progress publisher's `_patch_comment` uses:
+    PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}. The body
+    passes through `format_status_comment` like every posted comment —
+    idempotent for a stored body (the stored shape takes the verbatim
+    path and the hidden runner marker is refreshed).
+    """
+    run_command([
+        "gh", "api", f"repos/{repo}/issues/comments/{comment_id}",
+        "--method", "PATCH", "--field", f"body={format_status_comment(body)}",
+    ])
+
+
 def issue_comments(number: int, *, repo: str) -> list[dict]:
     """Return the Issue's comment history (oldest first) from GitHub.
 
