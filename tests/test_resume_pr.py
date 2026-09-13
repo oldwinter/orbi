@@ -2208,15 +2208,16 @@ def test_verify_resumed_pr_scene_pr_closed_between_ticks_still_blocks(
     whether to reopen or start a fresh delivery)."""
     captured, reporting_fake = make_resume_failure_fake(monkeypatch)
     git_reads = {"branch": FAKE_BRANCH, "rev-parse": "head"}
+    pr_reads = {
+        "list": "[]",
+        "view": json.dumps({"state": "CLOSED", "mergedAt": None}),
+    }
 
     def fake_run(command, **kwargs):
         if command[0] == "git":
             return git_reads[command[1]]
-        if command[0] == "gh" and command[1] == "pr":
-            if command[2] == "list":
-                return "[]"
-            if command[2] == "view":
-                return json.dumps({"state": "CLOSED", "mergedAt": None})
+        if command[1] == "pr":
+            return pr_reads[command[2]]
         return reporting_fake(command, **kwargs)
 
     monkeypatch.setattr(seam, "run_command", fake_run)
