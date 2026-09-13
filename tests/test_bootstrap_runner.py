@@ -17945,6 +17945,42 @@ def test_process_release_lists_open_milestone_items(monkeypatch, caplog):
     assert "PR #123 merged (mergeCommit=aaa111)" in comment_kwargs["body"]
 
 
+def test_process_release_exempts_release_issue_from_open_evidence(monkeypatch):
+    """Issue #818 regression: with `scope_from_milestone`, the release
+    Issue itself is necessarily still open in its Milestone while the
+    notes are generated (it closes only after the Release is published),
+    so it must never surface as the self-referential "NOT released" line
+    on the immutable Release page — this pins the caller's
+    `release_issue=number` wiring end to end."""
+    state = make_release_process_env(
+        monkeypatch,
+        body=RELEASE_MILESTONE_DECLARATION_BODY,
+        milestone_items={5: {
+            "issues_closed": [
+                {"number": 123, "title": "Deliver A", "state": "closed"},
+            ],
+            "issues_open": [
+                {"number": 99, "title": "Release v0.3.0", "state": "open"},
+            ],
+        }},
+    )
+    issue = {"number": 99, "title": "Release v0.3.0",
+             "body": RELEASE_MILESTONE_DECLARATION_BODY,
+             "labels": [{"name": "ai-ready"}, {"name": "ai-release"}]}
+    url = release.process_release(
+        issue, runner.RunnerConfig(repo_dir=Path("/r"), base_branch="main"), "o/r",
+    )
+    assert url == "https://github.com/o/r/releases/tag/v0.3.0"
+    # The release still completes terminally, and the auditable scope
+    # evidence (the same list the Release notes carry) carries the
+    # derived delivery but NO self-referential NOT released line.
+    assert state["edits"][-1] == (99, {"repo": "o/r", "add": "ai-merged",
+                                       "remove": "ai-in-progress"})
+    (comment_number, comment_kwargs), = state["comments"]
+    assert "NOT released" not in comment_kwargs["body"]
+    assert "PR #123 merged (mergeCommit=aaa111)" in comment_kwargs["body"]
+
+
 def test_process_release_fails_on_empty_derived_scope(monkeypatch):
     state = make_release_process_env(
         monkeypatch,
