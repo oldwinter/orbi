@@ -10173,7 +10173,40 @@ def test_load_config_derives_slot_dir_from_repo_dir(tmp_path):
 
 @pytest.mark.parametrize(
     "value",
-    ["0", "-1", "1.5", '"1"', "true", "false", "3"],
+    [3, 5],
+)
+def test_load_config_accepts_capacity_up_to_max_runner_instances(
+    tmp_path, value,
+):
+    """Issue #827: every capacity up to MAX_RUNNER_INSTANCES (5) is a
+    legal config — 3 (the incident config) and the cap itself load."""
+    config_path = tmp_path / "orbi.toml"
+    config_path.write_text(
+        f'source_repos = ["owner/repo"]\nmax_concurrency = {value}\n',
+        encoding="utf-8",
+    )
+    assert runner.load_config(config_path).max_concurrency == value
+
+
+def test_load_config_rejects_capacity_beyond_max_with_the_real_cap(tmp_path):
+    """Issue #827: beyond the declaration cap the load fails fast naming
+    the REAL cap and reason — never the old hardcoded "Runner timer
+    instance" wording."""
+    config_path = tmp_path / "orbi.toml"
+    config_path.write_text(
+        'source_repos = ["owner/repo"]\nmax_concurrency = 6\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"no greater than 5 \(MAX_RUNNER_INSTANCES\)",
+    ):
+        runner.load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0", "-1", "1.5", '"1"', "true", "false", "6"],
 )
 def test_load_config_rejects_invalid_max_concurrency(tmp_path, value):
     config_path = tmp_path / "orbi.toml"

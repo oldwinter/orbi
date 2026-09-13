@@ -719,44 +719,65 @@ def test_install_units_step_reports_install_state(tmp_path):
     assert result["service"]["sha256"] == systemd_deploy.sha256_hex(
         installed / "orbi@.service",
     )
-    # Issue #189: setup follows the configured default capacity (one).
+    # Issue #189/#827: setup reports the CONFIGURED timer set — the
+    # capacity, never a fixed instance list.
     instances = result["timer"]["instances"]
-    assert sorted(instances) == sorted(systemd_deploy.TIMER_INSTANCES)
+    assert sorted(instances) == ["orbi@1.timer"]
     assert instances["orbi@1.timer"]["enabled"] is True
     assert instances["orbi@1.timer"]["active"] is True
-    assert instances["orbi@2.timer"]["enabled"] is False
-    assert instances["orbi@2.timer"]["active"] is False
     assert instances["orbi@1.timer"]["next"] == (
         "Thu 2026-08-27 10:00:00 +08"
     )
-    assert instances["orbi@2.timer"]["next"] == (
-        "Fri 2026-08-27 10:05:00 +08"
-    )
-    # The install itself is the systemd_deploy idempotent install.
+    # The install itself is the systemd_deploy idempotent install:
+    # @1 enabled, the surplus @2..@5 disabled.
     assert ["systemctl", "--user", "daemon-reload"] in calls
     assert [
         "systemctl", "--user", "enable", "--now", "orbi@1.timer",
     ] in calls
-    assert [
-        "systemctl", "--user", "disable", "--now", "orbi@2.timer",
-    ] in calls
+    for index in (2, 3, 4, 5):
+        assert [
+            "systemctl", "--user", "disable", "--now", f"orbi@{index}.timer",
+        ] in calls
 
 
-def test_install_units_step_reports_the_disabled_surplus_timer(tmp_path):
+def test_install_units_step_reports_three_instances_at_capacity_three(tmp_path):
+    """Issue #827: setup reports the CONFIGURED set — three instances at
+    capacity three, each enabled by the install."""
+    state = {}
+    fake_run, calls = fake_run_factory(state)
+    repo = make_repo(tmp_path)
+    result = pilot_setup.install_units_step(
+        repo, tmp_path / "units", max_concurrency=3, run_command=fake_run,
+    )
+    instances = result["timer"]["instances"]
+    assert sorted(instances) == [
+        "orbi@1.timer", "orbi@2.timer", "orbi@3.timer",
+    ]
+    for index in (1, 2, 3):
+        assert instances[f"orbi@{index}.timer"]["enabled"] is True
+        assert instances[f"orbi@{index}.timer"]["active"] is True
+        assert [
+            "systemctl", "--user", "enable", "--now", f"orbi@{index}.timer",
+        ] in calls
+
+
+def test_install_units_step_disables_the_surplus_timers(tmp_path):
+    """Issue #827: the whole 1..MAX universe converges onto the
+    configured capacity — at capacity one the surplus @2..@5 are
+    disabled while the report covers only the configured instance."""
     state = {}
     fake_run, calls = fake_run_factory(state)
     repo = make_repo(tmp_path)
     result = pilot_setup.install_units_step(
         repo, tmp_path / "units", max_concurrency=1, run_command=fake_run,
     )
-    instances = result["timer"]["instances"]
-    assert instances["orbi@1.timer"]["enabled"] is True
-    assert instances["orbi@1.timer"]["active"] is True
-    assert instances["orbi@2.timer"]["enabled"] is False
-    assert instances["orbi@2.timer"]["active"] is False
-    assert [
-        "systemctl", "--user", "disable", "--now", "orbi@2.timer",
-    ] in calls
+    assert sorted(result["timer"]["instances"]) == ["orbi@1.timer"]
+    assert result["timer"]["instances"]["orbi@1.timer"]["enabled"] is True
+    assert result["timer"]["instances"]["orbi@1.timer"]["active"] is True
+    for index in (2, 3, 4, 5):
+        assert [
+            "systemctl", "--user", "disable", "--now", f"orbi@{index}.timer",
+        ] in calls
 
 
 def test_install_units_step_treats_is_enabled_exit_1_disabled_as_not_enabled(
@@ -769,12 +790,23 @@ def test_install_units_step_treats_is_enabled_exit_1_disabled_as_not_enabled(
     state = {}
     fake_run, calls = fake_run_factory(state)
     repo = make_repo(tmp_path)
+
+    def disabled(command, **kwargs):
+        # The real systemctl shape for a NOT-enabled unit: exit 1 with
+        # the state word on stdout.
+        if (
+            command[:3] == ["systemctl", "--user", "is-enabled"]
+            and command[-1] == "orbi@1.timer"
+        ):
+            raise subprocess.CalledProcessError(
+                1, command, output="disabled",
+            )
+        return fake_run(command, **kwargs)
+
     result = pilot_setup.install_units_step(
-        repo, tmp_path / "units", max_concurrency=1, run_command=fake_run,
+        repo, tmp_path / "units", max_concurrency=1, run_command=disabled,
     )
-    instances = result["timer"]["instances"]
-    assert instances["orbi@1.timer"]["enabled"] is True
-    assert instances["orbi@2.timer"]["enabled"] is False
+    assert result["timer"]["instances"]["orbi@1.timer"]["enabled"] is False
     assert [
         "systemctl", "--user", "disable", "--now", "orbi@2.timer",
     ] in calls
@@ -793,9 +825,9 @@ def test_install_units_step_is_enabled_exit_1_masked_is_not_enabled(tmp_path):
         return fake_run(command, **kwargs)
 
     result = pilot_setup.install_units_step(
-        repo, tmp_path / "units", run_command=masked,
+        repo, tmp_path / "units", max_concurrency=1, run_command=masked,
     )
-    for instance in systemd_deploy.TIMER_INSTANCES:
+    for instance in systemd_deploy.timer_instances(count=1):
         assert result["timer"]["instances"][instance]["enabled"] is False
 
 
@@ -821,7 +853,7 @@ def test_install_units_step_fails_fast_on_a_genuine_is_enabled_failure(
         pilot_setup.SetupError, match="is-enabled failed for orbi@1.timer",
     ) as excinfo:
         pilot_setup.install_units_step(
-            repo, tmp_path / "units", run_command=failing,
+            repo, tmp_path / "units", max_concurrency=1, run_command=failing,
         )
     assert isinstance(excinfo.value.__cause__, subprocess.CalledProcessError)
 
@@ -831,10 +863,10 @@ def test_install_units_step_reports_a_missing_next_trigger(tmp_path):
     fake_run, calls = fake_run_factory(state)
     repo = make_repo(tmp_path)
     result = pilot_setup.install_units_step(
-        repo, tmp_path / "units", run_command=fake_run,
+        repo, tmp_path / "units", max_concurrency=1, run_command=fake_run,
     )
     instances = result["timer"]["instances"]
-    for instance in systemd_deploy.TIMER_INSTANCES:
+    for instance in systemd_deploy.timer_instances(count=1):
         assert instances[instance]["next"] == "-"
 
 
@@ -848,7 +880,7 @@ def test_install_units_step_fails_fast_on_an_install_error(tmp_path):
 
     with pytest.raises(pilot_setup.SetupError, match="units"):
         pilot_setup.install_units_step(
-            repo, tmp_path / "units", run_command=failing,
+            repo, tmp_path / "units", max_concurrency=1, run_command=failing,
         )
 
 
@@ -1339,14 +1371,12 @@ def test_run_setup_success_reports_all_steps(tmp_path):
         },
     ]
     assert result["service"]["installed"] is True
-    # Issue #189: setup reports the configured timer set, not merely
-    # the fixed template instance list.
+    # Issue #189/#827: setup reports the configured timer set — here the
+    # default capacity one.
     instances = result["timer"]["instances"]
-    assert sorted(instances) == sorted(systemd_deploy.TIMER_INSTANCES)
+    assert sorted(instances) == ["orbi@1.timer"]
     assert instances["orbi@1.timer"]["enabled"] is True
     assert instances["orbi@1.timer"]["active"] is True
-    assert instances["orbi@2.timer"]["enabled"] is False
-    assert instances["orbi@2.timer"]["active"] is False
     assert result["checkout"]["clean"] is True
     assert result["checkout"]["base_fresh"] is True
     assert result["optional_proxy"]["optional"] is True
@@ -1366,12 +1396,24 @@ def test_run_setup_capacity_two_enables_both_timers(tmp_path):
     config = runner.load_config(make_config(tmp_path, repo, max_concurrency=2))
     config = dataclasses.replace(config, unit_name="website")
     result = pilot_setup.run_setup(config, installed, run_command=fake_run)
-    for instance in systemd_deploy.timer_instances("website"):
+    for instance in systemd_deploy.timer_instances("website", 2):
         assert result["timer"]["instances"][instance]["enabled"] is True
         assert result["timer"]["instances"][instance]["active"] is True
         assert ["systemctl", "--user", "enable", "--now", instance] in calls
-    assert not any(command[2] == "disable" for command in calls
-                   if command[:2] == ["systemctl", "--user"])
+    # The surplus timers beyond the configured capacity are disabled;
+    # no configured instance is ever disabled (Issue #827).
+    surplus = [
+        ["systemctl", "--user", "disable", "--now",
+         f"orbi-website@{index}.timer"]
+        for index in (3, 4, 5)
+    ]
+    configured = [
+        ["systemctl", "--user", "disable", "--now",
+         f"orbi-website@{index}.timer"]
+        for index in (1, 2)
+    ]
+    assert all(command in calls for command in surplus)
+    assert not any(command in calls for command in configured)
 
 
 def test_run_setup_repo_override_limits_the_target(tmp_path):
@@ -1701,7 +1743,7 @@ def test_install_units_step_result_is_json_serializable(tmp_path):
     fake_run, calls = fake_run_factory(state)
     repo = make_repo(tmp_path)
     result = pilot_setup.install_units_step(
-        repo, tmp_path / "units", run_command=fake_run,
+        repo, tmp_path / "units", max_concurrency=1, run_command=fake_run,
     )
     assert isinstance(result["service"]["installed_path"], str)
     json.loads(pilot_setup.to_json(result))

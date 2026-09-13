@@ -1091,7 +1091,8 @@ def _deploy_world(
         base_branch="main",
         # Issue #580: the configured delivery transport (default ssh).
         git_transport="ssh",
-        max_concurrency=1,
+        # Issue #827: capacity two exercises the multi-instance report.
+        max_concurrency=2,
         slot_dir=repo / ".orbi" / "slots",
     )
     return config, installed
@@ -1163,7 +1164,7 @@ def test_install_units_command_reports_commit_and_hashes(monkeypatch,
     report = orbi.install_units_command(config, installed)
     assert captured["repo_dir"] == config.repo_dir
     assert captured["installed_dir"] == installed
-    assert captured["max_concurrency"] == 1
+    assert captured["max_concurrency"] == 2
     assert captured["run_command"] is orbi.run_command
     lines = report.splitlines()
     assert lines[0] == (
@@ -1567,12 +1568,14 @@ def test_doctor_report_clean(tmp_path, monkeypatch):
     assert [
         "git", "ls-remote", "git@github.com:xqliu/orbi.git",
     ] in calls
-    # Issue #149: all FOUR instances are reported.
+    # Issue #149: all FOUR instances are reported (the doctor world runs
+    # at capacity two); Issue #827: the instance set follows the
+    # configured capacity.
     assert "orbi@1.timer: active" in lines
     assert "orbi@2.timer: active" in lines
     assert "orbi@1.service: active" in lines
     assert "orbi@2.service: active" in lines
-    assert "slots: 0/1" in lines
+    assert "slots: 0/2" in lines
     assert "pi: none" in lines
     assert "source: xqliu/orbi" in lines
     assert "  current: -" in lines
@@ -1765,7 +1768,7 @@ def test_doctor_report_reports_a_failed_transport(tmp_path, monkeypatch):
     assert "ssh_unreachable" in failed[0]
     assert "Permission denied (publickey)" in failed[0]
     # The report continues past the transport failure.
-    assert "slots: 0/1" in lines
+    assert "slots: 0/2" in lines
     assert "journal:" in lines
 
 
@@ -1894,7 +1897,7 @@ def test_doctor_report_cli_source_drift_carries_source_expected_fix(
         for line in lines
     ), f"drift line missing or malformed in:\n{report}"
     # The report continues past the drift (doctor is read-only).
-    assert "slots: 0/1" in lines
+    assert "slots: 0/2" in lines
     assert "journal:" in lines
 
 

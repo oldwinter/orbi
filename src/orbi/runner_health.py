@@ -319,20 +319,22 @@ def record_pickup(repo_dir: Path) -> None:
 
 def crash_journal_lines(
     run_command, since_minutes: int = CRASH_WINDOW_MINUTES,
-    unit_name: str | None = None,
+    unit_name: str | None = None, *, max_concurrency: int,
 ) -> list[str]:
     """Return the systemd journal lines for every service instance in the
     window.
 
     One bounded `journalctl` query per service instance of THIS deployment
-    (a `unit_name` deployment installs `orbi-<name>@N.service`,
+    through the configured `max_concurrency` (Issue #827 — the instance
+    set follows the capacity, not a hardcoded count; a `unit_name`
+    deployment installs `orbi-<name>@N.service`,
     so the query must follow the same naming — `None` keeps the default
     `orbi@N.service`). The lines are the raw scene the crash-loop alert
     needs: the exit lines plus the structured fail-fast reason
     the Runner logged before each crash.
     """
     lines: list[str] = []
-    for unit in service_instances(unit_name):
+    for unit in service_instances(unit_name, max_concurrency):
         output = run_command([
             "timeout", "30", "journalctl", "--user", "-u", unit,
             "--since", f"-{since_minutes}min", "--no-pager", "-q",
@@ -343,13 +345,14 @@ def crash_journal_lines(
 
 def count_crashes(
     run_command, since_minutes: int = CRASH_WINDOW_MINUTES,
-    unit_name: str | None = None,
+    unit_name: str | None = None, *, max_concurrency: int,
 ) -> int:
     """Count crash EVENTS in the window from the systemd journal.
 
-    Both crash shapes count (an abnormal main-process exit, and a
-    "Failed with result" line — the only shape an ExecStartPre failure
-    leaves). One crash usually emits both lines on the same or an
+    Scans every service instance @1..max_concurrency of THIS deployment
+    (Issue #827). Both crash shapes count (an abnormal main-process exit,
+    and a "Failed with result" line — the only shape an ExecStartPre
+    failure leaves). One crash usually emits both lines on the same or an
     adjacent second: per unit, a matched line within
     CRASH_PAIR_WINDOW_SECONDS of the previous matched line is the pair
     half of that crash, not a new event. A matched line whose clock or
@@ -360,6 +363,7 @@ def count_crashes(
     events = 0
     for line in crash_journal_lines(
         run_command, since_minutes, unit_name=unit_name,
+        max_concurrency=max_concurrency,
     ):
         if not (CRASH_EXIT_RE.search(line) or CRASH_FAIL_RESULT_RE.search(line)):
             continue
@@ -624,10 +628,14 @@ def _run_health_check_locked(config: RunnerConfig, *, run_command) -> list[str]:
         #    unit self-heal death loop — each iteration exits non-zero).
         # Watch THIS deployment's units (unit_name-aware).
         unit_name = config.unit_name
-        crashes = count_crashes(run_command, unit_name=unit_name)
+        crashes = count_crashes(
+            run_command, unit_name=unit_name,
+            max_concurrency=config.max_concurrency,
+        )
         if crashes >= CRASH_THRESHOLD:
             journal_lines = crash_journal_lines(
                 run_command, unit_name=unit_name,
+                max_concurrency=config.max_concurrency,
             )
             kind, reason_line = classify_crash(journal_lines)
             event(

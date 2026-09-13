@@ -557,8 +557,10 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
     # `systemctl show` rejects the bare template name, and `journalctl
     # -u` with a template-name glob fails when no instance exists —
     # instance names always work).
-    for unit in (*systemd_deploy.timer_instances(config.unit_name),
-                 *systemd_deploy.service_instances(config.unit_name)):
+    for unit in (*systemd_deploy.timer_instances(
+                     config.unit_name, config.max_concurrency),
+                 *systemd_deploy.service_instances(
+                     config.unit_name, config.max_concurrency)):
         state = run_command([
             "systemctl", "--user", "show", "-p", "ActiveState",
             "--value", unit,
@@ -572,7 +574,8 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
         current = current_issue(repo)
         lines.append(f"  current: {format_issue(current) if current else '-'}")
     journal_args: list[str] = ["journalctl", "--user"]
-    for unit in systemd_deploy.service_instances(config.unit_name):
+    for unit in systemd_deploy.service_instances(
+            config.unit_name, config.max_concurrency):
         journal_args.extend(["-u", unit])
     journal = run_command(journal_args + [
         "-n", str(JOURNAL_LINES), "--no-pager",
