@@ -322,11 +322,9 @@ DAG, no priority numbers, no separate queues:
      `version`, `base_branch`, and `scope` (a list of `#N` items) or
      `scope_from_milestone`, plus optional `version_file`
      (`pyproject.toml` by default, `package.json`, or `none`). The
-     declaration carries NO local test contract (Issue #569): test
+     declaration carries NO test contract (Issue #569): test
      acceptance is the GitHub Actions CI result on the release commit
-     (the Issue #268 CI-wait gate). A legacy body that still declares
-     `test_command` is accepted with the field ignored (one evidence
-     line) — it is never executed. Missing, duplicated or unknown
+     (the Issue #268 CI-wait gate). Missing, duplicated or unknown
      fields fail fast.
   2. Freeze the base — the release commit is exactly
      `origin/<base_branch>` (fetched under the base-sync lock). Before
@@ -447,7 +445,6 @@ Only delivery-policy keys are allowed:
 | --- | --- | --- |
 | `base_branch` | string | Delivery base branch for this repository; absent falls back to the matching `[[repositories]].base_branch`, else the host `base_branch`. |
 | `active_milestone` | string | The fresh-claim Milestone scope for this repository. |
-| `test_command` | string | The repository's test command, injected into the implementer prompt. |
 | `context_files` | string[] | Repository-relative context files; existence and a size cap are checked before injection. |
 | `dispatch_label` | string | The claim label for this repository (default `ai-ready`); the delivery lifecycle labels stay host constants. |
 
@@ -455,7 +452,6 @@ Only delivery-policy keys are allowed:
 # .github/orbi.toml
 base_branch = "beta"
 active_milestone = "v0.5.0"
-test_command = "pytest -q"
 context_files = ["AGENTS.md"]
 ```
 

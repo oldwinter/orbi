@@ -555,9 +555,8 @@ class RunnerConfig:
     run_id: str = ""
     base_sha: str = ""
     # Repository-policy overlay (Issue #527): written only by
-    # `repo_config.resolve_policy` — `test_command` and `dispatch_label`
-    # are repository-declared keys with no host equivalent.
-    test_command: str | None = None
+    # `repo_config.resolve_policy` — `dispatch_label` is a
+    # repository-declared key with no host equivalent.
     repo_context_files: tuple[str, ...] = ()
     dispatch_label: str | None = None
     # Host config (load_config output). The Path fields and the two
@@ -3683,12 +3682,6 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
         ),
         "BASE_BRANCH": config.base_branch,
         "BASE_SHA": config.base_sha,
-        # Issue #527: a repository-declared test command (absent ->
-        # the agent follows its own test contract, as before #527).
-        "TEST_COMMAND": (
-            (config.test_command or "").strip()
-            or "(not declared)"
-        ),
         "RUN_ID": config.run_id,
         # Issue #186: the implementer prompt no longer carries the
         # base-sync lock (the base fetch is the Runner's operation);
@@ -5966,11 +5959,9 @@ def human_review_checklist(
     return human_review.render_checklist_comment(
         run_id=run_id,
         pr_url=pr_url,
-        test_command=config.test_command,
         checklist=human_review.build_checklist(
             test_result=read_test_result(worktree),
             changed_files=delivered_changed_files(worktree, base),
-            test_command=config.test_command,
         ),
     )
 
@@ -5986,7 +5977,6 @@ def _human_review_column2(worktree: Path, config: RunnerConfig) -> list[str]:
     return human_review.build_checklist(
         test_result=read_test_result(worktree),
         changed_files=delivered_changed_files(worktree, base),
-        test_command=config.test_command,
     )["column2"]
 
 

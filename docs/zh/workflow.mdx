@@ -254,10 +254,9 @@ PR 验收时校验该关键词，缺失即 fail fast。
   1. 严格解析 Issue 正文的 `## Release` 声明：`version`、
      `base_branch`、`scope`（`#N` 列表）或 `scope_from_milestone`，
      以及可选的 `version_file`（默认 `pyproject.toml`，也可为
-     `package.json` 或 `none`）。声明不携带任何本地测试契约
+     `package.json` 或 `none`）。声明不携带任何测试契约
      （Issue #569）：测试验收就是 release commit 的 GitHub Actions
-     CI 结果（#268 CI-wait 门）。旧票面若仍声明 `test_command`，
-     接受但忽略（记一行 evidence），永不执行。字段缺失、重复或未知
+     CI 结果（#268 CI-wait 门）。字段缺失、重复或未知
      都 fail fast。
   2. 冻结 base——release commit 就是 `origin/<base_branch>`（在
      base-sync 锁下 fetch）。在任何门禁等待之前，校验声明（或默认）
@@ -352,7 +351,6 @@ contents API 读取仓库**默认分支 tip** 上的 `.github/orbi.toml`——
 | --- | --- | --- |
 | `base_branch` | string | 该仓库的交付 base 分支；缺席时回退到匹配的 `[[repositories]].base_branch`，否则回退宿主 `base_branch`。 |
 | `active_milestone` | string | 该仓库 fresh claim 的 Milestone 范围。 |
-| `test_command` | string | 该仓库的测试命令，注入实现者 prompt。 |
 | `context_files` | string[] | 仓库内相对路径的上下文文件；注入前校验存在性与大小上限。 |
 | `dispatch_label` | string | 该仓库的认领标签（默认 `ai-ready`）；交付生命周期标签恒为宿主常量。 |
 
@@ -360,7 +358,6 @@ contents API 读取仓库**默认分支 tip** 上的 `.github/orbi.toml`——
 # .github/orbi.toml
 base_branch = "beta"
 active_milestone = "v0.5.0"
-test_command = "pytest -q"
 context_files = ["AGENTS.md"]
 ```
 

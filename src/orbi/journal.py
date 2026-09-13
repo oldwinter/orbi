@@ -295,7 +295,6 @@ JOURNAL_EVENTS: dict[str, str] = {
     "release_not_claimed": "the release state machine did not claim the release Issue",
     "release_task": "the release state machine advanced (step report)",
     "release_resuming_run": "the release continues an interrupted run",
-    "release_test_command_ignored": "the release Issue's test command field is ignored (gated tests)",
     "release_tag_exists": "the release tag already exists",
     "release_tag_pushed": "the release tag was pushed",
     "release_base_advanced_past_tag": "the base advanced past the release tag",

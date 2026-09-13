@@ -199,8 +199,6 @@ def test_prompt_template_requires_fixes_keyword_for_the_source_issue():
         "SKILLS": "",
         "BASE_BRANCH": "main",
         "BASE_SHA": "abc123",
-        # Issue #527: the repository-declared test command placeholder.
-        "TEST_COMMAND": "(not declared)",
         "RUN_ID": "a2241189",
         "BASE_SYNC_LOCK": "/checkout/.orbi/base-sync.lock",
     })
@@ -14968,8 +14966,9 @@ RELEASE_DECLARATION_BODY = """Ship v0.3.0 to the remote.
 - this text is outside the release section
 """
 
-# Issue #569: a legacy body may still declare `test_command` — accepted,
-# ignored (never executed), one journal evidence line.
+# Issue #805: the removed `test_command` field is no longer part of the
+# declaration contract — a body that still declares it fails as an
+# unknown field (every live ticket that carried it is long closed).
 LEGACY_TEST_COMMAND_DECLARATION_BODY = RELEASE_DECLARATION_BODY.replace(
     "- base_branch: main\n",
     "- base_branch: main\n- test_command: scripts/test\n",
@@ -14981,26 +14980,21 @@ def test_parse_release_declaration_returns_all_fields():
     assert decl == {
         "version": "v0.3.0",
         "base_branch": "main",
-        "test_command": None,
         "scope": [123, 124],
         "scope_from_milestone": None,
         "version_file": "pyproject.toml",
     }
 
 
-def test_parse_release_declaration_does_not_require_test_command():
-    """Issue #569: the declaration carries NO local test contract —
-    release test acceptance is the GitHub Actions CI result on the
-    release commit (the #268 CI-wait gate)."""
-    decl = release.parse_release_declaration(RELEASE_DECLARATION_BODY)
-    assert decl["test_command"] is None
-
-
-def test_parse_release_declaration_ignores_a_legacy_test_command():
-    decl = release.parse_release_declaration(
-        LEGACY_TEST_COMMAND_DECLARATION_BODY,
-    )
-    assert decl["test_command"] == "scripts/test"
+def test_parse_release_declaration_rejects_a_legacy_test_command():
+    """Issue #805: the legacy tolerated field is gone — the declaration
+    carries NO test contract (release acceptance is the GitHub Actions
+    CI result on the release commit), and an unknown field fails fast
+    instead of being silently ignored."""
+    with pytest.raises(ValueError, match="unknown field"):
+        release.parse_release_declaration(
+            LEGACY_TEST_COMMAND_DECLARATION_BODY,
+        )
 
 
 def test_parse_release_declaration_rejects_test_timeout_seconds():
@@ -15148,7 +15142,6 @@ def test_parse_release_declaration_scope_from_milestone():
     assert decl == {
         "version": "v0.3.0",
         "base_branch": "main",
-        "test_command": None,
         "scope": [],
         "scope_from_milestone": "v0.3.0",
         "version_file": "pyproject.toml",
@@ -18130,32 +18123,6 @@ def test_process_release_fails_on_malformed_declaration(monkeypatch):
     (comment_number, comment_kwargs), = state["comments"]
     assert "<!-- orbi:run=a1b2c3d4 -->" in comment_kwargs["body"]
     assert "## Release" in comment_kwargs["body"]
-
-
-def test_process_release_ignores_a_legacy_test_command_and_never_runs_it(monkeypatch, caplog):
-    """Issue #569: a legacy body still declaring `test_command` is
-    accepted: the field is ignored with ONE journal evidence line and
-    the release delivers through the normal CI-gated path — nothing is
-    executed locally."""
-    state = make_release_process_env(
-        monkeypatch, body=LEGACY_TEST_COMMAND_DECLARATION_BODY,
-    )
-    issue = {"number": 99, "title": "Release v0.3.0",
-             "body": LEGACY_TEST_COMMAND_DECLARATION_BODY,
-             "labels": [{"name": "ai-ready"}, {"name": "ai-release"}]}
-    with caplog.at_level("INFO"):
-        result = release.process_release(
-            issue, runner.RunnerConfig(repo_dir=Path("/r"), base_branch="main"), "o/r",
-        )
-    assert result == "https://github.com/o/r/releases/tag/v0.3.0"
-    assert state["edits"][-1] == (99, {"repo": "o/r", "add": "ai-merged",
-                                       "remove": "ai-in-progress"})
-    assert not [c for c, _ in state["commands"] if c[:1] == ["timeout"]]
-    ignored = [
-        record for record in caplog.records
-        if "release_test_command_ignored" in record.message
-    ]
-    assert len(ignored) == 1
 
 
 def test_process_release_fails_on_tag_mismatch_without_moving_it(monkeypatch):
