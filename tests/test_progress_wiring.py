@@ -20,6 +20,8 @@ import orbi.release as release
 from seam import seam
 import orbi.journal as journal
 from orbi import pi_process, progress
+from orbi.delivery_scene import RunContext
+from orbi.pi_process import PiWatchOptions
 
 
 def make_fake_gh(monkeypatch, comments=None, in_progress=False):
@@ -75,6 +77,11 @@ def make_issue():
     return {"number": 18, "title": "Publish progress", "body": "body"}
 
 
+def derived_wt(tmp_path, number=18):
+    """The worktree path `worktree_path` derives for the fakes' scene."""
+    return runner.worktree_path(tmp_path, "xqliu/orbi", number, "a1b2c3d4")
+
+
 def patch_process_deps(monkeypatch, tmp_path, *, run_pi_side_effect=None):
     monkeypatch.setattr(seam, "edit_issue", Mock())
     monkeypatch.setattr(seam, "freeze_base",
@@ -82,7 +89,7 @@ def patch_process_deps(monkeypatch, tmp_path, *, run_pi_side_effect=None):
     monkeypatch.setattr(seam, "new_run_id", lambda: "a1b2c3d4")
 
     def fake_create_worktree(*args, **kwargs):
-        path = tmp_path / "wt"
+        path = derived_wt(tmp_path)
         path.mkdir(parents=True, exist_ok=True)
         # Issue #302: the real run_pi creates the .orbi/ run dir before
         # the session; the fake worktree mirrors that guarantee.
@@ -94,7 +101,7 @@ def patch_process_deps(monkeypatch, tmp_path, *, run_pi_side_effect=None):
         runner, "activity_snapshot",
         lambda session_dir: {
             "session_id": "sess-1",
-            "session_file": str(tmp_path / "wt" / ".pi-session" / "s.jsonl"),
+            "session_file": str(derived_wt(tmp_path) / ".pi-session" / "s.jsonl"),
             "events": 3,
             "phase": "test",
             "last_activity": "2026-08-25T02:30:00Z",
@@ -564,7 +571,7 @@ def test_process_issue_passes_issue_number_to_deliver_pr(
                          "xqliu/orbi")
     assert len(deliver_calls) == 1
     args, kwargs = deliver_calls[0]
-    assert kwargs.get("issue") == 18, (
+    assert args[0].issue == 18, (
         f"deliver_pr must verify the Fixes keyword against the source "
         f"Issue number, got args={args} kwargs={kwargs}"
     )
@@ -599,7 +606,7 @@ def test_process_issue_finishes_progress_comment_with_delivery_summary(
     patch_process_deps(monkeypatch, tmp_path)
 
     def fake_run_pi(*args, **kwargs):
-        (tmp_path / "wt" / ".orbi" / "test.log").write_text(
+        (derived_wt(tmp_path) / ".orbi" / "test.log").write_text(
             "156 passed in 4.43s\n", encoding="utf-8",
         )
         return "done"
@@ -644,7 +651,7 @@ def test_process_issue_pi_infrastructure_failure_keeps_run_for_resume(
         "repo": "xqliu/orbi", "add": "ai-in-progress",
     }
     state = json.loads(
-        (tmp_path / "wt" / ".orbi" / "run-state.json").read_text(),
+        (derived_wt(tmp_path) / ".orbi" / "run-state.json").read_text(),
     )
     assert state["run_id"] == "a1b2c3d4"
     assert any("Pi failure recovered" in str(call) for call in calls)
@@ -776,8 +783,8 @@ def test_process_issue_keeps_the_claim_when_the_journal_proves_the_request(
                              "reached"}},
     ]
 
-    def fake_run_pi(issue, worktree, config, source_repo, **kwargs):
-        session_dir = worktree / ".pi-session"
+    def fake_run_pi(issue, ctx, config, **kwargs):
+        session_dir = ctx.worktree / ".pi-session"
         script = (
             "import json, pathlib, sys\n"
             f"d = pathlib.Path({str(session_dir)!r})\n"
@@ -790,10 +797,8 @@ def test_process_issue_keeps_the_claim_when_the_journal_proves_the_request(
             "sys.exit(1)\n"
         )
         return runner.stream_pi(
-            [sys.executable, "-c", script], cwd=worktree,
-            poll_interval=0.1, run_id=config.run_id,
-            issue=int(issue["number"]), source_repo=source_repo,
-            branch="-",
+            [sys.executable, "-c", script], ctx=ctx,
+            watch=PiWatchOptions(poll_interval=0.1), cwd=ctx.worktree,
         )
 
     class StaleWatcher(pi_process.SessionWatcher):
@@ -807,7 +812,7 @@ def test_process_issue_keeps_the_claim_when_the_journal_proves_the_request(
     monkeypatch.setattr(pi_process, "SessionWatcher", StaleWatcher)
     # The worktree carries the stable derived name so the next tick's
     # in-flight scan can derive the same scene from it (Issue #219).
-    worktree = tmp_path / ".worktrees" / "orbi-orbi-issue-18-a1b2c3d4"
+    worktree = derived_wt(tmp_path)
 
     def fake_create_worktree(*args, **kwargs):
         worktree.mkdir(parents=True, exist_ok=True)
@@ -914,7 +919,7 @@ def test_process_issue_posts_plan_ready_milestone_when_plan_written(
     patch_process_deps(monkeypatch, tmp_path)
     # The fake pi session writes plan.md into the worktree.
     def fake_run_pi(*args, **kwargs):
-        (tmp_path / "wt" / ".orbi" / "plan.md").write_text(
+        (derived_wt(tmp_path) / ".orbi" / "plan.md").write_text(
             "# Plan\n\n## Goal\n\nship it\n", encoding="utf-8",
         )
         return "done"
@@ -939,7 +944,7 @@ def test_process_issue_posts_tests_passed_milestone_when_test_log_ok(
     patch_process_deps(monkeypatch, tmp_path)
 
     def fake_run_pi(*args, **kwargs):
-        (tmp_path / "wt" / ".orbi" / "test.log").write_text(
+        (derived_wt(tmp_path) / ".orbi" / "test.log").write_text(
             "156 passed in 4.43s\n", encoding="utf-8",
         )
         return "done"
@@ -962,7 +967,7 @@ def test_process_issue_posts_tests_failed_milestone_when_test_log_fails(
     patch_process_deps(monkeypatch, tmp_path)
 
     def fake_run_pi(*args, **kwargs):
-        (tmp_path / "wt" / ".orbi" / "test.log").write_text(
+        (derived_wt(tmp_path) / ".orbi" / "test.log").write_text(
             "1 failed, 155 passed in 4.43s\n", encoding="utf-8",
         )
         return "done"
@@ -1379,7 +1384,7 @@ def test_process_issue_plan_test_milestone_failures_do_not_fail_delivery(
 
     # The worktree (created by the patched create_worktree) carries a
     # plan.md and a passing test.log so both milestones would post.
-    worktree = tmp_path / "wt"
+    worktree = derived_wt(tmp_path)
     worktree.mkdir(parents=True, exist_ok=True)
     (worktree / ".orbi").mkdir(exist_ok=True)
     (worktree / ".orbi" / "plan.md").write_text("# Plan\n", encoding="utf-8")
@@ -2185,7 +2190,7 @@ def test_process_issue_claims_external_pr_and_skips_run_pi(
 
     def fake_create_worktree(*args, **kwargs):
         worktree_calls.append(kwargs)
-        path = tmp_path / "wt"
+        path = derived_wt(tmp_path, number=608)
         path.mkdir(parents=True, exist_ok=True)
         (path / ".orbi").mkdir(exist_ok=True)
         return path
@@ -2206,7 +2211,8 @@ def test_process_issue_claims_external_pr_and_skips_run_pi(
     assert worktree_calls[0]["existing_branch"] is True
     # The run state carries the external branch identity.
     state = json.loads(
-        (tmp_path / "wt" / ".orbi" / "run-state.json").read_text(),
+        (derived_wt(tmp_path, number=608) / ".orbi" / "run-state.json")
+        .read_text(),
     )
     assert state["branch"] == "fix/outer"
     # The scene comment marks the delivery external (the resume contract).

@@ -10,6 +10,7 @@ imported lazily inside `stream_pi` so this module never imports `runner`
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
+from orbi.delivery_scene import RunContext
 from orbi.pi_activity import (
     SessionWatcher,
     format_duration,
@@ -123,6 +125,23 @@ PI_MODEL_WAIT_PROBE_SECONDS = 60.0
 # the Pi session itself is killed and the run fails fast through the
 # normal `ai-blocked` path — the slot is never held forever.
 PI_IDLE_RECOVERY_CYCLES = 3
+
+
+@dataclasses.dataclass(frozen=True)
+class PiWatchOptions:
+    """The `stream_pi` watcher's cadence and threshold knobs.
+
+    The five values always travel together and change together (they
+    tune ONE watcher); one frozen bundle replaces the five loose
+    keyword parameters. The defaults are the module constants — the
+    exact values every caller passed before the bundle existed.
+    """
+
+    poll_interval: float = PI_POLL_INTERVAL
+    idle_warn_seconds: float = PI_IDLE_WARN_SECONDS
+    model_wait_dead_seconds: float = PI_MODEL_WAIT_DEAD_SECONDS
+    model_wait_probe_url: str | None = None
+    model_wait_probe_seconds: float = PI_MODEL_WAIT_PROBE_SECONDS
 
 
 # Provider rate-limit retry: a Pi session killed by a
@@ -904,17 +923,10 @@ def stream_pi(
     command: list[str],
     *,
     cwd: Path,
-    timeout: int | None = None,
-    poll_interval: float = PI_POLL_INTERVAL,
-    idle_warn_seconds: float = PI_IDLE_WARN_SECONDS,
-    model_wait_dead_seconds: float = PI_MODEL_WAIT_DEAD_SECONDS,
-    model_wait_probe_url: str | None = None,
-    model_wait_probe_seconds: float = PI_MODEL_WAIT_PROBE_SECONDS,
-    run_id: str,
-    issue: int,
-    source_repo: str,
-    branch: str,
+    ctx: RunContext,
     role: str = ROLE_IMPLEMENT,
+    timeout: int | None = None,
+    watch: PiWatchOptions = PiWatchOptions(),
     log_command: list[str] | None = None,
     progress: Callable[[dict], None] | None = None,
     pi_env: dict[str, str] | None = None,
@@ -1007,7 +1019,9 @@ def stream_pi(
     # redacted form may ever reach the journal or an exception message.
     safe_command = log_command or ["<redacted>"]
     LOGGER.info("command=%s cwd=%s", " ".join(safe_command), cwd)
-    issue_ref = issue_context(source_repo, issue)
+    run_id: str = ctx.run_id
+    branch: str = ctx.branch
+    issue_ref = issue_context(ctx.source_repo, ctx.issue)
     session_dir = cwd / ".pi-session"
     # The counter is the RUN's, not this invocation's — a
     # resumed run continues where the killed process stopped.
@@ -1025,11 +1039,11 @@ def stream_pi(
         try:
             return _stream_pi_once(
                 command, cwd=cwd, timeout=timeout,
-                poll_interval=poll_interval,
-                idle_warn_seconds=idle_warn_seconds,
-                model_wait_dead_seconds=model_wait_dead_seconds,
-                model_wait_probe_url=model_wait_probe_url,
-                model_wait_probe_seconds=model_wait_probe_seconds,
+                poll_interval=watch.poll_interval,
+                idle_warn_seconds=watch.idle_warn_seconds,
+                model_wait_dead_seconds=watch.model_wait_dead_seconds,
+                model_wait_probe_url=watch.model_wait_probe_url,
+                model_wait_probe_seconds=watch.model_wait_probe_seconds,
                 run_id=run_id, issue_ref=issue_ref, branch=branch,
                 role=role, safe_command=safe_command, progress=progress,
                 pi_env=pi_env, session_dir=session_dir,

@@ -25,6 +25,7 @@ from tests.fakes.gitops import FakeGit
 from seam import seam
 import orbi.journal as journal
 import orbi.github as github
+from orbi.delivery_scene import RunContext
 
 
 FAKE_RUN_ID = "a1b2c3d4"
@@ -119,9 +120,11 @@ def test_parse_pr_comment_ignores_unrelated_new_format_line():
 
 def test_started_pi_comment_uses_multiline_field_block():
     body = runner.started_pi_comment_body(
-        FAKE_RUN_ID,
+        RunContext(
+            run_id=FAKE_RUN_ID, issue=18, branch=FAKE_BRANCH,
+            worktree=Path(FAKE_WORKTREE), source_repo="owner/repo",
+        ),
         "base_branch=main base_sha=abc123def456 run_id=a1b2c3d4 priority=normal",
-        FAKE_BRANCH, Path(FAKE_WORKTREE),
     )
     assert body == (
         f"<!-- orbi:run={FAKE_RUN_ID} -->\n"
@@ -1349,10 +1352,7 @@ def test_run_pi_fresh_context_has_no_existing_pr(monkeypatch, tmp_path):
         lambda command, **kwargs: calls.append((command, kwargs)) or "done",
     )
     config = runner.RunnerConfig(prompt=prompt_path, repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc123def456", run_id=FAKE_RUN_ID)
-    runner.run_pi(
-        {"number": 9, "title": "t", "body": "b"}, tmp_path, config,
-        "owner/repo", branch=FAKE_BRANCH,
-    )
+    runner.run_pi({"number": 9, "title": "t", "body": "b"}, RunContext(run_id=config.run_id, issue={"number": 9, "title": "t", "body": "b"}["number"], branch=FAKE_BRANCH, worktree=tmp_path, source_repo="owner/repo"), config)
     context = calls[0][0][-1]
     assert "Existing PR:" not in context
 
@@ -1640,11 +1640,7 @@ def test_verify_pr_resume_rejects_stale_or_ambiguous_scene_with_evidence(
         fake_run(["unexpected"])
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(error_type) as excinfo:
-        runner.verify_pr(
-            worktree, FAKE_BRANCH, "main", FAKE_RUN_ID, issue=9,
-            repo_dir=tmp_path, pr_repo="owner/repo",
-            expected_url=FAKE_PR_URL, require_latest_base=False,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=9, branch=FAKE_BRANCH, worktree=worktree, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo="owner/repo", expected_url=FAKE_PR_URL, require_latest_base=False)
     message = str(excinfo.value)
     assert expected in message
     assert "open_prs=" in message
@@ -1682,11 +1678,7 @@ def test_verify_pr_resume_rejects_pr_based_on_wrong_branch_with_evidence(
         runner.ResumeVerificationError,
         match="PR base is develop, expected main",
     ) as excinfo:
-        runner.verify_pr(
-            worktree, FAKE_BRANCH, "main", FAKE_RUN_ID, issue=9,
-            repo_dir=tmp_path, pr_repo="owner/repo",
-            expected_url=FAKE_PR_URL, require_latest_base=False,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=9, branch=FAKE_BRANCH, worktree=worktree, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo="owner/repo", expected_url=FAKE_PR_URL, require_latest_base=False)
     message = str(excinfo.value)
     assert "resume PR validation:" in message
     assert "open_pr_count=1" in message
@@ -1712,10 +1704,7 @@ def test_verify_pr_non_resume_rejects_multiple_open_prs(
         fake_run(["unexpected"])
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(RuntimeError, match="multiple open PRs"):
-        runner.verify_pr(
-            worktree, FAKE_BRANCH, "main", FAKE_RUN_ID, issue=9,
-            repo_dir=tmp_path, require_latest_base=False,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=9, branch=FAKE_BRANCH, worktree=worktree, source_repo="owner/repo"), "main", repo_dir=tmp_path, require_latest_base=False)
 
 
 def test_verify_pr_resume_keeps_unknown_state_for_non_object_scene_lookup(
@@ -1739,11 +1728,7 @@ def test_verify_pr_resume_keeps_unknown_state_for_non_object_scene_lookup(
         fake_run(["unexpected"])
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(runner.ResumeVerificationError, match="scene_pr_state=unknown"):
-        runner.verify_pr(
-            worktree, FAKE_BRANCH, "main", FAKE_RUN_ID, issue=9,
-            repo_dir=tmp_path, pr_repo="owner/repo",
-            expected_url=FAKE_PR_URL, require_latest_base=False,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=9, branch=FAKE_BRANCH, worktree=worktree, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo="owner/repo", expected_url=FAKE_PR_URL, require_latest_base=False)
 
 
 def test_verify_pr_resume_keeps_failure_evidence_when_scene_lookup_fails(
@@ -1768,11 +1753,7 @@ def test_verify_pr_resume_keeps_failure_evidence_when_scene_lookup_fails(
         fake_run(["unexpected"])
     monkeypatch.setattr(seam, "run_command", fake_run)
     with pytest.raises(runner.ResumeVerificationError, match="scene_pr_state=unknown"):
-        runner.verify_pr(
-            worktree, FAKE_BRANCH, "main", FAKE_RUN_ID, issue=9,
-            repo_dir=tmp_path, pr_repo="owner/repo",
-            expected_url=FAKE_PR_URL, require_latest_base=False,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=9, branch=FAKE_BRANCH, worktree=worktree, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo="owner/repo", expected_url=FAKE_PR_URL, require_latest_base=False)
     assert "resume_scene_pr_state_lookup_failed" in caplog.text
 
 
@@ -1792,12 +1773,13 @@ def test_verify_resumed_pr_verifies_scene_pr_and_returns_verified_url(
     calls = []
     verified_url = "https://github.com/owner/repo/pull/9"
 
-    def fake_verify_pr(worktree, branch, base_branch, run_id, *, issue,
-                       repo_dir=None, pr_repo=None, expected_url=None,
-                       require_latest_base=True, external_pr=False):
+    def fake_verify_pr(ctx, base_branch, *, repo_dir=None, pr_repo=None,
+                       expected_url=None, require_latest_base=True,
+                       external_pr=False):
         calls.append({
-            "worktree": worktree, "branch": branch,
-            "base_branch": base_branch, "run_id": run_id, "issue": issue,
+            "worktree": ctx.worktree, "branch": ctx.branch,
+            "base_branch": base_branch, "run_id": ctx.run_id,
+            "issue": ctx.issue,
             "repo_dir": repo_dir,
             "pr_repo": pr_repo, "expected_url": expected_url,
             "require_latest_base": require_latest_base,
@@ -1980,9 +1962,9 @@ def test_verify_resumed_pr_backfills_in_progress_label_before_continuing(
     calls = []
     edits = []
 
-    def fake_verify_pr(worktree, branch, base_branch, run_id, *, issue,
-                       repo_dir=None, pr_repo=None, expected_url=None,
-                       require_latest_base=True, external_pr=False):
+    def fake_verify_pr(ctx, base_branch, *, repo_dir=None, pr_repo=None,
+                       expected_url=None, require_latest_base=True,
+                       external_pr=False):
         calls.append(1)
         return FAKE_PR_URL
 
@@ -2013,10 +1995,10 @@ def test_verify_resumed_pr_repeated_resume_backfill_is_idempotent(
     edits = []
     verify_calls = []
 
-    def fake_verify_pr(worktree, branch, base_branch, run_id, *, issue,
-                       repo_dir=None, pr_repo=None, expected_url=None,
-                       require_latest_base=True, external_pr=False):
-        verify_calls.append((worktree, branch, run_id))
+    def fake_verify_pr(ctx, base_branch, *, repo_dir=None, pr_repo=None,
+                       expected_url=None, require_latest_base=True,
+                       external_pr=False):
+        verify_calls.append((ctx.worktree, ctx.branch, ctx.run_id))
         return FAKE_PR_URL
 
     def fake_edit(number, *, repo, add=None, remove=None):
@@ -2056,11 +2038,11 @@ def test_verify_resumed_pr_external_scene_reads_branch_from_worktree(
     verify_calls = []
     edits = []
 
-    def fake_verify_pr(worktree, branch, base_branch, run_id, *, issue,
-                       repo_dir=None, pr_repo=None, expected_url=None,
-                       require_latest_base=True, external_pr=False):
+    def fake_verify_pr(ctx, base_branch, *, repo_dir=None, pr_repo=None,
+                       expected_url=None, require_latest_base=True,
+                       external_pr=False):
         verify_calls.append(
-            (worktree, branch, expected_url, require_latest_base,
+            (ctx.worktree, ctx.branch, expected_url, require_latest_base,
              external_pr),
         )
         return "https://github.com/xqliu/orbi/pull/592"
@@ -2420,11 +2402,7 @@ def test_verify_pr_zero_open_prs_raises_typed_closed_scene_error(
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     with pytest.raises(runner.ResumePrClosedError) as excinfo:
-        runner.verify_pr(
-            worktree, FAKE_BRANCH, "main", FAKE_RUN_ID, issue=9,
-            repo_dir=tmp_path, pr_repo="owner/repo",
-            expected_url=FAKE_PR_URL, require_latest_base=False,
-        )
+        runner.verify_pr(RunContext(run_id=FAKE_RUN_ID, issue=9, branch=FAKE_BRANCH, worktree=worktree, source_repo="owner/repo"), "main", repo_dir=tmp_path, pr_repo="owner/repo", expected_url=FAKE_PR_URL, require_latest_base=False)
     assert excinfo.value.scene_pr_state == "MERGED"
     assert isinstance(excinfo.value, runner.UnrecoverableDeliveryError)
     assert "scene_pr_state=MERGED" in str(excinfo.value)

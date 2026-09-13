@@ -15,8 +15,8 @@ from orbi import delivery_scene
 from orbi import runner, scene
 from orbi.delivery_scene import (
     EXTERNAL_PR_MARKER,
-    DeliveryContext,
     DeliveryScene,
+    RunContext,
     body_markers,
     classify,
 )
@@ -282,10 +282,11 @@ def test_external_pr_regex_is_the_marker_vocabulary_owner():
 def test_delivery_context_is_a_frozen_bundle():
     """The run-identity bundle (Issue #290): one frozen value object
     instead of the loose four-tuple threaded through the dispatch path."""
-    context = DeliveryContext(
+    context = RunContext(
         run_id="a1b2c3d4", issue=787,
         branch="orbi/o-r-issue-787",
         worktree="/wt/orbi-o-r-issue-787-a1b2c3d4",
+        source_repo="o/r",
         pr="https://github.com/o/r/pull/9",
     )
     assert context.run_id == "a1b2c3d4"

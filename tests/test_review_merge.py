@@ -23,6 +23,7 @@ from orbi import progress
 from tests.test_progress_wiring import make_fake_gh
 from seam import seam
 import orbi.journal as journal
+from orbi.delivery_scene import RunContext
 
 
 @pytest.fixture(autouse=True)
@@ -493,8 +494,7 @@ def test_run_review_launches_independent_readonly_pi_session(monkeypatch, tmp_pa
     )
     pr = {"number": 4, "url": "u", "base_ref": "main", "base_oid": "b1",
           "head_ref": "h", "head_oid": "h1"}
-    out = runner.run_review(tmp_path, pr, _review_config(tmp_path),
-                            "owner/repo", 4, "orbi/owner-repo-issue-4", 1)
+    out = runner.run_review(RunContext(run_id=_review_config(tmp_path).run_id, issue=4, branch="orbi/owner-repo-issue-4", worktree=tmp_path, source_repo="owner/repo"), pr, _review_config(tmp_path), 1)
     assert out == "done"
     command, kwargs = calls[0]
     # Review skill, shared flat session dir (so the same live activity
@@ -513,10 +513,10 @@ def test_run_review_launches_independent_readonly_pi_session(monkeypatch, tmp_pa
     # its own role (Issue #41: one run, many roles).
     assert kwargs["cwd"] == tmp_path
     assert kwargs["role"] == runner.ROLE_REVIEW
-    assert kwargs["run_id"] == "run1"
-    assert kwargs["issue"] == 4
-    assert kwargs["branch"] == "orbi/owner-repo-issue-4"
-    assert kwargs["source_repo"] == "owner/repo"
+    assert kwargs["ctx"].run_id == "run1"
+    assert kwargs["ctx"].issue == 4
+    assert kwargs["ctx"].branch == "orbi/owner-repo-issue-4"
+    assert kwargs["ctx"].source_repo == "owner/repo"
     assert kwargs["log_command"][-2:] == [
         "<redacted>", "<review-context-redacted>",
     ]

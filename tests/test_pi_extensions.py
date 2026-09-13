@@ -1,6 +1,7 @@
 import pytest
 
 from orbi import runner
+from orbi.delivery_scene import RunContext
 
 
 def test_load_config_pi_extensions_normalizes_enabled_and_local_source(tmp_path):
@@ -78,8 +79,8 @@ def test_run_pi_and_review_share_extension_contract(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(runner, "stream_pi", lambda command, **kw: calls.append((command, kw)) or "ok")
     config = runner.RunnerConfig(prompt=tmp_path / "prompt.md", prompt_review=tmp_path / "prompt_review.md", repo_dir=tmp_path, source_repos=("owner/repo",), workspace_root=tmp_path, context_files=(), skills=(), base_branch="main", base_sha="abc", run_id="deadbeef", pi_extensions=({"source": "npm:fixture@1.2.3", "enabled": True, "env": {"FIXTURE_TOKEN": "secret"}},))
-    runner.run_pi({"number": 1, "title": "t", "body": ""}, tmp_path, config, "owner/repo", branch="b")
-    runner.run_review(tmp_path, {"number": 1, "url": "u", "base_oid": "b", "head_oid": "h", "head_ref": "r"}, config, "owner/repo", 1, "b", 1)
+    runner.run_pi({"number": 1, "title": "t", "body": ""}, RunContext(run_id=config.run_id, issue={"number": 1, "title": "t", "body": ""}["number"], branch="b", worktree=tmp_path, source_repo="owner/repo"), config)
+    runner.run_review(RunContext(run_id=config.run_id, issue=1, branch="b", worktree=tmp_path, source_repo="owner/repo"), {"number": 1, "url": "u", "base_oid": "b", "head_oid": "h", "head_ref": "r"}, config, 1)
     for command, kwargs in calls:
         assert command[1:4] == ["--no-extensions", "--extension", "npm:fixture@1.2.3"]
         assert kwargs["pi_env"] == {"FIXTURE_TOKEN": "secret"}

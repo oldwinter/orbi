@@ -20,6 +20,7 @@ import pytest
 
 import orbi.runner as runner
 from seam import seam
+from orbi.delivery_scene import RunContext
 
 
 def git(repo: Path, *args: str) -> str:
@@ -118,10 +119,7 @@ def test_verify_pr_rejects_delivery_behind_latest_remote_base(clone, caplog):
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError, match="behind latest remote base",
     ):
-        runner.verify_pr(
-            clone, "orbi/owner-repo-issue-3", "main",
-            "a1b2c3d4", issue=3, repo_dir=clone,
-        )
+        runner.verify_pr(RunContext(run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3", worktree=clone, source_repo="owner/repo"), "main", repo_dir=clone)
     assert "base_branch=main" in caplog.text
 
 
@@ -142,10 +140,7 @@ def test_verify_pr_accepts_delivery_that_contains_latest_remote_base(clone, monk
             ),
         }]),
     )
-    assert runner.verify_pr(
-        clone, "orbi/owner-repo-issue-3", "main",
-        "a1b2c3d4", issue=3, repo_dir=clone,
-    ) == "https://github.com/owner/repo/pull/3"
+    assert runner.verify_pr(RunContext(run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3", worktree=clone, source_repo="owner/repo"), "main", repo_dir=clone) == "https://github.com/owner/repo/pull/3"
 
 
 def test_verify_pr_passes_through_when_local_head_ahead_of_pr_head(
@@ -176,10 +171,7 @@ def test_verify_pr_passes_through_when_local_head_ahead_of_pr_head(
         }]),
     )
     with caplog.at_level("INFO"):
-        url = runner.verify_pr(
-            clone, "orbi/owner-repo-issue-3", "main",
-            "a1b2c3d4", issue=3, repo_dir=clone,
-        )
+        url = runner.verify_pr(RunContext(run_id="a1b2c3d4", issue=3, branch="orbi/owner-repo-issue-3", worktree=clone, source_repo="owner/repo"), "main", repo_dir=clone)
     assert url == "https://github.com/owner/repo/pull/3"
     assert "local_head_ahead_of_pr_head" in caplog.text
     assert f"pr_head={pushed_head}" in caplog.text

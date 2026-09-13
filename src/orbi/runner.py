@@ -95,9 +95,9 @@ from orbi.delivery_labels import (
 from orbi import human_review
 from orbi.delivery_scene import (
     EXTERNAL_PR_RE,
-    DeliveryContext,
     DeliveryFacts,
     DeliveryScene,
+    RunContext,
     body_markers,
     classify,
 )
@@ -144,6 +144,7 @@ from orbi.pi_process import (
     PI_MODEL_WAIT_PROBE_SECONDS,
     ROLE_IMPLEMENT,
     ModelWaitDeadError,
+    PiWatchOptions,
     RateLimitExhaustedError,
     RecoverablePiFailure,
     RecoverablePiProcessError,
@@ -2395,8 +2396,7 @@ def external_takeover_pr(repo_dir: Path, body: str | None,
     return pr
 
 
-def started_pi_comment_body(run_id: str, run_info: str, branch: str,
-                            worktree: Path,
+def started_pi_comment_body(ctx: RunContext, run_info: str,
                             extra_fields: dict | None = None) -> str:
     """The start comment doubles as the recoverable run scene.
 
@@ -2405,8 +2405,8 @@ def started_pi_comment_body(run_id: str, run_info: str, branch: str,
     block and never spliced into the space-separated `run_info`.
     """
     fields = _run_info_fields(run_info)
-    fields["branch"] = str(branch)
-    fields["worktree"] = str(worktree)
+    fields["branch"] = str(ctx.branch)
+    fields["worktree"] = str(ctx.worktree)
     if extra_fields:
         fields.update(extra_fields)
     info = _run_info_fields(run_info)
@@ -2414,7 +2414,7 @@ def started_pi_comment_body(run_id: str, run_info: str, branch: str,
         f"{key}={info[key]}" for key in ("run_id", "priority")
         if key in info
     )
-    return field_block(run_id, headline, fields)
+    return field_block(ctx.run_id, headline, fields)
 
 
 def opened_pr_comment_body(run_id: str, run_info: str, pr_url: str,
@@ -3143,8 +3143,7 @@ def run_state_path(worktree: Path) -> Path:
     return worktree / ".orbi" / "run-state.json"
 
 
-def write_run_state(worktree: Path, *, run_id: str, issue: int,
-                    source_repo: str, branch: str) -> None:
+def write_run_state(ctx: RunContext) -> None:
     """Write (or refresh) the run state file of one task worktree.
 
     The file is the explicit "same run" marker: the
@@ -3155,14 +3154,14 @@ def write_run_state(worktree: Path, *, run_id: str, issue: int,
     never per-session.
     """
     state = {
-        "run_id": run_id,
-        "issue": issue,
-        "repo": source_repo,
-        "branch": branch,
-        "worktree": str(worktree),
+        "run_id": ctx.run_id,
+        "issue": ctx.issue,
+        "repo": ctx.source_repo,
+        "branch": ctx.branch,
+        "worktree": str(ctx.worktree),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    path = run_state_path(worktree)
+    path = run_state_path(ctx.worktree)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
@@ -3542,13 +3541,16 @@ def run_ticket_agent(issue: dict, config: RunnerConfig, source_repo: str,
         )
         return stream_pi(
             command, cwd=ticket_dir,
+            ctx=RunContext(
+                run_id=config.run_id, issue=int(issue["number"]),
+                branch="-", worktree=Path("-"), source_repo=source_repo,
+            ),
+            role=ROLE_TICKET,
             log_command=[
                 "pi", *_pi_model_args(config), "--print", "--session-dir",
                 str(session_dir), "--system-prompt", "<redacted>",
                 "<issue-context-redacted>",
             ],
-            run_id=config.run_id, issue=int(issue["number"]),
-            source_repo=source_repo, branch="-", role=ROLE_TICKET,
             progress=progress,
         )
 
@@ -3573,21 +3575,24 @@ def process_ticket_only(issue: dict, config: RunnerConfig, source_repo: str) -> 
             "labels", []) if isinstance(label, dict)
             and isinstance(label.get("name"), str)},
     )
-    set_active_run(number, title, "-", "-")
+    ticket_ctx = RunContext(
+        run_id=run_id, issue=number, branch="-", worktree=Path("-"),
+        source_repo=source_repo,
+    )
+    set_active_run(ticket_ctx, title)
     try:
         publish(
             action=lambda: publisher.ensure(_progress_body(_progress_state(
-                issue=number, title=title, run_id=run_id, role=ROLE_TICKET,
-                branch="-", worktree=Path("-"), started=started, pr_url=None,
-                review_round=0, priority=priority,
+                ticket_ctx, title=title, role=ROLE_TICKET, started=started,
+                pr_url=None, review_round=0, priority=priority,
             ))),
         )
         output = run_ticket_agent(
             issue, replace(config, run_id=run_id), source_repo,
             progress=LiveProgressThrottle(
-                publisher, issue=number, title=title, run_id=run_id,
-                role=ROLE_TICKET, branch="-", worktree=Path("-"),
-                started=started, pr_url=None, review_round=0, priority=priority,
+                ticket_ctx, publisher, title=title, role=ROLE_TICKET,
+                started=started, pr_url=None, review_round=0,
+                priority=priority,
             ),
         )
         if not output:
@@ -3608,9 +3613,8 @@ def process_ticket_only(issue: dict, config: RunnerConfig, source_repo: str) -> 
         )
         publish(
             action=lambda: publisher.finish(_progress_body(_progress_state(
-                issue=number, title=title, run_id=run_id, role=ROLE_TICKET,
-                branch="-", worktree=Path("-"), started=started, pr_url=None,
-                review_round=0, priority=priority,
+                ticket_ctx, title=title, role=ROLE_TICKET, started=started,
+                pr_url=None, review_round=0, priority=priority,
             ), outcome="**Orbi ticket-only delivered**")),
         )
         event(
@@ -3644,14 +3648,18 @@ def process_ticket_only(issue: dict, config: RunnerConfig, source_repo: str) -> 
         raise
 
 
-def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
-           *, timeout: int | None = None, branch: str | None = None,
+def run_pi(issue: dict, ctx: RunContext, config: RunnerConfig, *,
+           timeout: int | None = None,
            progress: Callable[[dict], None] | None = None,
            resume_context: str | None = None) -> str:
     """Run the implementer Pi session for a freshly claimed Issue.
 
     Findings are fixed by the review session in the same session, so
     the implementer is the only user of `prompts/prompt.md`.
+
+    `ctx` is the run-identity bundle (Issue #290): the delivery
+    worktree, branch, source repo, issue number and run id travel as
+    one frozen value.
 
     `resume_context`: when the worktree already carries
     the interrupted run's work (uncommitted changes and/or a previous
@@ -3660,6 +3668,9 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
     prompt template itself is untouched; absent -> the exact
     pre-#219 context.
     """
+    worktree = ctx.worktree
+    source_repo = ctx.source_repo
+    branch: str = ctx.branch
     # Pin the Runner-owned runtime paths in the worktree's
     # local exclude BEFORE Pi starts (covers create, resume and
     # implement) — the tracked .gitignore is the agent's to rename.
@@ -3746,25 +3757,24 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
     return stream_pi(
         command,
         cwd=worktree,
+        ctx=ctx,
         timeout=timeout,
         log_command=[
             "pi", *_pi_extension_args(config), *_pi_model_args(config),
             "--print", "--session-dir", str(worktree / ".pi-session"),
             "--system-prompt", "<redacted>", "<issue-context-redacted>",
         ],
-        run_id=config.run_id,
-        issue=int(issue["number"]),
-        source_repo=source_repo,
-        branch=branch,
         progress=progress,
-        # The configured model_wait dead threshold (the
-        # real load_config always provides the key; the module
-        # constant stays the fallback for hand-built configs).
-        model_wait_dead_seconds=config.model_wait_dead_seconds,
-        # The /slots swallow probe (absent URL -> disabled,
-        # the exact pre-#233 behavior).
-        model_wait_probe_url=config.model_wait_probe_url,
-        model_wait_probe_seconds=config.model_wait_probe_seconds,
+        # The configured model_wait dead threshold and the
+        # /slots swallow probe (absent URL -> disabled, the exact
+        # pre-#233 behavior) ride the watch bundle (the real load_config
+        # always provides the keys; the module constants stay the
+        # fallback for hand-built configs).
+        watch=PiWatchOptions(
+            model_wait_dead_seconds=config.model_wait_dead_seconds,
+            model_wait_probe_url=config.model_wait_probe_url,
+            model_wait_probe_seconds=config.model_wait_probe_seconds,
+        ),
         **extra,
     )
 
@@ -3833,8 +3843,8 @@ def _single_open_pr(worktree: Path, branch: str, base_branch: str,
     return pr
 
 
-def verify_pr(worktree: Path, branch: str, base_branch: str,
-              run_id: str, *, issue: int, repo_dir: Path,
+def verify_pr(ctx: RunContext, base_branch: str, *,
+              repo_dir: Path,
               pr_repo: str | None = None,
               expected_url: str | None = None,
               require_latest_base: bool = True,
@@ -3861,6 +3871,10 @@ def verify_pr(worktree: Path, branch: str, base_branch: str,
     equal the recovered original PR URL (the resume must keep the
     same PR number).
     """
+    worktree = ctx.worktree
+    branch: str = ctx.branch
+    run_id: str = ctx.run_id
+    issue: int = ctx.issue
     current_branch = run_command(
         ["git", "branch", "--show-current"], cwd=worktree,
     )
@@ -4179,8 +4193,7 @@ def _is_runner_runtime_only(status: str) -> bool:
     return True
 
 
-def cleanup_task_worktree(worktree: Path, repo_dir: Path, *, run_id: str,
-                          issue: int) -> None:
+def cleanup_task_worktree(ctx: RunContext, repo_dir: Path) -> None:
     """Remove a terminally failed task's worktree and Runner state.
 
     Called ONLY on the terminal `ai-blocked` outcome AFTER the Issue
@@ -4193,17 +4206,17 @@ def cleanup_task_worktree(worktree: Path, repo_dir: Path, *, run_id: str,
     tick already handled the delivery failure).
     """
     try:
-        if worktree.is_dir():
-            shutil.rmtree(worktree)
+        if ctx.worktree.is_dir():
+            shutil.rmtree(ctx.worktree)
         run_command(["git", "worktree", "prune"], cwd=repo_dir)
         event(
-            "worktree_cleaned", issue=issue, run_id=run_id,
-            worktree=worktree,
+            "worktree_cleaned", issue=ctx.issue, run_id=ctx.run_id,
+            worktree=ctx.worktree,
         )
     except Exception as exc:
         LOGGER.exception(
             "worktree_cleanup_failed issue=%s run_id=%s worktree=%s: %s",
-            issue, run_id, worktree, exc,
+            ctx.issue, ctx.run_id, ctx.worktree, exc,
         )
 
 
@@ -4232,10 +4245,8 @@ def _agent_delivery_boundary(worktree: Path) -> tuple[str, str]:
     return head, dirty
 
 
-def deliver_pr(worktree: Path, branch: str, base_branch: str,
-               base_sha: str, run_id: str, *, issue: int,
-               issue_title: str, repo_dir: Path,
-               source_repo: str) -> str | None:
+def deliver_pr(ctx: RunContext, base_branch: str, base_sha: str, *,
+               issue_title: str, repo_dir: Path) -> str | None:
     """The Runner completes the deterministic delivery closeout.
 
     The Agent stops at the committed delivery (code, tests,
@@ -4268,6 +4279,11 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
     Issue). Returns the PR URL, or None when the delivery stopped
     because the Issue was closed.
     """
+    worktree = ctx.worktree
+    branch: str = ctx.branch
+    run_id: str = ctx.run_id
+    issue: int = ctx.issue
+    source_repo: str = ctx.source_repo
     current_branch = run_command(
         ["git", "branch", "--show-current"], cwd=worktree,
     )
@@ -4394,8 +4410,7 @@ def deliver_pr(worktree: Path, branch: str, base_branch: str,
             issue=issue,
         )
     return verify_pr(
-        worktree, branch, base_branch, run_id, issue=issue,
-        repo_dir=repo_dir, require_latest_base=False,
+        ctx, base_branch, repo_dir=repo_dir, require_latest_base=False,
     )
 
 
@@ -4507,8 +4522,11 @@ def verify_resumed_pr(scene: dict, issue: dict, config: RunnerConfig,
                 ["git", "branch", "--show-current"], cwd=worktree,
             )
         verified_url = verify_pr(
-            worktree, branch, config.base_branch, run_id,
-            issue=number, repo_dir=config.repo_dir,
+            RunContext(
+                run_id=run_id, issue=number, branch=branch,
+                worktree=worktree, source_repo=source_repo,
+            ),
+            config.base_branch, repo_dir=config.repo_dir,
             pr_repo=source_repo,
             expected_url=scene["pr_url"], require_latest_base=False,
             external_pr=external,
@@ -4777,8 +4795,7 @@ def _skill_args(skills: list[str | Path]) -> list[str]:
     ]
 
 
-def run_review(worktree: Path, pr: dict, config: RunnerConfig, source_repo: str,
-               issue: int, branch: str, round: int,
+def run_review(ctx: RunContext, pr: dict, config: RunnerConfig, round: int,
                timeout: int | None = None,
                progress: Callable[[dict], None] | None = None) -> str:
     """Run one independent review session for a frozen PR.
@@ -4792,6 +4809,10 @@ def run_review(worktree: Path, pr: dict, config: RunnerConfig, source_repo: str,
     One run_id end to end, the roles are steps of the same
     run).
     """
+    worktree = ctx.worktree
+    source_repo: str = ctx.source_repo
+    issue: int = ctx.issue
+    branch: str = ctx.branch
     # The review/fix session gets the SAME local-exclude
     # preflight as the implementer (one idempotent helper, Pi 前).
     apply_runner_runtime_excludes(worktree)
@@ -4858,27 +4879,25 @@ def run_review(worktree: Path, pr: dict, config: RunnerConfig, source_repo: str,
     return stream_pi(
         command,
         cwd=worktree,
+        ctx=ctx,
         timeout=timeout,
+        role=ROLE_REVIEW,
         log_command=[
             "pi", *_pi_extension_args(config), *_pi_model_args(config),
             "--print", "--session-dir", str(worktree / ".pi-session"),
             "--system-prompt", "<redacted>", "<review-context-redacted>",
         ],
-        run_id=config.run_id,
-        issue=issue,
-        source_repo=source_repo,
-        branch=branch,
-        role=ROLE_REVIEW,
         progress=progress,
         # The review session uses the SAME configured
-        # model_wait dead threshold as the implementer (the real
-        # load_config always provides the key; the module constant
-        # stays the fallback for hand-built configs).
-        model_wait_dead_seconds=config.model_wait_dead_seconds,
-        # The review session uses the SAME /slots swallow
-        # probe as the implementer (absent URL -> disabled).
-        model_wait_probe_url=config.model_wait_probe_url,
-        model_wait_probe_seconds=config.model_wait_probe_seconds,
+        # model_wait dead threshold and /slots swallow probe as the
+        # implementer (the real load_config always provides the keys;
+        # the module constants stay the fallback for hand-built
+        # configs).
+        watch=PiWatchOptions(
+            model_wait_dead_seconds=config.model_wait_dead_seconds,
+            model_wait_probe_url=config.model_wait_probe_url,
+            model_wait_probe_seconds=config.model_wait_probe_seconds,
+        ),
         **extra,
     )
 
@@ -5652,24 +5671,25 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         source_repo=source_repo, role=ROLE_REVIEW,
     )
     started = time.monotonic()
+    ctx = RunContext(
+        run_id=config.run_id, issue=number, branch=branch,
+        worktree=worktree, source_repo=source_repo,
+    )
     # Ensure is a bypass — a 404 here must not stop the
     # review (the delivery is already open and awaiting review; the
     # journal is the record, the progress comment is observability).
     publish(
         action=lambda: publisher.ensure(_progress_body(_progress_state(
-            issue=number, title=title, run_id=config.run_id,
-            role=ROLE_REVIEW, branch=branch, worktree=worktree,
-            started=started, pr_url=pr["url"], review_round=round,
-            priority=priority,
+            ctx, title=title, role=ROLE_REVIEW, started=started,
+            pr_url=pr["url"], review_round=round, priority=priority,
         ))),
     )
     output = run_review(
-        worktree, pr, config, source_repo, number, branch, round,
+        ctx, pr, config, round,
         progress=LiveProgressThrottle(
-            publisher, issue=number, title=title,
-            run_id=config.run_id, role=ROLE_REVIEW, branch=branch,
-            worktree=worktree, started=started, pr_url=pr["url"],
-            review_round=round, priority=priority,
+            ctx, publisher, title=title, role=ROLE_REVIEW,
+            started=started, pr_url=pr["url"], review_round=round,
+            priority=priority,
         ),
     )
     verdict = parse_review_verdict(output)
@@ -5713,9 +5733,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         publish(
             action=lambda: publisher.finish(_progress_body(
                 _progress_state(
-                    issue=number, title=title, run_id=config.run_id,
-                    role=ROLE_REVIEW, branch=branch,
-                    worktree=worktree, started=started,
+                    ctx, title=title, role=ROLE_REVIEW, started=started,
                     pr_url=pr["url"], review_round=round,
                     priority=priority,
                 ), outcome=(
@@ -5831,9 +5849,7 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
     publish(
         action=lambda: publisher.finish(_progress_body(
             _progress_state(
-                issue=number, title=title, run_id=config.run_id,
-                role=ROLE_REVIEW, branch=branch,
-                worktree=worktree, started=started,
+                ctx, title=title, role=ROLE_REVIEW, started=started,
                 pr_url=merged["url"], review_round=round,
                 priority=priority,
             ), outcome=(
@@ -6184,10 +6200,9 @@ def _failure_evidence(worktree: Path | None, exc: BaseException) -> str:
     )
 
 
-def _live_progress(publisher: ProgressPublisher, *, issue: int,
-                   title: str, run_id: str, role: str, branch: str,
-                   worktree: Path, started: float, pr_url: str | None,
-                   review_round: int, priority: str,
+def _live_progress(ctx: RunContext, publisher: ProgressPublisher, *,
+                   title: str, role: str, started: float,
+                   pr_url: str | None, review_round: int, priority: str,
                    activity: dict | None = None) -> None:
     """One live GitHub progress update while a Pi session is running.
 
@@ -6201,8 +6216,7 @@ def _live_progress(publisher: ProgressPublisher, *, issue: int,
     ensures first.
     """
     state = _progress_state(
-        issue=issue, title=title, run_id=run_id, role=role,
-        branch=branch, worktree=worktree, started=started,
+        ctx, title=title, role=role, started=started,
         pr_url=pr_url, review_round=review_round, priority=priority,
         activity=activity,
     )
@@ -6219,17 +6233,16 @@ class LiveProgressThrottle:
     when at least `PI_HEARTBEAT_SECONDS` passed since it.
     """
 
-    def __init__(self, publisher: ProgressPublisher, *, issue: int,
-                 title: str, run_id: str, role: str, branch: str,
-                 worktree: Path, started: float, pr_url: str | None,
-                 review_round: int, priority: str) -> None:
+    def __init__(self, ctx: RunContext, publisher: ProgressPublisher, *,
+                 title: str, role: str, started: float,
+                 pr_url: str | None, review_round: int,
+                 priority: str) -> None:
         def publish(activity: dict) -> None:
             _live_progress(
-                publisher, issue=issue, title=title, run_id=run_id,
-                role=role, branch=branch, worktree=worktree,
-                started=started,
-                pr_url=pr_url, review_round=review_round,
-                priority=priority, activity=activity,
+                ctx, publisher, title=title, role=role,
+                started=started, pr_url=pr_url,
+                review_round=review_round, priority=priority,
+                activity=activity,
             )
 
         self._publish = publish
@@ -6621,21 +6634,16 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     # Issue context, not only systemd's generic "Stopped" line. The
     # branch and worktree path are the same derived values the
     # worktree creation below uses (bound before the worktree exists);
-    # the run identity is bound once as a frozen DeliveryContext and
+    # the run identity is bound once as a frozen RunContext and
     # the failure/finish paths unpack it from there.
-    ctx = DeliveryContext(
+    ctx = RunContext(
         run_id=run_id, issue=number, branch=branch,
         worktree=existing_worktree or worktree_path(
             config.repo_dir, source_repo, number, run_id,
         ),
+        source_repo=source_repo,
     )
-    set_active_run(
-        number, title, branch,
-        # The verified resume scene keeps its own path (after a repo
-        # rename it carries the OLD slug); otherwise the
-        # derived path (the same value the worktree creation uses).
-        str(ctx.worktree),
-    )
+    set_active_run(ctx, title)
     publisher = ProgressPublisher(
         number, source_repo, run_id, run_command=run_command,
     )
@@ -6672,11 +6680,8 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         # written for EVERY run (a fresh one included, so a later
         # interruption can be verified and resumed), refreshed for a
         # resumed one (same run id, never a second marker).
-        write_run_state(
-            worktree, run_id=run_id, issue=number,
-            source_repo=source_repo, branch=branch,
-        )
         ctx = replace(ctx, worktree=worktree)
+        write_run_state(ctx)
         # The new session starts from the existing work —
         # the uncommitted changes and the previous session's progress —
         # instead of a fresh redo. A clean worktree without a previous
@@ -6711,7 +6716,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         comment_issue(
             number, repo=source_repo,
             body=started_pi_comment_body(
-                run_id, run_info, branch, worktree,
+                ctx, run_info,
                 extra_fields=repo_config_fields,
             ),
         )
@@ -6721,20 +6726,18 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         publish(
             action=lambda: publisher.ensure(_progress_body(
                 _progress_state(
-                    issue=number, title=title, run_id=run_id,
-                    role=ROLE_IMPLEMENT, branch=branch,
-                    worktree=worktree, started=started,
-                    pr_url=None, review_round=0, priority=priority,
+                    ctx, title=title, role=ROLE_IMPLEMENT,
+                    started=started, pr_url=None, review_round=0,
+                    priority=priority,
                 ),
             )),
         )
         if takeover_pr is None:
             run_pi(
-                issue, worktree, config, source_repo, branch=branch,
+                issue, ctx, config,
                 resume_context=resume_ctx,
                 progress=LiveProgressThrottle(
-                    publisher, issue=number, title=title, run_id=run_id,
-                    role=ROLE_IMPLEMENT, branch=branch, worktree=worktree,
+                    ctx, publisher, title=title, role=ROLE_IMPLEMENT,
                     started=started, pr_url=None, review_round=0,
                     priority=priority,
                 ),
@@ -6774,10 +6777,9 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                 publish(
                     action=lambda: publisher.finish(_progress_body(
                         _progress_state(
-                            issue=number, title=title, run_id=run_id,
-                            role=ROLE_IMPLEMENT, branch=branch,
-                            worktree=worktree, started=started,
-                            pr_url=None, review_round=0, priority=priority,
+                            ctx, title=title, role=ROLE_IMPLEMENT,
+                            started=started, pr_url=None, review_round=0,
+                            priority=priority,
                         ),
                         outcome="**Orbi ops delivered**",
                     )),
@@ -6813,9 +6815,8 @@ def _dispatch_implementation(issue: dict, source_repo: str,
         # delivery.
         pr_url = (
             takeover_pr["url"] if takeover_pr is not None else deliver_pr(
-                worktree, branch, base_branch, base_sha, run_id,
-                issue=number, issue_title=title,
-                repo_dir=config.repo_dir, source_repo=source_repo,
+                ctx, base_branch, base_sha,
+                issue_title=title, repo_dir=config.repo_dir,
             )
         )
         ctx = replace(ctx, pr=pr_url)
@@ -6906,9 +6907,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
                 )
         publish(
             action=lambda: publisher.finish(_progress_body(_progress_state(
-                issue=number, title=title, run_id=run_id,
-                role=ROLE_IMPLEMENT, branch=branch,
-                worktree=worktree, started=started,
+                ctx, title=title, role=ROLE_IMPLEMENT, started=started,
                 pr_url=pr_url, review_round=0, priority=priority,
             ), outcome="**Orbi delivered**")),
         )
@@ -6984,9 +6983,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             )
         publish(
             action=lambda: publisher.finish(_progress_body(_progress_state(
-                issue=number, title=title, run_id=run_id,
-                role=ROLE_IMPLEMENT, branch=branch,
-                worktree=worktree, started=started,
+                ctx, title=title, role=ROLE_IMPLEMENT, started=started,
                 pr_url=None, review_round=0, priority=priority,
             ), outcome=(
                 f"**Orbi {recoverable_name}**\n\n"
@@ -7066,10 +7063,7 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             # never reach this branch — the worktree is kept for the
             # same-run resume.
             if worktree is not None:
-                cleanup_task_worktree(
-                    ctx.worktree, config.repo_dir, run_id=ctx.run_id,
-                    issue=ctx.issue,
-                )
+                cleanup_task_worktree(ctx, config.repo_dir)
         # The failure is terminal — the Issue is `ai-blocked`
         # and the `Orbi failed` comment is posted above. Returning
         # `None` ends the tick cleanly: `main` skips the delivery wait
@@ -7147,12 +7141,15 @@ def _finish_progress_body(*, number: int, title: str, run_id: str,
                           role: str, branch: str | None,
                           worktree: Path | None, pr_url: str | None,
                           review_round: int, priority: str, detail: str,
-                          next_step: str, outcome: str) -> str:
+                          next_step: str, outcome: str,
+                          source_repo: str) -> str:
     """Render the terminal progress scene shared by every finish path."""
     return _progress_body(_progress_state(
-        issue=number, title=title, run_id=run_id, role=role,
-        branch=branch or "-", worktree=worktree or Path("-"),
-        started=time.monotonic(), pr_url=pr_url,
+        RunContext(
+            run_id=run_id, issue=number, branch=branch or "-",
+            worktree=worktree or Path("-"), source_repo=source_repo,
+        ),
+        title=title, role=role, started=time.monotonic(), pr_url=pr_url,
         review_round=review_round, priority=priority,
     ), outcome=(
         f"**Orbi {outcome}**\n\n"
@@ -7199,7 +7196,7 @@ def _finish_progress(
         number=number, title=title, run_id=run_id, role=role,
         branch=branch, worktree=worktree, pr_url=pr_url,
         review_round=review_round, priority=priority, detail=detail,
-        next_step=next_step, outcome=outcome,
+        next_step=next_step, outcome=outcome, source_repo=source_repo,
     ))
 
 
@@ -7439,6 +7436,7 @@ def report_delivery_failure(
                 ),
                 priority=priority, detail=finish_failure,
                 next_step=next_step, outcome=finish_outcome,
+                source_repo=source_repo,
             )))
     return outcome
 
@@ -8208,16 +8206,17 @@ def main(argv: list[str] | None = None) -> int:
             # The resumed delivery is in flight: bind the stop scene
             # with the same derived branch/worktree the
             # delivery wait uses (never read from a comment).
-            set_active_run(
-                int(issue["number"]), issue["title"],
-                task_branch(
+            set_active_run(RunContext(
+                run_id=scene["run_id"], issue=int(issue["number"]),
+                branch=task_branch(
                     source_repo, int(issue["number"]), scene["run_id"],
                 ),
-                str(worktree_path(
+                worktree=worktree_path(
                     config.repo_dir, source_repo,
                     int(issue["number"]), scene["run_id"],
-                )),
-            )
+                ),
+                source_repo=source_repo,
+            ), issue["title"])
             # Verify the open PR BEFORE any git/Pi mutation
             # (head repo, base, run marker, exact URL of the recovered
             # scene — the pre-#82 resume_delivery check, restored):
