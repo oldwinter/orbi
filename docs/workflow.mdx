@@ -400,6 +400,11 @@ DAG, no priority numbers, no separate queues:
       already-closed is an idempotent success (no reopen); a missing
       Milestone or remaining open Issues fail fast with the version, the
       Milestone number/url and the open issue list (never a silent skip).
+      The release's own ticket is never counted as unfinished work
+      (Issue #808): it is being closed by this release, so a stale-open
+      listing of exactly that ticket — the issue index lags seconds
+      behind the close (Issue #754) — does not block or delay the close,
+      while any other open Issue still refuses it.
       Any failure: `ai-blocked` ALONE (a release is a human decision point
       — no automatic retry), the failure comment carries the run marker
       and the concrete reason, and the exception propagates so the tick

@@ -1213,7 +1213,8 @@ def publish_release(*, repo: str, tag: str, version: str,
 MILESTONE_OPEN_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 
-def close_release_milestone(repo: str, version: str, *, run_id: str | None = None) -> str:
+def close_release_milestone(repo: str, version: str, *, run_id: str | None = None,
+                            release_issue: int | None = None) -> str:
     """Close the Milestone whose title is exactly `version` (Issue #214).
 
     Runs on the release success path (after the tag is pushed, the
@@ -1235,6 +1236,16 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
     - `open` with 0 open issues -> closed via the official REST
       contract `PATCH /repos/{owner}/{repo}/milestones/{number}`
       with `state=closed` (OpenAPI `issues/update-milestone`).
+
+    `release_issue` is THIS release's own ticket number (Issue #808).
+    The gate never counts it as unfinished work: it is being closed by
+    this very release, so a stale-open listing of exactly that ticket
+    is the known Issue #754 index lag, and waiting out the backoff for
+    it would make the milestone close depend on the index refresh
+    timing. Every gate read drops it before the 0-open-issues
+    judgment; a refusal then names only the REAL leftovers and
+    annotates the exclusion. Without `release_issue` the gate is
+    unchanged.
 
     The list query asks for `state=all`: the default `state=open`
     would hide already-closed Milestones and break the idempotent
@@ -1272,13 +1283,29 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
             f"Milestone #{number} ({html_url}) already closed — "
             "idempotent success, nothing to do"
         )
-    open_issues = milestone_open_issues(repo, int(number))
+    excluded_tickets: list[int] = []
+
+    def open_leftovers() -> list[dict]:
+        # Issue #808: the gate judges the milestone's REAL unfinished
+        # work — never this release's own ticket.
+        issues = milestone_open_issues(repo, int(number))
+        if release_issue is None:
+            return issues
+        leftovers = [
+            item for item in issues
+            if item.get("number") != release_issue
+        ]
+        if len(leftovers) != len(issues):
+            excluded_tickets.append(release_issue)
+        return leftovers
+
+    open_issues = open_leftovers()
     epic_evidence: list[str] = []
     if run_id is not None and open_issues:
         # Every listed Epic is verified from its children and blockers before
         # the authoritative exact-Milestone list is checked again.
         epic_evidence = reconcile_release_epics(repo, int(number), version, run_id)
-        open_issues = milestone_open_issues(repo, int(number))
+        open_issues = open_leftovers()
     retries = 0
     while open_issues and retries < len(MILESTONE_OPEN_RETRY_DELAYS):
         # The release Issue close succeeded seconds ago; a non-empty read
@@ -1287,21 +1314,31 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
         # fires only once the list stays non-empty across all retries.
         time.sleep(MILESTONE_OPEN_RETRY_DELAYS[retries])
         retries += 1
-        open_issues = milestone_open_issues(repo, int(number))
+        open_issues = open_leftovers()
     if open_issues:
         listing = ", ".join(
             f"#{i.get('number')} {i.get('title')}" for i in open_issues
         )
+        excluded = (
+            f" (this release's own ticket #{release_issue} is excluded "
+            "from this gate — it is being closed by this release)"
+            if release_issue is not None else ""
+        )
         raise RuntimeError(
             f"release {version}: Milestone #{number} ({html_url}) still "
             f"has {len(open_issues)} open issue(s) — closing it would hide "
-            f"unfinished work; open issues: {listing}"
+            f"unfinished work; open issues: {listing}{excluded}"
         )
     close_milestone(repo, int(number))
     epic_suffix = f"; {'; '.join(epic_evidence)}" if epic_evidence else ""
+    excluded_suffix = (
+        f"; release ticket #{release_issue} excluded — it is being "
+        "closed by this release"
+        if excluded_tickets else ""
+    )
     return (
         f"Milestone #{number} ({html_url}) closed after release "
-        f"{version} (0 open issues){epic_suffix}"
+        f"{version} (0 open issues){epic_suffix}{excluded_suffix}"
     )
 
 
@@ -2068,17 +2105,19 @@ def process_release(issue: dict, config: RunnerConfig,
             )
         try:
             milestone_evidence = close_release_milestone(
-                source_repo, tag, run_id=run_id,
+                source_repo, tag, run_id=run_id, release_issue=int(number),
             )
         except Exception as exc:
             # The tag and GitHub Release are already published at this point.
             # Milestone closure is evidence only and must not rewrite that
-            # irreversible release result as ai-blocked.
+            # irreversible release result as ai-blocked (Issue #79). The
+            # wording states plainly that the third release criterion was
+            # missed — the milestone was NOT closed (Issue #808).
             LOGGER.exception(
                 "issue=%s release_milestone_evidence_failed", number,
             )
             milestone_evidence = (
-                "milestone evidence unavailable: " + str(exc)
+                "milestone NOT closed: " + str(exc)
             )
         try:
             comment_issue(
