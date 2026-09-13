@@ -15996,6 +15996,55 @@ def test_derive_release_scope_from_milestone_empty_scope(monkeypatch):
     assert open_evidence == ["open Issue #255 Still open work"]
 
 
+def test_derive_release_scope_from_milestone_excludes_release_issue(
+        monkeypatch):
+    # Issue #818: the release Issue itself is necessarily still open
+    # when the notes are generated (it closes after the release), so
+    # listing it as "NOT released" is a self-referential false
+    # statement. It must be exempted like the #663 gate does.
+    make_milestone_gh(
+        monkeypatch,
+        milestones=[{"number": 5, "title": "v1.0.0", "state": "open"}],
+        items_by_milestone={5: {
+            "issues_closed": [
+                {"number": 50, "title": "Deliver A", "state": "closed"},
+            ],
+            "issues_open": [
+                {"number": 52, "title": "Release v1.0.0", "state": "open"},
+            ],
+        }},
+    )
+    scope, open_evidence = release.derive_release_scope_from_milestone(
+        "o/r", "v1.0.0", release_issue=52,
+    )
+    assert scope == [50]
+    assert open_evidence == []
+
+
+def test_derive_release_scope_from_milestone_keeps_genuinely_open_items(
+        monkeypatch):
+    # Issue #818: only the release Issue is exempt — a real unfinished
+    # Issue in the milestone must still surface as NOT released.
+    make_milestone_gh(
+        monkeypatch,
+        milestones=[{"number": 5, "title": "v1.0.0", "state": "open"}],
+        items_by_milestone={5: {
+            "issues_closed": [
+                {"number": 50, "title": "Deliver A", "state": "closed"},
+            ],
+            "issues_open": [
+                {"number": 52, "title": "Release v1.0.0", "state": "open"},
+                {"number": 60, "title": "Unfinished work", "state": "open"},
+            ],
+        }},
+    )
+    scope, open_evidence = release.derive_release_scope_from_milestone(
+        "o/r", "v1.0.0", release_issue=52,
+    )
+    assert scope == [50]
+    assert open_evidence == ["open Issue #60 Unfinished work"]
+
+
 def make_gate_gh(monkeypatch, *, leftover_labels=None, check_runs=None,
                  leftover_milestones=None):
     """Answer the gh calls of `check_release_gates`.
@@ -17893,6 +17942,42 @@ def test_process_release_lists_open_milestone_items(monkeypatch, caplog):
     (comment_number, comment_kwargs), = state["comments"]
     assert ("NOT released (still open in milestone v0.3.0): "
             "open Issue #255 Still open work") in comment_kwargs["body"]
+    assert "PR #123 merged (mergeCommit=aaa111)" in comment_kwargs["body"]
+
+
+def test_process_release_exempts_release_issue_from_open_evidence(monkeypatch):
+    """Issue #818 regression: with `scope_from_milestone`, the release
+    Issue itself is necessarily still open in its Milestone while the
+    notes are generated (it closes only after the Release is published),
+    so it must never surface as the self-referential "NOT released" line
+    on the immutable Release page — this pins the caller's
+    `release_issue=number` wiring end to end."""
+    state = make_release_process_env(
+        monkeypatch,
+        body=RELEASE_MILESTONE_DECLARATION_BODY,
+        milestone_items={5: {
+            "issues_closed": [
+                {"number": 123, "title": "Deliver A", "state": "closed"},
+            ],
+            "issues_open": [
+                {"number": 99, "title": "Release v0.3.0", "state": "open"},
+            ],
+        }},
+    )
+    issue = {"number": 99, "title": "Release v0.3.0",
+             "body": RELEASE_MILESTONE_DECLARATION_BODY,
+             "labels": [{"name": "ai-ready"}, {"name": "ai-release"}]}
+    url = release.process_release(
+        issue, runner.RunnerConfig(repo_dir=Path("/r"), base_branch="main"), "o/r",
+    )
+    assert url == "https://github.com/o/r/releases/tag/v0.3.0"
+    # The release still completes terminally, and the auditable scope
+    # evidence (the same list the Release notes carry) carries the
+    # derived delivery but NO self-referential NOT released line.
+    assert state["edits"][-1] == (99, {"repo": "o/r", "add": "ai-merged",
+                                       "remove": "ai-in-progress"})
+    (comment_number, comment_kwargs), = state["comments"]
+    assert "NOT released" not in comment_kwargs["body"]
     assert "PR #123 merged (mergeCommit=aaa111)" in comment_kwargs["body"]
 
 
