@@ -35,10 +35,11 @@ def test_build_checklists_column1_carries_test_evidence_and_layer():
     checklist = human_review.build_checklist(
         test_result="156 passed in 4.43s",
         changed_files=["src/orbi/runner.py"],
-        test_command="pytest tests/ -q",
     )
     assert any("156 passed in 4.43s" in item for item in checklist["column1"])
-    assert any("pytest tests/ -q" in item for item in checklist["column1"])
+    # Issue #805: no declared test command — the suite wording is the
+    # repository's own test suite.
+    assert any("仓库测试套件" in item for item in checklist["column1"])
     # The business-intent item fires: a non-test source file changed.
     assert len(checklist["column2"]) == 1
     assert "业务意图" in checklist["column2"][0]
@@ -52,7 +53,6 @@ def test_build_checklists_column2_adds_ui_and_deploy_dimensions():
             "templates/index.html",
             ".github/workflows/ci.yml",
         ],
-        test_command="pytest -q",
     )
     joined = "\n".join(checklist["column2"])
     assert "业务意图" in joined
@@ -67,7 +67,6 @@ def test_build_checklists_docs_changes_do_not_trigger_the_intent_item():
     checklist = human_review.build_checklist(
         test_result="10 passed in 0.1s",
         changed_files=["docs/workflow.mdx", "README.md"],
-        test_command="pytest -q",
     )
     assert checklist["column2"] == []
 
@@ -78,7 +77,6 @@ def test_build_checklists_tests_only_delivery_has_an_empty_column2():
     checklist = human_review.build_checklist(
         test_result="10 passed in 0.1s",
         changed_files=["tests/test_new.py", "tests/conftest.py"],
-        test_command="pytest -q",
     )
     assert checklist["column1"]
     assert checklist["column2"] == []
@@ -88,7 +86,6 @@ def test_build_checklists_missing_test_evidence_lands_in_column2():
     checklist = human_review.build_checklist(
         test_result=None,
         changed_files=["tests/test_new.py"],
-        test_command="pytest -q",
     )
     assert any("测试证据" in item for item in checklist["column2"])
 
@@ -97,7 +94,6 @@ def test_build_checklists_unreadable_diff_lands_in_column2():
     checklist = human_review.build_checklist(
         test_result="10 passed in 0.1s",
         changed_files=None,
-        test_command="pytest -q",
     )
     assert any("改动文件" in item for item in checklist["column2"])
 
@@ -109,7 +105,6 @@ def test_build_checklists_degenerate_paths_never_crash_the_classifier():
     checklist = human_review.build_checklist(
         test_result="10 passed in 0.1s",
         changed_files=["", "//"],
-        test_command="pytest -q",
     )
     assert any("业务意图" in item for item in checklist["column2"])
     assert not any("UI" in item for item in checklist["column2"])
@@ -122,7 +117,6 @@ def _render(**overrides):
     kwargs = dict(
         run_id=RUN_ID,
         pr_url=PR_URL,
-        test_command="pytest tests/ -q",
         checklist={"column1": ["测试结果：10 passed"], "column2": ["业务意图"]},
     )
     kwargs.update(overrides)
@@ -159,7 +153,9 @@ def test_rendered_checklist_names_both_columns_and_the_pr():
     body = _render()
     assert "栏一" in body and "栏二" in body
     assert PR_URL in body
-    assert "pytest tests/ -q" in body
+    # Issue #805: no declared test command — the review instruction
+    # names the repository's own test suite.
+    assert "仓库测试套件" in body
     # Copy discipline (website#128): the checklist never claims a
     # guarantee of correctness/direction.
     assert "保证" not in body
@@ -214,7 +210,7 @@ def _scene_comments():
 
 
 def _gate_config(tmp_path, *, gate=True):
-    return runner.RunnerConfig(repo_dir=tmp_path, base_branch="main", base_sha=BASE_SHA, test_command="pytest tests/ -q", human_review_gate=gate)
+    return runner.RunnerConfig(repo_dir=tmp_path, base_branch="main", base_sha=BASE_SHA, human_review_gate=gate)
 
 
 @pytest.fixture()
@@ -380,6 +376,6 @@ def test_delivered_changed_files_failure_is_missing_evidence(
     assert runner.delivered_changed_files(worktree, "main") is None
     # Missing evidence lands in column 2 (the gate holds).
     checklist = human_review.build_checklist(
-        test_result="10 passed", changed_files=None, test_command=None,
+        test_result="10 passed", changed_files=None,
     )
     assert any("改动文件" in item for item in checklist["column2"])

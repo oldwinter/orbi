@@ -168,12 +168,9 @@ def parse_release_declaration(body: str) -> dict:
 
     `version` is the exact tag name (no spaces) and `base_branch` the
     branch the release commit is frozen from. The declaration carries
-    NO local test contract (Issue #569): test acceptance is the GitHub
-    Actions CI result on the release commit (the #268 CI-wait gate), so
-    `test_command` is not part of the contract — a legacy body that
-    still declares it is accepted with the field ignored (one
-    `release_test_command_ignored` evidence line at run time) and never
-    executed. `scope` lists the Issue/PR numbers verified one by one.
+    NO test contract (Issue #569): test acceptance is the GitHub
+    Actions CI result on the release commit (the #268 CI-wait gate).
+    `scope` lists the Issue/PR numbers verified one by one.
     Optional `version_file` selects a supported ecosystem metadata file
     (the default is `pyproject.toml`) or `none` to skip version metadata
     changes; its existence in the frozen release tree is verified at
@@ -251,10 +248,7 @@ def parse_release_declaration(body: str) -> dict:
                     )
                 scope_open = True
                 fields["scope"] = ""
-            # `test_command` stays a KNOWN key (Issue #569): a legacy
-            # body may still declare it — accepted, ignored, never
-            # executed.
-            elif key in ("version", "base_branch", "test_command",
+            elif key in ("version", "base_branch",
                          "scope_from_milestone", "version_file"):
                 fields[key] = value
             else:
@@ -322,8 +316,6 @@ def parse_release_declaration(body: str) -> dict:
     return {
         "version": fields["version"],
         "base_branch": fields["base_branch"],
-        # Issue #569: a legacy field, accepted and ignored — never executed.
-        "test_command": fields.get("test_command"),
         "scope": scope,
         "scope_from_milestone": fields.get("scope_from_milestone"),
         "version_file": version_file,
@@ -1700,10 +1692,9 @@ def process_release(issue: dict, config: RunnerConfig,
 
     1. Strictly parse the `## Release` declaration from the Issue
        body (version, base_branch, scope or
-       scope_from_milestone — exactly one of the two, Issue #253; a
-       legacy `test_command` field is ignored with one evidence
-       line — the declaration carries no local test contract,
-       Issue #569).
+       scope_from_milestone — exactly one of the two, Issue #253;
+       the declaration carries no test contract — test acceptance
+       is the CI result, Issue #569).
     2. Freeze the base — the release commit is exactly
        `origin/<base_branch>` (fetched under the base-sync lock).
     2b. Prove the declared (or defaulted) `version_file` exists at the
@@ -1809,14 +1800,6 @@ def process_release(issue: dict, config: RunnerConfig,
     open_milestone_evidence: list[str] = []
     try:
         declaration = parse_release_declaration(issue["body"])
-        if declaration["test_command"] is not None:
-            # Issue #569: a legacy `test_command` line is accepted and
-            # ignored with this single evidence line — it is never
-            # executed; test acceptance is the CI-wait gate.
-            event(
-                "release_test_command_ignored",
-                value=declaration["test_command"],
-            )
         base_branch = declaration["base_branch"]
         event(
             "release_task",

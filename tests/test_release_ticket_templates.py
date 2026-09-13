@@ -29,30 +29,27 @@ GitHub issue-creation UI). What #734 adds on top of the merged #749
 delivery is locked by the last two tests below: the frontmatter-stripped
 UI body with the `vX.Y.Z` placeholders replaced by a REAL version must
 parse to exactly the right declaration (the user journey a ticket
-actually takes), and the live `## Release` section must never carry the
-legacy `test_command` (the memo section's #569 do-not-write warning is
-documentation of the contract, not a declaration field).
+actually takes), and since #805 removed the legacy tolerated field the
+templates must not mention `test_command` at all.
 """
 import re
 from pathlib import Path
 
 from orbi.delivery_labels import READY_LABEL, RELEASE_LABEL
 from orbi.release import parse_release_declaration
-from orbi.runner import RELEASE_SECTION
 
 ROOT = Path(__file__).resolve().parent.parent
 UI_TEMPLATE = ROOT / ".github" / "ISSUE_TEMPLATE" / "release.md"
 BODY_TEMPLATE = ROOT / ".github" / "release-ticket-template.md"
 
 # The parser's known keys (src/orbi/release.py parse_release_declaration;
-# `test_command` is the legacy accepted-and-ignored key, Issue #569).
+# the removed legacy `test_command` is an unknown field since #805).
 KNOWN_KEYS = frozenset({
     "version",
     "base_branch",
     "scope",
     "scope_from_milestone",
     "version_file",
-    "test_command",
 })
 
 
@@ -136,22 +133,14 @@ def test_ui_template_body_with_a_real_substituted_version_parses():
     assert declaration["base_branch"] == "main"
     assert declaration["scope_from_milestone"] == "v0.4.9"
     assert declaration["version_file"] == "pyproject.toml"
-    assert declaration["test_command"] is None
 
 
-def test_live_declaration_section_carries_no_legacy_test_command():
-    # The skeleton a ticket KEEPS — the first exact `## Release` section,
-    # the same slice the parser reads, before the memo section — must
-    # never suggest the legacy accepted-and-ignored `test_command`
-    # (Issue #734); the memo's #569 do-not-write warning is the only
-    # place the name may appear. `partition` finds the live section even
-    # though the memo's ```markdown fences repeat the heading.
+def test_release_templates_do_not_mention_the_removed_test_command():
+    # Issue #805: the legacy tolerated field is gone — a body that
+    # declares it now fails as an unknown field, so the templates must
+    # not carry the name anywhere (the old memo's do-not-write warning
+    # documented a tolerance that no longer exists).
     for path in (UI_TEMPLATE, BODY_TEMPLATE):
-        text = path.read_text(encoding="utf-8")
-        _before, marker, rest = text.partition(f"\n{RELEASE_SECTION}\n")
-        assert marker, f"{path} has no live `{RELEASE_SECTION}` section"
-        live = rest.split("\n## ", 1)[0]
-        assert "test_command" not in live, (
-            f"{path} suggests the legacy test_command in its live "
-            f"`{RELEASE_SECTION}` section"
+        assert "test_command" not in path.read_text(encoding="utf-8"), (
+            f"{path} still mentions the removed test_command field"
         )
