@@ -264,8 +264,8 @@ class ProgressPublisher:
     tracked comment, or locates/creates it like `ensure` when the run
     never got that far. `milestone` posts a short
     standalone comment. `failure_scene` updates the run's identical
-    recoverable-failure comment in place instead of appending a duplicate
-. Every call goes through `run_command` (gh api)
+    recoverable-failure comment in place instead of appending a duplicate.
+    Every call goes through `run_command` (gh api)
     and raises on any error.
     """
 

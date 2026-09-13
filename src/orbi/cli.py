@@ -177,8 +177,8 @@ def follow_session_file(path: Path,
     """Yield the lines of `path`, then its new lines as they appear.
 
     `tail -f` semantics for ONE file: the generator follows the file it
-    was given and never switches to a newer file that appears mid-run
-. A file that disappears (worktree cleanup) stops the
+    was given and never switches to a newer file that appears mid-run.
+    A file that disappears (worktree cleanup) stops the
     generator — fail fast, no fallback. A file that shrank is re-read
     from the start (the same rule as the session watcher). Only
     complete lines are yielded: a trailing partial line (the writer is

@@ -389,8 +389,8 @@ def _log_startup(kind: str, *, issue_ref: str, role: str, activity: dict,
     role, the provider/model Pi selected (`-` until the session's
     `model_change` record says otherwise), the elapsed time since the
     Pi process was spawned, and any extra fields of the phase (`pid=`,
-    `reason=`, `session_created=`, `first_request=`). No `run=` field
-: the `[run_id]` prefix is the single run-id carrier.
+    `reason=`, `session_created=`, `first_request=`). No `run=` field:
+    the `[run_id]` prefix is the single run-id carrier.
     Identifiers only — never a key, the prompt or model output.
     """
     event(
@@ -402,8 +402,7 @@ def _log_startup(kind: str, *, issue_ref: str, role: str, activity: dict,
 
 
 def _classify_startup_exit(stderr: str, returncode: int) -> str:
-    """The distinguishable `startup_failed` reason for an early Pi exit
-.
+    """The distinguishable `startup_failed` reason for an early Pi exit.
 
     The classification is evidence-based on Pi's own stderr (the
     minimal correlation the Issue asks for): a provider rate limit
@@ -1263,7 +1262,7 @@ def _stream_pi_once(
                 activity["phase"], activity["action"], activity["result"],
             )
             # The wait state rides on the activity/heartbeat lines
-            #. Once the model_wait silence crosses the dead
+            # Once the model_wait silence crosses the dead
             # threshold the wait is DEAD, not slow: the
             # state is `model_wait_slow` on the last heartbeat before
             # the kill below — visible, and the kill fires on this same

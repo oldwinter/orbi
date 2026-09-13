@@ -151,8 +151,8 @@ def check_transport(
     """Check (and only when authorized, migrate) the git transport.
 
     `mode` is the configured transport (`git_transport` in orbi.toml):
-    `"ssh"` (default) or `"https"`
-. Checks, in order: the `origin` remote exists; it
+    `"ssh"` (default) or `"https"`.
+    Checks, in order: the `origin` remote exists; it
     points at the FIRST configured source repo (the deployment
     checkout is that repo's clone — the worktrees share the single
     remote); its protocol matches the mode; when `probe` is on,

@@ -952,8 +952,7 @@ def _pi_extension_env(config: RunnerConfig) -> dict[str, str]:
 
 
 def _model_wait_probe_url(data: dict) -> str | None:
-    """Load and validate the optional `model_wait_probe_url`
-.
+    """Load and validate the optional `model_wait_probe_url`.
 
     Omitted -> None (the /slots probe is disabled: the run is bounded by
     `model_wait_dead_seconds` only, the exact pre-#233 behavior). Present
@@ -978,8 +977,7 @@ def _model_wait_probe_url(data: dict) -> str | None:
 
 
 def _model_wait_probe_seconds(data: dict) -> float:
-    """Load and validate the optional `model_wait_probe_seconds`
-.
+    """Load and validate the optional `model_wait_probe_seconds`.
 
     Omitted -> `PI_MODEL_WAIT_PROBE_SECONDS` (default 60 s). Present ->
     must be a finite positive number (int or float); booleans, zero,
@@ -1019,8 +1017,7 @@ def _model_wait_probe_seconds(data: dict) -> float:
 
 
 def _release_ci_wait_seconds(data: dict) -> float:
-    """Load and validate the optional `release_ci_wait_seconds`
-.
+    """Load and validate the optional `release_ci_wait_seconds`.
 
     Omitted -> `RELEASE_CI_WAIT_SECONDS` (default 1800 s). Present ->
     must be a finite positive number (int or float); booleans, zero,
@@ -1077,8 +1074,7 @@ def _release_deliveries_wait_seconds(data: dict) -> float:
 
 
 def _model_wait_dead_seconds(data: dict) -> float:
-    """Load and validate the optional `model_wait_dead_seconds`
-.
+    """Load and validate the optional `model_wait_dead_seconds`.
 
     Omitted -> `PI_MODEL_WAIT_DEAD_SECONDS` (default 1800 s, 30
     minutes). Present -> must be a finite positive number (int or
@@ -2270,8 +2266,7 @@ def pick_in_progress_issue(
     The scan runs only when no OTHER runner is live: a slot held by
     another process proves a live runner is working (on this or another
     Issue), so the `ai-in-progress` label is in flight, not orphaned —
-    resuming it here would start a second Pi for a run that is alive
-.
+    resuming it here would start a second Pi for a run that is alive.
     This runner's own slot is excluded: `main` took it before the claim
     scan and holds it for the whole delivery.
     """
@@ -2617,8 +2612,8 @@ def pick_resumable_delivery(
     scans and exits 0 — one corrupted Issue must never make every
     tick crash while the whole queue waits.
 
-    Only the deliveries a live co-runner CURRENTLY holds are skipped
-    : every holder names its (repo, issue) in its slot file
+    Only the deliveries a live co-runner CURRENTLY holds are skipped:
+    every holder names its (repo, issue) in its slot file
     (`pilot_slots.mark_slot_delivery`), so this scan skips exactly the
     in-flight deliveries. That is the round-1 protection at
     the right granularity — a held delivery is never resumed here, so a
@@ -3275,8 +3270,8 @@ def worktree_resume_scene(repo_dir: Path, source_repo: str,
 
     A worktree that claims THIS issue number but has a MISSING or
     CORRUPT run state file cannot be verified as the same run: it
-    fails fast with the exact reason — never a silent fresh redo
-. A worktree of another issue without a state file
+    fails fast with the exact reason — never a silent fresh redo.
+    A worktree of another issue without a state file
     (a legacy completed run) is unrelated and skipped.
     """
     name = source_repo.rsplit("/", 1)[-1]
@@ -3777,8 +3772,8 @@ def run_pi(issue: dict, worktree: Path, config: RunnerConfig, source_repo: str,
 def _query_open_prs(worktree: Path, branch: str) -> list:
     """Return the task branch's open PRs as the raw `gh pr list` list.
 
-    The ONE PR-query contract shared by verify_pr and freeze_pr
-: a single field set, a single ambiguity-guard limit and
+    The ONE PR-query contract shared by verify_pr and freeze_pr:
+    a single field set, a single ambiguity-guard limit and
     a single parse. The limit is wide enough that the failure evidence
     lists every ambiguous open PR (the resume audit record);
     the "exactly one" decision needs no tighter bound. A non-array
@@ -4186,8 +4181,7 @@ def _is_runner_runtime_only(status: str) -> bool:
 
 def cleanup_task_worktree(worktree: Path, repo_dir: Path, *, run_id: str,
                           issue: int) -> None:
-    """Remove a terminally failed task's worktree and Runner state
-.
+    """Remove a terminally failed task's worktree and Runner state.
 
     Called ONLY on the terminal `ai-blocked` outcome AFTER the Issue
     evidence (journal line + `Orbi failed` comment) is recorded.
@@ -6343,8 +6337,8 @@ def _gather_claim_facts(issue: dict, config: RunnerConfig,
     """Gather the claim facts of one attempt (the dispatch's first step).
 
     The probe sequence is `process_issue`'s prologue, order unchanged:
-    the attempt binds its run id before any other step is logged
-, the repository policy applies, the live
+    the attempt binds its run id before any other step is logged,
+    the repository policy applies, the live
     `ai-in-progress` state is read directly, then the
     fresh-claim probes (the stable branch's open PR, the branch
     existence, the external takeover of a marker ticket) or the
@@ -7181,8 +7175,8 @@ def _finish_progress(
     the same body the `process_issue` failure path writes) or
     `fix needed` (the recoverable failure that keeps the
     Issue in the automatic fix loop, the next timer resuming the same
-    run, branch, worktree and PR). `title` is the issue's GitHub title
-: the scene shows `#<number> <title>` like every other
+    run, branch, worktree and PR). `title` is the issue's GitHub title:
+    the scene shows `#<number> <title>` like every other
     progress scene; it is required, never fabricated.
 
     `ensure` finds the run's existing progress comment by its hidden
@@ -7553,7 +7547,7 @@ def _run_review_round(
             return None
     # The PR is in an opened-PR review state: run the
     # independent review of the frozen PR on the same run
-    #. `ai-pr-opened` awaits review; `ai-fix-needed`
+    # `ai-pr-opened` awaits review; `ai-fix-needed`
     # awaits the next review session after a finding or a base
     # conflict (the review session fixes findings in
     # the same session, so both states run the same review). A
@@ -8203,7 +8197,7 @@ def main(argv: list[str] | None = None) -> int:
             # same run on the same branch, worktree and PR.
             # Bind the scene's run id first so every journal line and
             # GitHub comment of the resumed delivery carries it
-            #. Both opened-PR states go straight to the
+            # Both opened-PR states go straight to the
             # delivery step: `ai-pr-opened` awaits review, and
             # `ai-fix-needed` awaits the next review session —
             # The review session itself fixes findings in the

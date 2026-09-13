@@ -120,8 +120,8 @@ def unmanaged_units(installed_dir: Path) -> list[dict]:
     ``check_unit_drift`` compares exactly those names. A hand-written
     orbi unit WITHOUT the ``@`` template form (``orbi-core.service``,
     the pre-#149 ``orbi.timer``, ...) is invisible to every
-    ``unit_names()`` set — it never drift-checks and never self-heals
-. One entry per such file, sorted by name: the unit
+    ``unit_names()`` set — it never drift-checks and never self-heals.
+    One entry per such file, sorted by name: the unit
     name and the ``ORBI_CONFIG`` the unit points at (``None`` when the
     file carries none — timers never do). A missing unit dir has
     nothing to scan (the missing managed units are ``unit_drift``'s

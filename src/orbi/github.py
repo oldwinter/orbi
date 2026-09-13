@@ -501,7 +501,7 @@ def _epic_audit(child_evidence: list[str], version: str | None = None) -> str:
 # Only comments posted by a repo maintainer are trusted to carry the
 # recovery scene: a public comment (authorAssociation=NONE) must never
 # steer the runner into an arbitrary local worktree, branch or PR
-#. A missing association is never trusted.
+# A missing association is never trusted.
 TRUSTED_COMMENT_ASSOCIATIONS = frozenset({
     "OWNER", "MAINTAINER", "MEMBER", "COLLABORATOR",
 })

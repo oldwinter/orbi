@@ -37,8 +37,8 @@ class BaseSyncLockError(RuntimeError):
     """The base-sync flock could not be taken within the timeout.
 
     The lock orders every writer of the shared remote-tracking ref
-    ``refs/remotes/origin/<base>`` and of the deployment tool env
-; a timeout means another Runner instance or the
+    ``refs/remotes/origin/<base>`` and of the deployment tool env;
+    a timeout means another Runner instance or the
     ExecStartPre preflight is syncing right now — fail fast, no retry.
     """
 
