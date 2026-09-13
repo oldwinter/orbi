@@ -1,0 +1,59 @@
+# v0.5.3 发布（最新）
+
+`v0.5.3` 于 2026-09-13T18:44:18Z 发布为 GitHub Release [v0.5.3](https://github.com/orbi-build/orbi/releases/tag/v0.5.3)（release task：Issue #821）。
+
+## Tag 状态（对 origin 验证）
+
+| Ref | 对象 | 指向 |
+|---|---|---|
+| `v0.5.3` | 注解 tag `3c8f5daa71421b09dca2c1d485863c80303ab81e` | 提交 `97e402386d908119c170acb435331093c48a3614` |
+
+## Release notes
+
+## Changelog
+
+### Features
+
+- 技术债：(run_id, issue, branch, worktree) 作为散装参数穿过 14 个函数 ([Issue #290](https://github.com/orbi-build/orbi/issues/290); [PR #828](https://github.com/orbi-build/orbi/pull/828))
+- Runner 并发上限硬编码为 2，配置超界会让该仓全部实例拒绝启动 ([Issue #829](https://github.com/orbi-build/orbi/issues/829); [PR #834](https://github.com/orbi-build/orbi/pull/834))
+
+### Deployment and operations
+
+- max_concurrency 上限被硬编码的 systemd 单元名元组卡死在 2：配置改 3 无效，实例 2/3 每 tick 启动即失败 ([Issue #827](https://github.com/orbi-build/orbi/issues/827); [PR #832](https://github.com/orbi-build/orbi/pull/832))
+
+### Observability
+
+- 验证指标二：合并评论与 journal 写入 external_commits，记录合并前是否有引擎之外的提交 ([Issue #833](https://github.com/orbi-build/orbi/issues/833); [PR #836](https://github.com/orbi-build/orbi/pull/836))
+
+### Bug fixes
+
+- release notes 把 release 票自己列进「NOT released」 ([Issue #818](https://github.com/orbi-build/orbi/issues/818); [PR #823](https://github.com/orbi-build/orbi/pull/823))
+- P0 死循环：接续换 run id 但 PR marker 不换，一次 502 让 orbi-cloud 整天零合并（82 次同错、389 条重复评论） ([Issue #825](https://github.com/orbi-build/orbi/issues/825); [PR #830](https://github.com/orbi-build/orbi/pull/830))
+
+## Contributors
+
+<a href="https://github.com/xqliu"><img src="https://avatars.githubusercontent.com/u/22554?v=4&s=48" width="32" height="32" alt="xqliu" /></a>
+
+- tag: `v0.5.3`
+- release commit: `97e402386d908119c170acb435331093c48a3614`
+- release task: Issue #821
+
+## Scope (verified item by item)
+
+- Issue #290 closed
+- Issue #818 closed
+- Issue #825 closed
+- Issue #827 closed
+- Issue #829 closed
+- Issue #833 closed
+
+## Pre-release gates
+
+- no open Issue in milestone 'v0.5.3' carries ai-in-progress / ai-pr-opened / ai-fix-needed
+- CI on the release commit: 4 check(s) all success/neutral/skipped (waited 300s for pending checks)
+
+## Tests
+
+- release tests gated by GitHub Actions CI on the release commit 97e402386d908119c170acb435331093c48a3614 (the #268 CI-wait gate; no local test execution)
+
+run_id=12ceafd5
