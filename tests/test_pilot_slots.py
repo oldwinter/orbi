@@ -9,6 +9,7 @@ stale-PID/age heuristic and no atexit/signal cleanup protocol. The
 subprocess tests drive the real module in real child processes so the
 kernel lock behavior is exercised for real.
 """
+import fcntl
 import os
 import signal
 import subprocess
@@ -448,3 +449,151 @@ def test_slot_dir_for_derives_state_directory():
 
 def test_slot_path_is_one_based(tmp_path):
     assert pilot_slots.slot_path(tmp_path, 3) == tmp_path / "slot-3"
+
+
+# --- delivery identity metadata (Issue #809) ---------------------------------
+
+
+def hold_foreign_slot(state: Path, index: int, pid: int,
+                      identity: str | None) -> int:
+    """Simulate a live FOREIGN holder in-process: a second fd holds the
+    exclusive flock (separate open file descriptions conflict even in
+    one process), while the file records the foreign pid and its
+    optional `repo#issue` delivery identity."""
+    path = pilot_slots.slot_path(state, index)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    content = f"{pid}\n" + (f"{identity}\n" if identity else "")
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, content.encode("ascii"))
+    return fd
+
+
+def test_mark_slot_delivery_writes_pid_and_identity(tmp_path):
+    state = tmp_path / "slots"
+    slot = pilot_slots.acquire_slot(state, 1, os.getpid())
+    assert slot is not None
+    pilot_slots.mark_slot_delivery(slot, "owner/repo", 807)
+    assert slot.path.read_text(encoding="utf-8").splitlines() == [
+        str(os.getpid()), "owner/repo#807",
+    ]
+    slot.release()
+
+
+def test_mark_slot_delivery_rewrites_cleanly(tmp_path):
+    """A re-mark truncates the file first: no stale bytes from a longer
+    previous identity survive the rewrite."""
+    state = tmp_path / "slots"
+    slot = pilot_slots.acquire_slot(state, 1, os.getpid())
+    assert slot is not None
+    pilot_slots.mark_slot_delivery(slot, "owner/repo-long-name", 807)
+    pilot_slots.mark_slot_delivery(slot, "owner/repo", 808)
+    assert slot.path.read_text(encoding="utf-8").splitlines() == [
+        str(os.getpid()), "owner/repo#808",
+    ]
+    slot.release()
+
+
+def test_occupancy_pid_survives_the_identity_line(tmp_path):
+    """`orbi status` reads the holder pid from the file: the identity
+    line must not break the pid parse."""
+    state = tmp_path / "slots"
+    slot = pilot_slots.acquire_slot(state, 1, os.getpid())
+    assert slot is not None
+    pilot_slots.mark_slot_delivery(slot, "owner/repo", 807)
+    assert pilot_slots.slot_occupancy(state, 1) == [(1, os.getpid())]
+    slot.release()
+
+
+def test_held_deliveries_reports_live_foreign_identity(tmp_path):
+    """A slot locked by another pid whose file names a delivery: that
+    delivery is in flight in a live co-runner."""
+    state = tmp_path / "slots"
+    state.mkdir()
+    fd = hold_foreign_slot(state, 1, 4242, "owner/repo#807")
+    try:
+        assert pilot_slots.slot_held_deliveries(state, 1) == {
+            ("owner/repo", 807),
+        }
+    finally:
+        os.close(fd)
+
+
+def test_held_deliveries_ignores_live_holder_without_identity(tmp_path):
+    """Fail open: a live foreign holder that named no delivery (not yet
+    selected, or an old runner) must not make the scan skip anything."""
+    state = tmp_path / "slots"
+    state.mkdir()
+    fd = hold_foreign_slot(state, 1, 4242, None)
+    try:
+        assert pilot_slots.slot_held_deliveries(state, 1) == set()
+    finally:
+        os.close(fd)
+
+
+def test_held_deliveries_ignores_own_slot(tmp_path):
+    """The runner's own slot never blocks its own scans: `main` holds it
+    for the whole delivery."""
+    state = tmp_path / "slots"
+    slot = pilot_slots.acquire_slot(state, 1, os.getpid())
+    assert slot is not None
+    pilot_slots.mark_slot_delivery(slot, "owner/repo", 807)
+    assert pilot_slots.slot_held_deliveries(state, 1) == set()
+    slot.release()
+
+
+def test_held_deliveries_ignores_free_slot_with_stale_identity(tmp_path):
+    """The lock, not the file, is the truth: a dead holder's identity
+    (the lock is gone) is stale by definition and never reported."""
+    state = tmp_path / "slots"
+    state.mkdir()
+    (state / "slot-1").write_text("4242\nowner/repo#807\n", encoding="utf-8")
+    assert pilot_slots.slot_held_deliveries(state, 1) == set()
+
+
+def test_held_deliveries_ignores_unparseable_identity(tmp_path):
+    state = tmp_path / "slots"
+    state.mkdir()
+    fd = hold_foreign_slot(state, 1, 4242, "owner-repo-807")
+    try:
+        assert pilot_slots.slot_held_deliveries(state, 1) == set()
+    finally:
+        os.close(fd)
+
+
+def test_read_delivery_returns_none_when_file_unreadable(
+    monkeypatch, tmp_path,
+):
+    path = tmp_path / "slot-1"
+    path.write_text("4242\nowner/repo#807\n", encoding="utf-8")
+
+    def failing_read(self, *args, **kwargs):
+        raise OSError("vanished")
+
+    monkeypatch.setattr(Path, "read_text", failing_read)
+    assert pilot_slots._read_delivery(path) is None
+
+
+def test_held_deliveries_reports_child_holder_identity(tmp_path):
+    """The real cross-process scene: a live child runner holds the slot
+    and marks its delivery; another process reads the held identity."""
+    state = tmp_path / "slots"
+    code = (
+        "import os, time\n"
+        "from orbi import pilot_slots\n"
+        f"state = {str(state)!r}\n"
+        "slot = pilot_slots.acquire_slot(state, 1, os.getpid())\n"
+        "pilot_slots.mark_slot_delivery(slot, 'owner/repo', 809)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    holder = run_slot_script(code)
+    assert holder.stdout.readline().strip() == "ready"
+    try:
+        assert pilot_slots.slot_held_deliveries(state, 1) == {
+            ("owner/repo", 809),
+        }
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
