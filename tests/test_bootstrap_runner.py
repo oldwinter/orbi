@@ -17461,7 +17461,11 @@ def make_release_process_env(monkeypatch, *, body=RELEASE_DECLARATION_BODY,
                         lambda *a: Path("/wt"))
     monkeypatch.setattr(seam, "create_release_worktree",
                         lambda *a: Path("/wt"))
-    monkeypatch.setattr(release, "ProgressPublisher", Mock())
+    publisher_class = Mock()
+    # Issue #811: the milestone-capturing tests read the publisher mock
+    # (`ProgressPublisher.return_value`) through the returned state.
+    state["publisher"] = publisher_class.return_value
+    monkeypatch.setattr(release, "ProgressPublisher", publisher_class)
     monkeypatch.setattr(seam, "_safe_publish", lambda **k: None)
     monkeypatch.setattr(seam, "set_active_run",
                         lambda *a: state["active_runs"].append(a))
@@ -17716,11 +17720,73 @@ def test_process_release_success_end_to_end(monkeypatch):
     assert "<!-- orbi:run=a1b2c3d4 -->" in comment_kwargs["body"]
     assert "run_id=a1b2c3d4" in comment_kwargs["body"]
     assert "https://github.com/o/r/releases/tag/v0.3.0" in comment_kwargs["body"]
+    # Issue #811 regression: the post-gate comments keep the full field
+    # set — the frozen branch and its commit stay on the success record
+    # (rendered by `field_block` as `- key: value` lines).
+    assert "- base_branch: main" in comment_kwargs["body"]
+    assert "- base_sha: abc123" in comment_kwargs["body"]
     assert "PR #123 merged (mergeCommit=aaa111)" in comment_kwargs["body"]
     assert "Issue #124 closed" in comment_kwargs["body"]
     assert "docs release notes for v0.3.0 synced to base" \
         in comment_kwargs["body"]
     assert state["run_ids"][0] == "a1b2c3d4"
+
+
+def test_process_release_started_milestone_carries_base_branch(monkeypatch):
+    """Issue #811: the `**Orbi release started**` milestone names the
+    branch being frozen. The journal refactor deleted the middle
+    `run_info` assignment, so the milestone fell back to the claim-time
+    value (`run_id`/`priority` only) and a multi-branch repo's release
+    notification could no longer prove which line it froze. The
+    milestone is published BEFORE `freeze_base`, so it carries
+    `base_branch` but not yet `base_sha`."""
+    state = make_release_process_env(monkeypatch)
+
+    def run_publish_actions(**kwargs):
+        kwargs["action"]()
+
+    monkeypatch.setattr(seam, "_safe_publish", run_publish_actions)
+    issue = {"number": 99, "title": "Release v0.3.0",
+             "body": RELEASE_DECLARATION_BODY,
+             "labels": [{"name": "ai-ready"}, {"name": "ai-release"}]}
+    release.process_release(
+        issue, runner.RunnerConfig(repo_dir=Path("/r"), base_branch="main"), "o/r",
+    )
+    started = [
+        call.args[0]
+        for call in state["publisher"].milestone.call_args_list
+        if "Orbi release started" in call.args[0]
+    ]
+    assert started == [
+        "**Orbi release started**: base_branch=main "
+        "run_id=a1b2c3d4 priority=normal"
+    ]
+
+
+def test_process_release_failure_comment_carries_base_branch(monkeypatch):
+    """Issue #811: a release failing after the declaration parse (here:
+    `freeze_base`) posts the terminal failure comment WITH the declared
+    `base_branch` — the same middle `run_info` value the started
+    milestone reads."""
+    state = make_release_process_env(monkeypatch)
+
+    def broken_freeze(repo_dir, base_branch):
+        raise RuntimeError("freeze failed")
+
+    monkeypatch.setattr(seam, "freeze_base", broken_freeze)
+    issue = {"number": 99, "title": "Release v0.3.0",
+             "body": RELEASE_DECLARATION_BODY,
+             "labels": [{"name": "ai-ready"}, {"name": "ai-release"}]}
+    result = release.process_release(
+        issue, runner.RunnerConfig(repo_dir=Path("/r"), base_branch="main"), "o/r",
+    )
+    assert result == ""
+    (comment_number, comment_kwargs), = state["comments"]
+    assert comment_number == 99
+    assert "Orbi release failed (ai-blocked)" in comment_kwargs["body"]
+    assert "run_id=a1b2c3d4" in comment_kwargs["body"]
+    assert "base_branch: main" in comment_kwargs["body"]
+    assert "failure: freeze failed" in comment_kwargs["body"]
 
 
 def test_process_release_refreshes_deployment_cli_after_version_bump(

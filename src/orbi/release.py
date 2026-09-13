@@ -1801,12 +1801,13 @@ def process_release(issue: dict, config: RunnerConfig,
     try:
         declaration = parse_release_declaration(issue["body"])
         base_branch = declaration["base_branch"]
-        event(
-            "release_task",
-            f"base_branch={base_branch} run_id={run_id} "
-            f"priority={priority}",
-            issue=number,
-        )
+        # Issue #811: the started milestone below and the failure comment
+        # read THIS value — base_branch known, base_sha not yet (the
+        # post-gate reassignment further down adds base_sha). The journal
+        # refactor deleted the assignment and both comments lost the only
+        # field naming the frozen branch.
+        run_info = f"base_branch={base_branch} run_id={run_id} priority={priority}"
+        event("release_task", run_info, issue=number)
         apply_label_patch(
             number, repo=source_repo, event=EVENT_CLAIM,
             current_labels={label.get("name") for label in issue.get(
