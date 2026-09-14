@@ -133,8 +133,10 @@ PEP 621 packaging in `pyproject.toml` maps
 the clone directory, pass `--python` a COMPATIBLE interpreter
 (Issue #861): the system `python3` when it is 3.14 or newer (Fedora 43
 and current Arch ship it), otherwise `3.14` so uv provisions or
-selects one — Ubuntu 24.04 ships Python 3.12, so pinning its system
-interpreter exits 1 with a dependency resolution failure:
+selects one — Ubuntu 24.04 ships Python 3.12, and an exact-path pin to
+that system interpreter exits 1 with a dependency resolution failure,
+while the bare `python3` and `3.14` forms let uv select or provision a
+satisfying interpreter (a managed CPython 3.14 on such a host):
 
 ```bash
 # system Python >= 3.14 (Fedora 43, current Arch):

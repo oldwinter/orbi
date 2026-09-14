@@ -378,7 +378,8 @@ def install_cli_step(repo_dir: Path, module_file: Path, *,
     install is verified WITHOUT any uv call (idempotent re-run);
     otherwise the exact editable force reinstall from ``repo_dir``
     runs via ``run_command`` (``uv tool install --force --reinstall
-    --editable --python /usr/bin/python3 <repo_dir>``). A failing
+    --editable --python <interpreter> <repo_dir>``, the compatible
+    selection of Issue #861). A failing
     install raises ``SetupError`` (fail fast, no fallback, no
     half-initialized state). The step NEVER touches a running Runner
     process — the new source is loaded by the next CLI start.
