@@ -5564,11 +5564,12 @@ def _parse_release_version(value: str) -> tuple[int, ...] | None:
 
 
 def _orbi_distribution_version() -> str:
-    """The installed ``orbi`` distribution version (install metadata,
-    not the code's self-reported ``__version__``). Test seam: the
-    non-editable form monkeypatches this module global."""
+    """The installed ``orbi-cli`` distribution version (install
+    metadata, not the code's self-reported ``__version__``; Issue #874
+    renamed the PyPI distribution — the console script stays ``orbi``).
+    Test seam: the non-editable form monkeypatches this module global."""
     import importlib.metadata
-    return importlib.metadata.version("orbi")
+    return importlib.metadata.version("orbi-cli")
 
 
 def _runner_source_git(args: list[str], cwd: Path, *, run_command) -> str | None:

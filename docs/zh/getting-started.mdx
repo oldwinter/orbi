@@ -31,8 +31,9 @@ bash install.sh
 
 CLI **尚未发布到 PyPI**——v0.5.5 的发布在 PyPI 侧 trusted-publisher
 配置上失败（[Issue #852](https://github.com/orbi-build/orbi/issues/852)），
-所以 `pip install orbi` 和 `uv tool install orbi` 现在会报包仓库
-"not found" 错误。当前受支持的安装路径就是本页已有的两条：上方的一键
+所以 `pip install orbi-cli` 和 `uv tool install orbi-cli` 现在会报包仓库
+"not found" 错误。发布包名为 `orbi-cli`（Issue #874）；安装后的命令仍是
+`orbi`。当前受支持的安装路径就是本页已有的两条：上方的一键
 安装（自动 clone 源码并完成 editable 安装）和下面第 2 步的 editable
 checkout 安装。真正发布之后，这一节才会补上真实的 PyPI 命令。
 
