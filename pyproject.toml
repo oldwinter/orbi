@@ -1,9 +1,10 @@
 # Standard Python packaging for the Orbi CLI (Issue #140).
 #
 # Rebrand (Issues #183 + #246): the product brand is Orbi (GitHub
-# orbi-build/orbi, docs.orbi.build); #246 converged the distribution
-# name and the `orbi` console script onto the same brand — no old-name
-# compatibility alias remains.
+# orbi-build/orbi, docs.orbi.build). PyPI distribution rename (Issue
+# #874): the released distribution is the approved `orbi-cli` name
+# (artifact filenames normalize to `orbi_cli_<version>`); the `orbi`
+# console script below is UNCHANGED — no old-name alias package exists.
 #
 # The official usage is the installed console script, installed as an
 # EDITABLE uv tool (Issue #152): the tool env imports the `orbi`
@@ -40,7 +41,7 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "orbi"
+name = "orbi-cli"
 version = "0.5.5"
 description = "Orbi — local AI development worker: claims GitHub Issues, runs Pi in isolated worktrees, and delivers PRs (GitHub Issues + labels are the only state store)."
 readme = "README.md"

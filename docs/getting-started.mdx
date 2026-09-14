@@ -34,10 +34,11 @@ from the example shipped inside the CLI package — without overwriting it.
 ## Install the CLI from PyPI
 
 The released CLI installs from PyPI (Issue #163) — no source checkout
-required:
+required. The PyPI distribution is named `orbi-cli` (Issue #874); the
+installed command stays `orbi`:
 
 ```bash
-python3 -m pip install orbi
+python3 -m pip install orbi-cli
 orbi --version
 orbi --help
 ```
@@ -45,13 +46,14 @@ orbi --help
 uv users install the same published package non-editable:
 
 ```bash
-uv tool install orbi
+uv tool install orbi-cli
 ```
 
 **PyPI package vs editable deployment**: the PyPI install is the
 *versioned release CLI* — a frozen copy of one release in site-packages,
-upgraded by reinstalling (`python3 -m pip install --upgrade orbi` /
-`uv tool install --reinstall orbi`). The editable checkout install below
+upgraded by reinstalling (`python3 -m pip install --upgrade orbi-cli` /
+`uv tool install --reinstall orbi-cli`; `uv tool uninstall orbi-cli`
+removes it). The editable checkout install below
 stays the official DEPLOYMENT: it imports the `orbi` package from the
 deployment checkout, so the `ExecStartPre` sync delivers new engine code
 to the next CLI process with no reinstall. Running a Runner still needs

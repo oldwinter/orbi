@@ -73,8 +73,15 @@ def test_runner_fingerprint_uses_package_version_when_not_editable(
     package = tmp_path / "site-packages" / "orbi"
     package.mkdir(parents=True)
     monkeypatch.setattr(progress, "__file__", str(package / "progress.py"))
-    monkeypatch.setattr(progress.metadata, "version", lambda name: "0.3.4")
+    seen: list[str] = []
+    monkeypatch.setattr(
+        progress.metadata, "version",
+        lambda name: seen.append(name) or "0.3.4",
+    )
     assert progress.runner_fingerprint() == "0.3.4"
+    # Issue #874: the distribution is installed as `orbi-cli` — the
+    # fingerprint must read THAT install metadata, never the old name.
+    assert seen == ["orbi-cli"]
 
 
 def test_runner_fingerprint_returns_unknown_for_invalid_git_output(
