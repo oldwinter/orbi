@@ -740,11 +740,6 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     # origin); present -> must be a non-empty `owner/repo` string, used
     # verbatim for fork/private deployments.
     health_alert_repo = _optional_pi_string(data, "health_alert_repo")
-    # Optional Pi provider file: the provider metadata
-    # (baseUrl / api / apiKey / models) lives in a separate JSON file in
-    # Pi's own `models.json` shape; `orbi.toml` only selects the
-    # provider/model/thinking used at runtime. Absent key -> None (Pi
-    # keeps using its own agent dir, the exact pre-#157 behavior).
     repo_dir = _config_path(data.get("repo_dir", "."), base)
     # Deployment home: the orbi source checkout — the editable
     # CLI install source, the systemd/ unit templates, labels.toml and the
@@ -1354,9 +1349,9 @@ def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
       the user's existing providers keep working, the file adds or
       overrides; the merged catalog is what Pi loads via
       `PI_CODING_AGENT_DIR` (verified against real Pi 0.84.3);
-    - `settings.json` / `auth.json`: SYMLINKS to the user agent dir's
-      files when they exist, so Pi's other behavior (settings, stored
-      auth) is unchanged apart from the provider catalog.
+    - `auth.json`: a SYMLINK to the user agent dir's file when it
+      exists, so Pi's stored auth is unchanged; `settings.json` is a
+      per-run REAL file (see below).
 
     The per-run `settings.json` is a REAL file, consistent
     with the per-run catalog:
@@ -3683,7 +3678,7 @@ def _another_live_runner(slot_dir: Path, max_concurrency: int) -> bool:
     """True when a slot is held by another pid — a live co-runner.
 
     The #39 liveness rule `pick_in_progress_issue` applies to the orphan
-    scan (runner.py:2412): a slot held by another process proves a live
+    scan: a slot held by another process proves a live
     runner is working, so state it owns is in flight, not orphaned.
     The same rule extends to the release dispatch — an in-progress
     release found while another runner is live is being released right
@@ -5383,10 +5378,12 @@ def merge_commit_metrics(worktree: Path, merge_commit: str,
     excluded so the taken-over commits stay external. `0` means merged
     as-is.
 
-    Both values are the literal string `"unknown"` whenever the count
-    cannot be proven — a missing/corrupt push record, a recorded head
-    or base that is not an ancestor of the merged head, a missing
-    object, any git failure. A degraded metric must never fail a
+    `external_commits` is the literal string `"unknown"` whenever the
+    engine's push history cannot be proven — a missing/corrupt push
+    record, a recorded head or base that is not an ancestor of the
+    merged head — while `commits` keeps its proven count; both values
+    are `"unknown"` only when a git read itself fails (a missing
+    object, any git failure). A degraded metric must never fail a
     landed merge and never fabricate a `0`.
     """
     try:
@@ -6266,8 +6263,9 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
     )
     try:
         # A config built by load_config always carries both keys (the
-        # deploy home defaults to the repo dir); a hand-built legacy
-        # dict without them keeps the pre-#535 sync behavior.
+        # deploy home defaults to the repo dir); a hand-built config
+        # that leaves `engine_source_track` unset keeps the pre-#535
+        # sync behavior (the field default is None).
         if (
             config.engine_source_track is not None
             and config.deploy_home is not None

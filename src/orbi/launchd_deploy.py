@@ -4,8 +4,10 @@ The macOS member of the scheduler layer (:mod:`orbi.scheduler` owns
 the interface, the platform dispatch and the platform-independent
 orchestration); every ``launchctl`` literal in ``src/orbi/`` lives
 here. One agent plist per Runner instance — the plist IS the
-``.service`` and the ``.timer`` in one (``StartInterval`` mirrors the
-systemd ``OnCalendar=*-*-* *:00/5`` five-minute tick). The templates
+``.service`` and the ``.timer`` in one (``StartInterval`` runs the same
+five-minute cadence as the systemd ``OnCalendar=*-*-* *:00/5`` tick, but
+counts from the job's load time rather than aligning to wall-clock
+boundaries). The templates
 live in ``launchd/`` beside ``systemd/``.
 
 Command contract (modern launchctl(1) / launchd.plist(5), the
@@ -60,7 +62,6 @@ from orbi.scheduler import (
 
 TEMPLATE_NAME = "org.orbi.runner.plist"
 LABEL_BASE = "org.orbi.runner"
-START_INTERVAL_SECONDS = 300
 LOG_TAIL_LINES = 400
 
 
