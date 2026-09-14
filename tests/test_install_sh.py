@@ -21,12 +21,16 @@ ISSUE_URL = "https://github.com/orbi-build/orbi/issues/849"
 
 # The coreutils the script needs beyond the stubs, symlinked into the
 # stub PATH so no real systemctl/launchctl can leak in through /usr/bin.
+# chmod is for the #868 stub uv-installer, not the script itself.
 CORE_TOOLS = (
     "mkdir", "sed", "grep", "mktemp", "timeout", "rm", "cp", "cat", "uname",
+    "chmod",
 )
 
 
-def make_stub_dir(tmp_path: Path, stubs: dict[str, str]) -> Path:
+def make_stub_dir(
+    tmp_path: Path, stubs: dict[str, str], without: tuple[str, ...] = ()
+) -> Path:
     """One PATH entry: stub scripts win, core tools are real symlinks."""
     bin_dir = tmp_path / "stubbin"
     bin_dir.mkdir()
@@ -35,7 +39,7 @@ def make_stub_dir(tmp_path: Path, stubs: dict[str, str]) -> Path:
         stub.write_text(body, encoding="utf-8")
         stub.chmod(0o755)
     for tool in CORE_TOOLS:
-        if tool in stubs:
+        if tool in stubs or tool in without:
             continue  # a stub with this name wins (e.g. the uname shim)
         (bin_dir / tool).symlink_to(f"/usr/bin/{tool}")
     return bin_dir
@@ -115,6 +119,62 @@ def test_unsupported_platform_names_the_limitation(tmp_path):
     assert result.returncode == 1
     assert "FreeBSD" in result.stderr
     assert ISSUE_URL in result.stderr
+
+
+def test_macos_without_timeout_reaches_the_clone_step(tmp_path):
+    # Issue #868: a vanilla macOS PATH has no coreutils `timeout`
+    # (Homebrew installs it as gtimeout) and no `uv` — uv is exactly
+    # what this script installs. After the launchctl gate the install
+    # must walk the uv-install branch (the first timed steps) and reach
+    # the clone step: `timeout: command not found` under set -e must
+    # never surface. HOME is redirected so the stub installer's uv
+    # lands in the redirected ~/.local/bin, like the real installer.
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    marker = tmp_path / "git-reached"
+    stubs = {
+        "uname": "#!/bin/sh\necho Darwin\n",
+        "launchctl": "#!/bin/sh\nexit 0\n",
+        "gh": "#!/bin/sh\nexit 0\n",
+        "curl": "#!/bin/sh\nexit 0\n",
+        # The stub installer provides uv the way the real one does.
+        "sh": (
+            "#!/bin/sh\n"
+            "printf '#!/bin/sh\\nexit 0\\n' > \"$HOME/.local/bin/uv\"\n"
+            "chmod 755 \"$HOME/.local/bin/uv\"\n"
+            "exit 0\n"
+        ),
+        "git": (
+            "#!/bin/sh\n"
+            f"echo reached > {marker}\n"
+            "exit 1\n"
+        ),
+        # No uv on PATH (it gets installed) and, via `without`, no timeout.
+    }
+    bin_dir = make_stub_dir(tmp_path, stubs, without=("timeout",))
+    env = {
+        **os.environ,
+        "PATH": str(bin_dir),
+        "ORBI_HOME": str(tmp_path / "orbi-home"),
+        "HOME": str(home),
+    }
+    result = subprocess.run(
+        ["/bin/bash", str(INSTALL_SH)],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert marker.read_text().strip() == "reached"
+    assert "command not found" not in result.stderr
+
+
+def test_sed_in_place_uses_the_bsd_compatible_form():
+    # Issue #868: BSD sed (macOS) requires a backup suffix right after
+    # -i; the bare GNU form `sed -i "s#…"` makes BSD sed treat the
+    # config file as the sed script, so the placeholder edit fails. The
+    # portable form is `sed -i.bak … file && rm -f file.bak` — locked here.
+    body = INSTALL_SH.read_text(encoding="utf-8")
+    assert 'sed -i "' not in body
+    assert "sed -i.bak" in body
+    assert "rm -f orbi.toml.bak" in body
 
 
 @pytest.mark.parametrize("name", ["install.sh"])
