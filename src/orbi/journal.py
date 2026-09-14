@@ -244,6 +244,7 @@ JOURNAL_EVENTS: dict[str, str] = {
     "review_rounds_exhausted": "the review round budget is exhausted (fail fast)",
     "review_rounds_exhausted_expected_terminal": "the exhausted budget terminal was already recorded",
     "review_findings_unfixed": "review findings survive; the Issue goes ai-fix-needed",
+    "review_absorb_abandoned": "a behind-base round emitted pass without absorbing or reporting the abandoned absorb (Issue #877)",
     "review_merge_deferred": "the merge gate deferred the merge to the next tick",
     "review_recovery_ci_status": "CI status for review recovery observed",
     "review_recovery_ci_status_failed": "the CI status read for review recovery failed",

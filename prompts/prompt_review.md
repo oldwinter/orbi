@@ -154,6 +154,20 @@ another session: fix them here, in this same session.
   fails fast — never retry the bare fetch or bypass the lock), plain
   `git merge origin/{{BASE_BRANCH}}`, resolve conflicts manually, rerun the
   full test suite with coverage, and push the task branch.
+- Absorb contract (machine-checked by the Runner): a round that starts
+  behind `origin/{{BASE_BRANCH}}` or facing a merge conflict must end in
+  exactly one of two states — (a) the task branch contains
+  `origin/{{BASE_BRANCH}}` (`git merge-base --is-ancestor
+  origin/{{BASE_BRANCH}} HEAD` exits 0) after your in-session absorb; or
+  (b) a `findings` verdict whose findings state that you attempted the
+  absorb and abandoned it, with the concrete reason (an add/add conflict
+  whose resolution — e.g. which of two independently created files to
+  keep — is a design decision not yours to make is a valid reason:
+  report it, do not silently pick a side). A `pass` verdict while the
+  head still lacks `origin/{{BASE_BRANCH}}` is machine-rejected by the
+  Runner, and pushing commits unrelated to the merge instead of
+  absorbing or reporting is a contract violation — never trade the merge
+  attempt for unrelated fixes.
 - If the local HEAD is ahead of the frozen PR head (`{{HEAD_SHA}}`) — an
   unpushed local commit, e.g. a fix committed by a previous review session
   that was killed before `git push` (the #158 `d13b0c56` scene): push the

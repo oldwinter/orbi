@@ -532,6 +532,7 @@ journalctl --user -u orbi@1.service -u orbi@2.service | grep e07383c2
 | `review_rounds_exhausted` | 评审轮次预算耗尽（fail fast） |
 | `review_rounds_exhausted_expected_terminal` | 预算耗尽的终止状态已被记录 |
 | `review_findings_unfixed` | 评审发现未修复；Issue 转入 ai-fix-needed |
+| `review_absorb_abandoned` | 落后 base 的一轮发出 pass 却未合并 base、也未上报放弃合并（Issue #877） |
 | `review_merge_deferred` | 合并门把合并顺延到下一 tick |
 | `review_recovery_ci_status` | 观察到用于评审恢复的 CI 状态 |
 | `review_recovery_ci_status_failed` | 评审恢复所需的 CI 状态读取失败 |

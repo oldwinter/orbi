@@ -113,6 +113,12 @@ branch、base、head、精确 URL 校验全部保留，#45/#89 的防串 PR 语�
 - base 前进由 task branch 上对最新 `origin/<base>` 的普通 `git merge`
   吸收（冲突手工解决），然后重跑完整测试。不 force push、不自动解决
   冲突、不 push 保护分支。
+- 吸收契约（Issue #877，Runner 机器校验）：一轮评审开始时 head 已落后
+  `origin/<base>` 或 PR 有冲突时，该轮结束必须满足二者之一——分支包含
+  `origin/<base>`（`git merge-base --is-ancestor` 为真），或 verdict 为
+  `findings` 且写明「本轮尝试吸收但放弃」及具体原因。head 仍不含 base
+  的 `pass` 会在轮次评论里被 Runner 点名为违反吸收契约（
+  `review_absorb_abandoned`）；既有 5 轮有界语义不变。
 - Git transport（Issue #114、#580）：git 数据操作走配置的传输方式
   （`git_transport`：默认 `ssh`——git over SSH——，或 `https` 走
   `gh` credential helper），GitHub API 操作留在

@@ -140,6 +140,15 @@ Rules of the chain:
   `origin/<base>` on the task branch (conflicts resolved manually),
   followed by a full test rerun. No force push, no auto conflict
   resolution, no push of the protected branch.
+- Absorb contract (Issue #877, machine-checked by the Runner): a review
+  round that starts with the head behind `origin/<base>` or facing a
+  merge conflict must end in one of two states — the branch contains
+  `origin/<base>` (`git merge-base --is-ancestor` true), or the verdict
+  is `findings` stating that the round attempted the absorb and
+  abandoned it, with the concrete reason. A `pass` whose head still
+  lacks the base is named in the round comment as an absorb-contract
+  violation (`review_absorb_abandoned`); the bounded 5-round semantics
+  are unchanged.
 - Git transport (Issue #114, #580): git data operations go over the
   configured transport (`git_transport`: `ssh` by default — git over
   SSH —, or `https` with
