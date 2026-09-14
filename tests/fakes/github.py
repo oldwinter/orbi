@@ -20,6 +20,8 @@ limit), so a fake failure is never retried.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import subprocess
@@ -46,6 +48,7 @@ class FakeGh:
         self.prs: dict[int, dict] = {}
         self.milestones: dict[int, dict] = {}
         self.check_runs: dict[str, list] = {}
+        self.repo_config: str | None = None
         self._clock = 0
 
     # --- state arrangement (what a test does instead of patching) -------
@@ -111,10 +114,20 @@ class FakeGh:
     def add_check_runs(self, commit: str, runs: list[dict]) -> None:
         self.check_runs[commit] = runs
 
+    def set_repo_config(self, text: str) -> None:
+        """Seed the repository's default `.github/orbi.toml` — the
+        contents API serves it back base64-encoded, the same shape
+        `read_repo_config` parses. A `config_path` override is not
+        modeled: a read of any other path fails fast as unsupported."""
+        self.repo_config = text
+
     # --- the gh process seam ---------------------------------------------
 
     def __call__(self, command: list[str], *, cwd=None,
-                 timeout=None) -> str:
+                 timeout=None, **kwargs) -> str:
+        # `failure_log_level` and other adapter logging hints are not
+        # command semantics — the fake answers argv, log decoration is
+        # the caller's business.
         if len(command) < 2 or command[:1] != ["gh"]:
             return self._unsupported(command)
         verb = command[1]
@@ -373,6 +386,21 @@ class FakeGh:
             if runs is None:
                 self._fail(1, f"gh: HTTP 404: no commit {match.group(2)}")
             return json.dumps(runs)
+        match = re.fullmatch(
+            r"repos/([^/]+/[^/]+)/contents/\.github/orbi\.toml", path,
+        )
+        if match:
+            self._repo_or_fail(match.group(1))
+            if self.repo_config is None:
+                self._fail(1, "gh: HTTP 404: not found")
+            return json.dumps({
+                "sha": hashlib.sha1(
+                    self.repo_config.encode("utf-8"),
+                ).hexdigest(),
+                "content": base64.b64encode(
+                    self.repo_config.encode("utf-8"),
+                ).decode("ascii"),
+            })
         return self._unsupported(["gh", "api", path])
 
     def _milestone_jq(self, jq: str) -> str:

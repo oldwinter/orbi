@@ -21,6 +21,7 @@ import orbi.runner as runner
 import orbi.release as release
 import orbi.github as github
 from orbi import pi_activity, pi_process, progress
+from tests.fakes.github import FakeGh
 from tests.test_progress_wiring import make_fake_gh
 import orbi.journal as journal
 from seam import seam
@@ -6042,6 +6043,72 @@ def test_arm_release_ticket_rejects_malformed_issue_number(monkeypatch):
 
     with pytest.raises(RuntimeError, match="invalid issue number"):
         runner.arm_release_ticket("owner/repo", "v0.4.0")
+
+
+def test_arm_release_ticket_uses_custom_dispatch_label(monkeypatch, caplog):
+    """A custom-dispatch-label repo must arm its release ticket with that
+    label — search exclusion and added label alike.
+
+    The hardcoded ``ai-ready`` armed the ticket with a label the release
+    fallback scan never searches for (it searches the repo's dispatch
+    label), so the ticket silently stranded; the next idle tick's
+    ``-label:ai-ready`` exclusion then hid the polluted ticket from every
+    future arm attempt.
+    """
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[0:3] == ["gh", "issue", "list"]:
+            return json.dumps([{"number": 385}])
+        return ""
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    with caplog.at_level("INFO"):
+        runner.arm_release_ticket(
+            "owner/repo", "v0.4.0", dispatch_label="dev-queue",
+        )
+
+    assert calls == [
+        [
+            "gh", "issue", "list", "--repo", "owner/repo", "--state", "open",
+            "--search",
+            'label:ai-release -label:dev-queue milestone:"v0.4.0"',
+            "--json", "number", "--limit", "200",
+        ],
+        [
+            "gh", "issue", "edit", "385", "--repo", "owner/repo",
+            "--add-label", "dev-queue",
+        ],
+    ]
+    assert "release_ticket_armed issue=#385 milestone=v0.4.0" in caplog.text
+
+
+def test_main_idle_release_arm_uses_repo_dispatch_label(
+    monkeypatch, tmp_path,
+):
+    """The idle-path arm arms the release ticket with the repo policy's
+    dispatch_label — the same label the fallback scan requires before a
+    release ticket can ever be claimed. Armed with the host default
+    instead, the ticket is invisible to every scan and the next idle
+    tick's arm exclusion hides it for good (silent stranding)."""
+    _write_prompts(tmp_path)
+    fake = FakeGh("owner/repo")
+    fake.add_milestone(1, title="v0.4.0")
+    fake.add_issue(385, title="Release v0.4.0",
+                   labels=("ai-release",), milestone=1)
+    fake.set_repo_config('dispatch_label = "dev-queue"\n')
+    monkeypatch.setattr(seam, "run_command", fake)
+    config = tmp_path / "orbi.toml"
+    config.write_text(
+        'source_repos = ["owner/repo"]\nactive_milestone = "v0.4.0"\n',
+        encoding="utf-8",
+    )
+
+    assert runner.main(["--config", str(config)]) == 0
+    # Public surface: the ticket carries the repo's dispatch label, so
+    # the release fallback scan can see and claim it.
+    assert fake.issues[385]["labels"] == ["ai-release", "dev-queue"]
 
 
 def test_main_idle_release_arm_failure_is_bypassed(monkeypatch, tmp_path, caplog):
