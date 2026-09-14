@@ -31,33 +31,17 @@ Python 3.14 when needed. For manual installations, `orbi setup` creates `orbi.to
 when absent — from the adjacent `.orbi.example.toml` when one exists, otherwise
 from the example shipped inside the CLI package — without overwriting it.
 
-## Install the CLI from PyPI
+## PyPI installation
 
-The released CLI installs from PyPI (Issue #163) — no source checkout
-required:
-
-```bash
-python3 -m pip install orbi
-orbi --version
-orbi --help
-```
-
-uv users install the same published package non-editable:
-
-```bash
-uv tool install orbi
-```
-
-**PyPI package vs editable deployment**: the PyPI install is the
-*versioned release CLI* — a frozen copy of one release in site-packages,
-upgraded by reinstalling (`python3 -m pip install --upgrade orbi` /
-`uv tool install --reinstall orbi`). The editable checkout install below
-stays the official DEPLOYMENT: it imports the `orbi` package from the
-deployment checkout, so the `ExecStartPre` sync delivers new engine code
-to the next CLI process with no reinstall. Running a Runner still needs
-that deployment layout (config, deploy home, scheduler user units); verify
-a machine's readiness with the read-only prerequisite gate `orbi check`
-([Operations](/operations) carries the command reference).
+The CLI is **not published on PyPI yet** — the v0.5.5 publication failed
+on the PyPI-side trusted-publisher setup
+([Issue #852](https://github.com/orbi-build/orbi/issues/852)), so
+`pip install orbi` and `uv tool install orbi` currently fail with a
+registry "not found" error. The supported installation paths are the
+ones this page already carries: the one-line installer above (it clones
+the source and installs the editable CLI for you) and the editable
+checkout install in step 2. This section returns with the real commands
+only after a release is actually published.
 
 ## Prerequisites
 
