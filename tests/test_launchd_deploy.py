@@ -80,6 +80,14 @@ def test_template_carries_the_launchd_contract():
     assert plist["EnvironmentVariables"]["ORBI_CONFIG"] == (
         "{{ORBI_REPO_DIR}}/orbi.toml"
     )
+    # The PATH leads with the Apple Silicon Homebrew prefix (Issue #869):
+    # gh, uv and the global npm pi all resolve there on arm64 macs; the
+    # Intel prefix /usr/local/bin stays in the list behind it.
+    path = plist["EnvironmentVariables"]["PATH"]
+    assert path.startswith("/opt/homebrew/bin:")
+    assert "{{ORBI_USER_HOME}}/.npm-global/bin" in path
+    assert "{{ORBI_USER_HOME}}/.local/bin" in path
+    assert "/usr/local/bin" in path
     # Runner output lands in the gitignored state dir, per instance.
     assert plist["StandardOutPath"] == (
         "{{ORBI_REPO_DIR}}/.orbi/{{ORBI_LABEL}}.log"
