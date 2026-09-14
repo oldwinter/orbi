@@ -190,3 +190,119 @@ def test_module_file_fails_fast_without_a_file_attribute(monkeypatch):
 
     with pytest.raises(RuntimeError, match="no __file__"):
         cli_source.module_file()
+
+
+# --- the compatible interpreter selection (Issue #861) -----------------------
+#
+# Orbi's `requires-python = ">=3.14"` is a compatibility FLOOR, not a
+# demand to replace every distro Python: when the system `python3`
+# satisfies the floor (Fedora 43, current Arch) it is used directly;
+# when it does not (Ubuntu 24.04 ships 3.12.3) the selection returns
+# `3.14` so uv provisions/selects a compatible interpreter. The rule
+# lives ONLY here — `orbi setup`, the Runner pre-start refresh and the
+# systemd self-heal template all apply it.
+
+
+def _fake_python3(tmp_path: Path, body: str) -> str:
+    """One fake `python3` executable with the given shell body."""
+    exe = tmp_path / "python3"
+    exe.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_probe_accepts_a_compatible_interpreter():
+    """One real call: the interpreter running this test suite
+    satisfies the packaging floor (requires-python >= 3.14 gates the
+    test env itself), so the probe reports compatible."""
+    import sys
+
+    assert cli_source.system_python3_compatible(sys.executable) is True
+
+
+def test_probe_rejects_an_interpreter_below_the_floor(tmp_path):
+    """A system `python3` older than the floor (the Ubuntu 24.04
+    scene: 3.12.3) is NOT compatible — uv must provision instead."""
+    assert cli_source.system_python3_compatible(
+        _fake_python3(tmp_path, "exit 1"),
+    ) is False
+
+
+def test_probe_rejects_a_broken_interpreter(tmp_path):
+    """A probe that crashes (non-0/1 exit) is not compatible: the
+    selection fails safe to the uv-provisioned interpreter."""
+    assert cli_source.system_python3_compatible(
+        _fake_python3(tmp_path, "exit 7"),
+    ) is False
+
+
+def test_probe_rejects_an_empty_executable():
+    """An empty interpreter path (the `which` -> None sentinel passed
+    straight through) is not compatible — no guess, no fallback to a
+    nameless executable."""
+    assert cli_source.system_python3_compatible("") is False
+
+
+def test_probe_rejects_a_missing_executable(tmp_path):
+    """An unresolvable interpreter path (OSError) is not compatible."""
+    assert cli_source.system_python3_compatible(
+        str(tmp_path / "no-such-python"),
+    ) is False
+
+
+def test_probe_rejects_a_hanging_interpreter(tmp_path, monkeypatch):
+    """A wedged interpreter must not wedge the selection: the probe
+    carries a timeout (a blocking command never runs bare)."""
+    monkeypatch.setattr(cli_source, "PROBE_TIMEOUT_SECONDS", 1)
+    assert cli_source.system_python3_compatible(
+        _fake_python3(tmp_path, "sleep 30"),
+    ) is False
+
+
+def test_probe_code_pins_the_packaging_floor():
+    """The probe source is built from REQUIRED_PYTHON — the same floor
+    the packaging gate pins to pyproject's requires-python (one
+    version floor everywhere, no second constant)."""
+    assert f">= {cli_source.REQUIRED_PYTHON}" in cli_source.PYTHON_PROBE_CODE
+
+
+def test_selection_uses_system_python3_when_compatible(
+    tmp_path, monkeypatch,
+):
+    """A compatible system `python3` (Fedora 43, current Arch) is used
+    DIRECTLY — no uv-managed download on a distro that already ships
+    the floor."""
+    monkeypatch.setattr(
+        cli_source.shutil, "which",
+        lambda name: _fake_python3(tmp_path, "exit 0"),
+    )
+    assert cli_source.select_python_interpreter() == "python3"
+
+
+def test_selection_provisions_3_14_when_system_python3_is_old(
+    tmp_path, monkeypatch,
+):
+    """The Ubuntu 24.04 scene: the system `python3` exists but is
+    below the floor — the selection returns `3.14` so uv provisions
+    or selects a compatible interpreter."""
+    monkeypatch.setattr(
+        cli_source.shutil, "which",
+        lambda name: _fake_python3(tmp_path, "exit 1"),
+    )
+    assert cli_source.select_python_interpreter() == "3.14"
+
+
+def test_selection_provisions_3_14_without_a_system_python3(monkeypatch):
+    """A fresh uv-only host (no `python3` on PATH at all) keeps the
+    pre-#861 behavior: uv provisions the interpreter."""
+    monkeypatch.setattr(cli_source.shutil, "which", lambda name: None)
+    assert cli_source.select_python_interpreter() == "3.14"
+
+
+def test_python_interpreter_constant_follows_the_selection():
+    """The module constant the reinstall argv (and every fix string)
+    embeds is THE selection result — one rule, no divergent copy."""
+    assert (
+        cli_source.PYTHON_INTERPRETER
+        == cli_source.select_python_interpreter()
+    )

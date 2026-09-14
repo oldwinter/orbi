@@ -36,7 +36,10 @@ N 个独立的 Runner 实例。每个 tick 的 service 实例：
      script（`orbi --version` 当且仅当包可导入时成功），探测失败时在
      同一把 `base-sync.lock` flock 下执行精确的 editable 强制重装
      （`uv tool install --force --reinstall --editable --python
-     /usr/bin/python3 <repo_dir>`）。这是 console script 连
+     <interpreter> <repo_dir>`——`<interpreter>` 遵循兼容选取规则：
+     系统 Python 满足 `>= 3.14` 下限时为 `python3`，否则为 uv 自动
+     供应的 `3.14`，与 `orbi setup` 同一规则，Issue #861）。这是
+     console script 连
      `import orbi` 都失败时唯一能动手的地方——#248 现场：#168 的
      src 布局迁移让已安装的 editable finder 过期，而 #158 的 Runner
      内刷新（在 Runner **内部**运行）根本不可达。它排在同步**之前**，

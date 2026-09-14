@@ -3,7 +3,15 @@
 The official local deployment is the EDITABLE uv tool install:
 
     uv tool install --force --reinstall --editable \\
-        --python /usr/bin/python3 <deployment checkout>
+        --python <interpreter> <deployment checkout>
+
+where ``<interpreter>`` follows the compatible interpreter-selection
+rule (Issue #861): the system ``python3`` when it satisfies the
+packaging floor (``requires-python >= 3.14`` — Fedora 43 and current
+Arch ship it), otherwise the bare ``3.14`` so uv provisions or
+selects a compatible interpreter (Ubuntu 24.04 ships Python 3.12; a
+hard pin to its ``/usr/bin/python3`` exits 1 with a dependency
+resolution failure).
 
 The tool env's Python imports the ``orbi`` package directly from
 the deployment checkout (the setuptools editable finder maps the WHOLE
@@ -34,16 +42,73 @@ instances still never race the tool env.
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import orbi
 from orbi.progress import quote_value
 
-# Use the PATH-resolved Python 3 command so the editable install has the same
-# interpreter contract in the systemd unit and in the Python-side refresh.
-# On a fresh uv-only host, the version selector asks uv to provision the
-# required 3.14 interpreter instead of requiring a system Python executable.
-PYTHON_INTERPRETER = "python3" if shutil.which("python3") else "3.14"
+# The Python floor (Issue #861): the same floor as the PEP 621
+# `requires-python` — pinned together by tests/test_cli_packaging.py
+# (pilot_setup.REQUIRED_PYTHON is an alias of this constant, so pip,
+# `orbi check` and the interpreter selection can never disagree).
+REQUIRED_PYTHON = (3, 14)
+
+# The interpreter probe the selection (and the systemd self-heal
+# template — the same source, pinned by tests) runs on the system
+# `python3`: exit 0 iff the interpreter satisfies REQUIRED_PYTHON.
+PYTHON_PROBE_CODE = (
+    "import sys; raise SystemExit("
+    f"0 if sys.version_info[:2] >= {REQUIRED_PYTHON} else 1)"
+)
+
+# A blocking command never runs bare (Issue #95): a wedged system
+# interpreter must fail the probe, not hang the CLI start.
+PROBE_TIMEOUT_SECONDS = 10
+
+
+def system_python3_compatible(exe: str) -> bool:
+    """Whether one concrete interpreter satisfies REQUIRED_PYTHON.
+
+    Runs the :data:`PYTHON_PROBE_CODE` probe on ``exe`` (with a
+    timeout — a blocking command never runs bare). Any failure
+    (missing executable, non-zero probe exit, timeout) is NOT
+    compatible: the selection fails safe to the uv-provisioned
+    interpreter, which uv resolves against system AND managed
+    interpreters either way.
+    """
+    if not exe:
+        return False
+    try:
+        probe = subprocess.run(
+            [exe, "-S", "-c", PYTHON_PROBE_CODE],
+            capture_output=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
+def select_python_interpreter() -> str:
+    """The compatible interpreter-selection rule (Issue #861).
+
+    The PATH ``python3`` when it exists AND satisfies the floor
+    (Fedora 43, current Arch), otherwise the bare ``3.14`` — uv then
+    provisions or selects a compatible interpreter (Ubuntu 24.04
+    ships 3.12.3; on a fresh uv-only host there is no system python3
+    at all). ``orbi setup``, the Runner pre-start refresh and the
+    systemd self-heal template all apply this one rule.
+    """
+    exe = shutil.which("python3")
+    if exe is not None and system_python3_compatible(exe):
+        return "python3"
+    return "3.14"
+
+
+# The selection result the reinstall argv (and every fix string)
+# embeds — computed once per process.
+PYTHON_INTERPRETER = select_python_interpreter()
 
 # The runtime package directory inside a checkout (the src
 # layout): the editable install maps this WHOLE directory, so a newly
@@ -59,8 +124,10 @@ def reinstall_args(repo_dir: Path) -> list[str]:
     replaces the existing tool env, ``--reinstall`` bypasses the build
     cache, ``--editable`` points the tool env at the checkout ("changes
     in the package's source directory are reflected without
-    reinstallation") and ``--python`` pins the interpreter (or asks uv to
-    provision 3.14 when no system ``python3`` is available).
+    reinstallation") and ``--python`` carries the compatible
+    interpreter selection (Issue #861: the system ``python3`` when it
+    satisfies the floor, otherwise the bare ``3.14`` so uv provisions
+    or selects one).
     """
     return [
         "uv", "tool", "install", "--force", "--reinstall", "--editable",

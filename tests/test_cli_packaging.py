@@ -195,12 +195,15 @@ def test_required_python_matches_the_check_gate():
     """Issue #163: the runtime check gate (`orbi check`) and the PEP 621
     `requires-python` floor are the same requirement — pip enforces it at
     install time, the gate re-states it at runtime; the test pins the
-    two together so they cannot drift."""
-    from orbi import pilot_setup
+    two together so they cannot drift. Issue #861: the interpreter
+    selection (cli_source) shares the SAME floor — pilot_setup's
+    constant is an alias, never a second copy."""
+    from orbi import cli_source, pilot_setup
 
     assert load_pyproject()["project"]["requires-python"] == (
         ">=" + ".".join(str(part) for part in pilot_setup.REQUIRED_PYTHON)
     )
+    assert pilot_setup.REQUIRED_PYTHON == cli_source.REQUIRED_PYTHON
 
 
 def test_every_runtime_module_lives_in_the_package():
@@ -298,8 +301,12 @@ def test_service_preflight_self_heals_the_editable_cli():
     assert "%h/.local/bin/orbi --version >/dev/null 2>&1" in heal
     # The `||` fallback fires ONLY when the probe fails.
     assert " || " in heal
-    # The fallback is the exact editable force-reinstall (the single
-    # source of truth is cli_source.reinstall_command).
+    # The fallback is the exact editable force-reinstall with the
+    # shell-level interpreter variable (Issue #861: the conditional
+    # selection rule — system `python3` when it satisfies the floor,
+    # otherwise `3.14` so uv provisions it). The systemd `$$` escape
+    # (systemd.service(5)) passes a literal `$` to the shell, which
+    # expands `$I` AFTER the probe picked the branch.
     from orbi import cli_source
 
     # The systemd `%h` specifier is expanded by systemd before the
@@ -309,14 +316,92 @@ def test_service_preflight_self_heals_the_editable_cli():
     reinstall_part = heal_argv.split("||", 1)[1].strip()
     assert reinstall_part == (
         "uv tool install --force --reinstall --editable "
+        "--python $$I {{ORBI_REPO_DIR}}"
+    )
+    # The Python-side source of truth resolves the SAME two shapes:
+    # reinstall_args embeds the selection result where the template
+    # embeds `$I` (the shell-behavior test below proves the rule's
+    # semantics through the real shell).
+    py_args = cli_source.reinstall_args(Path("{{ORBI_REPO_DIR}}"))
+    assert " ".join(py_args) == (
+        "uv tool install --force --reinstall --editable "
         f"--python {cli_source.PYTHON_INTERPRETER} {{{{ORBI_REPO_DIR}}}}"
     )
-    # The reinstall argv is the same as the Python-side source of truth
-    # (the path is the only difference: the template carries the
-    # {{ORBI_REPO_DIR}} placeholder, substituted at install time with
-    # the resolved repo_dir).
-    py_args = cli_source.reinstall_args(Path("{{ORBI_REPO_DIR}}"))
-    assert reinstall_part == " ".join(py_args)
+    # The interpreter probe IS cli_source's probe code (built from
+    # REQUIRED_PYTHON — the floor pinned to pyproject's
+    # requires-python), so the template and `orbi setup` can never
+    # disagree about "compatible".
+    assert f'python3 -c "{cli_source.PYTHON_PROBE_CODE}"' in heal_argv
+    assert "then I=python3; else I=3.14; fi" in heal_argv
+
+
+def test_service_self_heal_selects_the_interpreter_like_setup(
+    tmp_path_factory,
+):
+    """Issue #861 acceptance: the self-heal payload applies the SAME
+    conditional rule as `orbi setup`, proven through the REAL shell
+    with fake interpreters. The systemd expansions are applied the way
+    systemd applies them (documented in systemd.service(5)): `$$` is a
+    literal `$`, `%h` is the home dir, `{{ORBI_REPO_DIR}}` was already
+    substituted at install time."""
+    import subprocess
+
+    service = parse_unit(SERVICE_FILE)
+    heal = service["Service"]["ExecStartPre"][0]
+    raw_payload = heal.split("'")[1]
+
+    def run_world(name: str, python3_body: str | None, interpreter: str):
+        tmp_path = tmp_path_factory.mktemp(name)
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        repo.mkdir(parents=True)
+        (home / ".local" / "bin").mkdir(parents=True)
+        shim = tmp_path / "shim"
+        shim.mkdir()
+        # The installed console script probe: exit 1 forces the
+        # reinstall branch.
+        probe = home / ".local" / "bin" / "orbi"
+        probe.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        probe.chmod(0o755)
+        # The fake uv records the arguments it was called with.
+        args_file = tmp_path / "uv_args.txt"
+        uv = shim / "uv"
+        uv.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$UV_ARGS_FILE\"\n",
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+        if python3_body is not None:
+            py = shim / "python3"
+            py.write_text(f"#!/bin/sh\n{python3_body}\n", encoding="utf-8")
+            py.chmod(0o755)
+        payload = (
+            raw_payload
+            .replace("$$", "$")
+            .replace("%h", str(home))
+            .replace("{{ORBI_REPO_DIR}}", str(repo))
+        )
+        subprocess.run(
+            ["/bin/sh", "-c", payload],
+            env={
+                "PATH": str(shim),
+                "UV_ARGS_FILE": str(args_file),
+            },
+            timeout=30, check=True, capture_output=True,
+        )
+        assert args_file.exists(), "the reinstall branch never ran"
+        assert args_file.read_text(encoding="utf-8").splitlines() == [
+            "tool", "install", "--force", "--reinstall", "--editable",
+            "--python", interpreter, str(repo),
+        ]
+
+    # Compatible system python3 -> used DIRECTLY (Fedora 43 / Arch).
+    run_world("heal-py314", "exit 0", "python3")
+    # System python3 below the floor (Ubuntu 24.04: 3.12) -> uv
+    # provisions 3.14.
+    run_world("heal-py312", "exit 1", "3.14")
+    # No system python3 at all (fresh uv-only host) -> 3.14.
+    run_world("heal-no-py", None, "3.14")
 
 
 def test_service_path_carries_the_uv_tool_bin_dir():
@@ -486,6 +571,43 @@ def test_docs_getting_started_documents_the_cli_install():
         )
         assert "orbi" in page, (
             f"docs/{slug} must name the installed CLI"
+        )
+
+
+def test_install_docs_state_the_conditional_interpreter_rule():
+    """Issue #861: `requires-python >= 3.14` is a compatibility floor,
+    not a demand to replace every distro Python. No live page may
+    present `--python /usr/bin/python3` as universally valid (Ubuntu
+    24.04 ships Python 3.12 and the hard pin fails there), and the
+    install pages state BOTH branches of the conditional rule: the
+    system `python3` when it satisfies the floor (Fedora 43, current
+    Arch), `3.14` (provisioned by uv) otherwise."""
+    without_pin = [
+        "docs/setup.mdx", "docs/zh/setup.mdx",
+        "docs/getting-started.mdx", "docs/zh/getting-started.mdx",
+        "docs/operations.mdx", "docs/zh/operations.mdx",
+        "README.md", "README.zh-CN.md",
+    ]
+    for slug in without_pin:
+        text = (REPO_ROOT / slug).read_text(encoding="utf-8")
+        assert "--python /usr/bin/python3" not in text, (
+            f"{slug} still presents the universal /usr/bin/python3 pin "
+            "(fails on Ubuntu 24.04)"
+        )
+    with_both_branches = [
+        "docs/setup.mdx", "docs/zh/setup.mdx",
+        "docs/getting-started.mdx", "docs/zh/getting-started.mdx",
+        "README.md", "README.zh-CN.md",
+    ]
+    for slug in with_both_branches:
+        text = (REPO_ROOT / slug).read_text(encoding="utf-8")
+        assert "--python python3" in text, (
+            f"{slug} must state the system-python3 branch of the "
+            "interpreter rule (Issue #861)"
+        )
+        assert "--python 3.14" in text, (
+            f"{slug} must state the uv-provisioned 3.14 branch of the "
+            "interpreter rule (Issue #861)"
         )
 
 

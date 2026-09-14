@@ -130,9 +130,17 @@ cd orbi
 正式使用方式是安装后的 `orbi` console script（`pyproject.toml`
 的 PEP 621 打包把 `orbi = orbi:main` 映射为可执行文件），
 以 **editable** `uv tool` 安装——这是官方本地部署方式（Issue #152）。
-在 clone 目录里安装，`--python` 固定生产解释器（3.14）：
+在 clone 目录里安装，`--python` 传一个**兼容**的解释器（Issue #861）：
+系统 Python 是 3.14 或更新（Fedora 43、当前 Arch 自带）时直接用
+`python3`，否则传 `3.14` 让 uv 自动供应或选择——Ubuntu 24.04 系统自带
+Python 3.12，硬编码其系统解释器会因依赖解析失败而退出 1：
 
 ```bash
+# 系统 Python >= 3.14（Fedora 43、当前 Arch）：
+uv tool install --force --reinstall --editable --python python3 .
+# 更老的系统 Python（如 Ubuntu 24.04 自带 3.12）——uv 自动供应 3.14：
+uv tool install --force --reinstall --editable --python 3.14 .
+# 然后验证：
 orbi --help
 ```
 

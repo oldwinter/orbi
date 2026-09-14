@@ -842,7 +842,7 @@ def test_install_units_writes_the_rendered_unit_with_the_real_path(tmp_path):
         '-c \'git fetch\'\n'
         'ExecStartPre=/usr/bin/flock {{ORBI_REPO_DIR}}/.orbi/base-sync.lock '
         "-c '%h/.local/bin/orbi --version || uv tool install --force "
-        "--reinstall --editable --python /usr/bin/python3 "
+        "--reinstall --editable --python python3 "
         "{{ORBI_REPO_DIR}}'\n"
         "ExecStart=%h/.local/bin/orbi\n",
         encoding="utf-8",
