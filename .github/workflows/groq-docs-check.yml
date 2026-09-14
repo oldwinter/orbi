@@ -1,5 +1,11 @@
 # Keep the Groq provider documentation's model reference tied to the live
 # catalog. Failures are consumed by CI Failure Issue via workflow_run.
+# The models endpoint requires a bearer key (HTTP 401 unauthenticated), so
+# with the GROQ_API_KEY secret unconfigured the check cannot run at all:
+# the step degrades to a visible ::warning:: annotation and exits 0
+# instead of a red run every schedule tick (Issue #848). Every real check
+# failure — HTTP error, no data list, documented model missing — still
+# fails the run.
 name: Groq docs catalog check
 
 on:
@@ -26,7 +32,12 @@ jobs:
 
           key = os.environ.get("GROQ_API_KEY")
           if not key:
-              raise SystemExit("GROQ_API_KEY Actions secret is not configured")
+              print(
+                  "::warning::GROQ_API_KEY Actions secret is not configured; "
+                  "skipped the live Groq catalog check. Configure the "
+                  "repository secret to enable it."
+              )
+              raise SystemExit(0)
 
           request = urllib.request.Request(
               "https://api.groq.com/openai/v1/models",
