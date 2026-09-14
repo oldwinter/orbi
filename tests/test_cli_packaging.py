@@ -28,7 +28,7 @@ import pytest
 from orbi import delivery_labels
 from orbi import git_transport
 from orbi import pilot_setup
-from orbi import systemd_deploy
+from orbi import scheduler, systemd_deploy
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -371,7 +371,7 @@ def test_service_template_passes_systemd_analyze_verify():
 
 
 def test_unit_drift_fix_command_is_the_cli():
-    assert systemd_deploy.FIX_COMMAND == "orbi install-units"
+    assert scheduler.FIX_COMMAND == "orbi install-units"
 
 
 def test_https_remote_migration_entry_is_the_cli():

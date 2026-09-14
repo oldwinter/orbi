@@ -333,8 +333,8 @@ def test_operations_documents_the_unit_drift_fail_fast():
     # No claim while drifted.
     assert "no slot, no claim" in operations
     # The exact structured failure line's fields are the code contract.
-    from orbi import systemd_deploy
-    line = systemd_deploy.drift_lines([
+    from orbi import scheduler, systemd_deploy
+    line = scheduler.drift_lines([
         {"unit": "orbi@.timer", "repo_path": "r", "installed_path": "i",
          "repo_sha256": "a", "installed_sha256": "b", "drifted": True},
     ])[0]

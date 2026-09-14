@@ -2,7 +2,7 @@
 
 One lightweight executable entry verifies every deployment precondition
 from the Issue: Python version, the required commands + the systemd
-user bus, `gh auth`, the `pi` CLI, the config file (existence, parse,
+the scheduler session, `gh auth`, the `pi` CLI, the config file (existence, parse,
 validation), per-source-repo access + permission, the git transport,
 and the model provider — WITHOUT printing any secret value. The gate is
 read-only (no labels, no units, no git mutation, no config creation)
@@ -128,6 +128,32 @@ def _isolate_provider_key_env(monkeypatch):
 # --- the individual check steps -----------------------------------------------
 
 
+def test_unsupported_platform_is_a_platform_finding_with_the_issue_link(
+    monkeypatch,
+):
+    """Issue #849: a machine that is neither Linux nor macOS is a
+    `platform` finding carrying the honest limitation message and the
+    issue link — never a traceback from the scheduler dispatch."""
+    from orbi import scheduler
+
+    def refuse(system=None):
+        raise scheduler.UnsupportedPlatformError(
+            "orbi has no scheduler support for platform 'FreeBSD': it "
+            "runs on Linux (systemd) and macOS (launchd); see "
+            + scheduler.ISSUE_URL
+        )
+
+    monkeypatch.setattr(scheduler, "detect", refuse)
+    with pytest.raises(pilot_setup.CheckError) as excinfo:
+        pilot_setup.run_checks(
+            Path("/absent/orbi.toml"), run_command=lambda c, **k: "",
+        )
+    failure = excinfo.value
+    assert failure.check == "platform"
+    assert "FreeBSD" in failure.reason
+    assert scheduler.ISSUE_URL in failure.docs
+
+
 def test_python_version_ok_on_the_supported_runtime():
     pilot_setup.check_python_version()
 
@@ -165,7 +191,7 @@ def test_user_bus_failure_names_the_session_and_the_systemd_docs(tmp_path):
             config_path, run_command=fake_run_factory(state),
         )
     failure = excinfo.value
-    assert failure.check == "systemd_user_bus"
+    assert failure.check == "systemd_session"
     assert "systemd user session" in failure.reason
     assert failure.docs == (
         "https://www.freedesktop.org/software/systemd/man/systemctl.html"
@@ -359,7 +385,7 @@ def test_run_checks_success_reports_every_step(tmp_path):
     joined = "\n".join(lines)
     assert "check=python ok" in joined
     assert "check=command ok name=git" in joined
-    assert "check=systemd_user_bus ok" in joined
+    assert "check=systemd_session ok" in joined
     assert "check=gh_auth ok" in joined
     assert "check=pi ok" in joined
     assert "check=config ok" in joined

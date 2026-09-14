@@ -35,6 +35,7 @@ import re
 from pathlib import Path
 from typing import Callable
 
+from orbi import scheduler
 from orbi.journal import event
 from orbi.progress import quote_value
 
@@ -263,9 +264,12 @@ def _fail_on_dirty(deploy_home: Path, track: str, *,
 
 
 def _deploy_home_dirty_line(deploy_home: Path, files: list[str]) -> str:
+    # The restart hint comes from the scheduler layer: this command is
+    # the systemd ExecStartPre on Linux, and the hint must name the
+    # platform's actual restart entry (Issue #849).
     fix = (
         f"git -C {deploy_home} stash && "
-        "systemctl --user start orbi@1.service"
+        f"{scheduler.detect().restart_hint()}"
     )
     return (
         f"deploy_home_dirty files={quote_value(','.join(files))} "
