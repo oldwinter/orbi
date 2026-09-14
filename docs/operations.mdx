@@ -315,10 +315,11 @@ not needed. If this machine will no longer use the Orbi CLI at all, optionally
 remove the editable tool as a separate final step:
 
 ```bash
-uv tool uninstall orbi
+uv tool uninstall orbi-cli
 ```
 
-`uv tool uninstall orbi` is not part of a pause or migration, and it does not
+`uv tool uninstall orbi-cli` (the tool is named after the PyPI
+distribution `orbi-cli`, Issue #874) is not part of a pause or migration, and it does not
 clean systemd units or repository state. There is no `orbi uninstall` or
 `orbi teardown` command.
 

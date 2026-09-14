@@ -20,6 +20,7 @@ not a hand-written `python3 orbi.py`. These tests pin:
   asserted against one real call).
 """
 import importlib
+import re
 import tomllib
 from pathlib import Path
 
@@ -135,11 +136,13 @@ def test_pyproject_declares_the_orbi_console_script():
 
 
 def test_pyproject_project_metadata():
+    """Issue #874: the PyPI distribution is the approved `orbi-cli`
+    name; the console script below stays `orbi` (pinned separately)."""
     import orbi
 
     data = load_pyproject()
     project = data["project"]
-    assert project["name"] == "orbi"
+    assert project["name"] == "orbi-cli"
     assert project["version"] == orbi.__version__
     # The package must not claim to run on an older minor version.
     assert project["requires-python"] == ">=3.14"
@@ -571,6 +574,51 @@ def test_docs_getting_started_documents_the_cli_install():
         )
         assert "orbi" in page, (
             f"docs/{slug} must name the installed CLI"
+        )
+
+
+# Issue #874: the PyPI distribution is `orbi-cli`; every user-facing
+# install/uninstall path must name THAT distribution and never the old
+# bare `orbi` name (which would fail with PackageNotFoundError).
+DIST_INSTALL_PAGES = (
+    "README.md",
+    "README.zh-CN.md",
+    "docs/getting-started.mdx",
+    "docs/zh/getting-started.mdx",
+)
+
+OLD_DIST_NAME_RE = re.compile(
+    r"(pip install|uv tool install|uv tool uninstall)( --reinstall| --upgrade)?"
+    r" orbi(?![-\w])"
+)
+
+
+def test_docs_install_commands_use_the_orbi_cli_distribution():
+    """Issue #874: the user-facing install/uninstall commands carry the
+    distribution name `orbi-cli` (the uv TOOL name follows the
+    distribution — verified with a real `uv tool install` probe whose
+    dist and script names differ). The console script stays `orbi`,
+    so the documented `orbi --version` / `orbi --help` never change."""
+    for slug in DIST_INSTALL_PAGES:
+        text = (REPO_ROOT / slug).read_text(encoding="utf-8")
+        assert "orbi-cli" in text, (
+            f"{slug} must carry the orbi-cli distribution name (Issue #874)"
+        )
+        stale = OLD_DIST_NAME_RE.findall(text)
+        assert not stale, (
+            f"{slug} still installs/uninstalls the old distribution "
+            f"name `orbi`: {stale}"
+        )
+    for slug in ("docs/operations.mdx", "docs/zh/operations.mdx"):
+        text = (REPO_ROOT / slug).read_text(encoding="utf-8")
+        assert "uv tool uninstall orbi-cli" in text, (
+            f"{slug} must uninstall the tool by its distribution "
+            "name orbi-cli (Issue #874)"
+        )
+        stale = OLD_DIST_NAME_RE.findall(text)
+        assert not stale, (
+            f"{slug} still uninstalls the old distribution name "
+            f"`orbi`: {stale}"
         )
 
 

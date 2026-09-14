@@ -266,7 +266,8 @@ def test_non_editable_version_at_latest_tag_passes(monkeypatch, tmp_path):
 
 def test_orbi_distribution_version_reads_install_metadata(monkeypatch):
     """The real seam reads importlib.metadata (install metadata, not the
-    code's self-reported __version__) — and only for the `orbi` dist."""
+    code's self-reported __version__) — and only for the `orbi-cli`
+    dist (Issue #874: the distribution name is `orbi-cli`)."""
     seen: list[str] = []
 
     def fake_version(name: str) -> str:
@@ -275,7 +276,7 @@ def test_orbi_distribution_version_reads_install_metadata(monkeypatch):
 
     monkeypatch.setattr("importlib.metadata.version", fake_version)
     assert runner._orbi_distribution_version() == "9.9.9"
-    assert seen == ["orbi"]
+    assert seen == ["orbi-cli"]
 
 
 def test_non_editable_unreadable_version_cannot_pass(
@@ -289,7 +290,7 @@ def test_non_editable_unreadable_version_cannot_pass(
     _non_editable_install(monkeypatch, tmp_path, "0.3.5")
 
     def boom():
-        raise importlib.metadata.PackageNotFoundError("orbi")
+        raise importlib.metadata.PackageNotFoundError("orbi-cli")
 
     monkeypatch.setattr(runner, "_orbi_distribution_version", boom)
     with caplog.at_level("ERROR"):

@@ -17,10 +17,11 @@
 #              this repository). ONE-TIME HUMAN SETUP (Issue #852):
 #              the exchange is refused with `invalid-publisher: ...
 #              Publisher with matching claims was not found` until the
-#              "orbi" project on PyPI carries a (pending) trusted
-#              publisher configured with EXACTLY these four form values
-#              (a pending publisher creates the project on the first
-#              upload):
+#              "orbi-cli" project on PyPI (the approved distribution
+#              name, Issue #874; the installed command stays `orbi`)
+#              carries a (pending) trusted publisher configured with
+#              EXACTLY these four form values (a pending publisher
+#              creates the project on the first upload):
 #                owner=orbi-build repository=orbi
 #                workflow=publish.yml environment=pypi
 #              The environment field MUST read pypi (blank does NOT
@@ -29,7 +30,7 @@
 #              PyPI files are immutable: a re-run after a successful
 #              upload fails on the duplicate file — the fix is a new
 #              version and a new tag, never a re-upload.
-#   verify-pypi  install `orbi==X.Y.Z` FROM PYPI in a clean venv
+#   verify-pypi  install `orbi-cli==X.Y.Z` FROM PYPI in a clean venv
 #              (bounded retry while the upload propagates) and verify
 #              `orbi --version` matches the tag: version == tag ==
 #              wheel == PyPI file.
@@ -120,8 +121,10 @@ jobs:
           version = Path("pyproject.toml").read_text(encoding="utf-8")
           import tomllib
           version = tomllib.loads(version)["project"]["version"]
-          assert f"orbi-{version}-py3-none-any.whl" == Path(wheel).name, wheel
-          assert f"orbi-{version}.tar.gz" == Path(sdist).name, sdist
+          # Issue #874: the distribution is `orbi-cli`; PEP 427/PEP 625
+          # normalize the filename to `orbi_cli` (dashes -> underscores).
+          assert f"orbi_cli-{version}-py3-none-any.whl" == Path(wheel).name, wheel
+          assert f"orbi_cli-{version}.tar.gz" == Path(sdist).name, sdist
 
           names = zipfile.ZipFile(wheel).namelist()
           for path in sorted(Path("src/orbi").rglob("*.py")):
@@ -156,7 +159,7 @@ jobs:
           with tarfile.open(sdist) as tf:
               snames = tf.getnames()
           for member in ("pyproject.toml", "src/orbi/example_config.toml"):
-              assert f"orbi-{version}/{member}" in snames, (
+              assert f"orbi_cli-{version}/{member}" in snames, (
                   f"{member} missing from the sdist (a wheel built from "
                   "this sdist would lose it)"
               )
@@ -258,14 +261,14 @@ jobs:
           python3 -m venv /tmp/orbi-pypi-smoke
           timeout 300 bash -c '
             for attempt in 1 2 3 4 5 6 7 8 9 10; do
-              if "$1" install --quiet "orbi==$2"; then
-                echo "installed orbi==$2 from PyPI"
+              if "$1" install --quiet "orbi-cli==$2"; then
+                echo "installed orbi-cli==$2 from PyPI"
                 exit 0
               fi
-              echo "attempt $attempt: orbi==$2 not on PyPI yet"
+              echo "attempt $attempt: orbi-cli==$2 not on PyPI yet"
               sleep 20
             done
-            echo "orbi==$2 did not appear on PyPI within the retry budget" >&2
+            echo "orbi-cli==$2 did not appear on PyPI within the retry budget" >&2
             exit 1
           ' _ /tmp/orbi-pypi-smoke/bin/pip "$version"
           test "$(/tmp/orbi-pypi-smoke/bin/orbi --version)" = "orbi $version"
