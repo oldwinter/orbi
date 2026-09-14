@@ -63,6 +63,25 @@ def test_groq_catalog_workflow_contract():
     assert '"groq/compound"' in script
 
 
+def test_groq_catalog_workflow_skips_when_secret_missing():
+    """Issue #848: the models endpoint requires a bearer key (HTTP 401
+    unauthenticated), so with the secret unconfigured the check cannot run
+    at all and a red run every Monday is an unactionable failure Issue only
+    a human can fix. The step must skip explicitly — a visible `::warning::`
+    annotation and exit 0 inside the script — while every real check failure
+    (HTTP error, no data list, model missing) still exits non-zero."""
+    workflow = yaml.safe_load(GROQ_WORKFLOW_FILE.read_text(encoding="utf-8"))
+    step = workflow["jobs"]["catalog"]["steps"][0]
+    assert not step.get("continue-on-error"), (
+        "the skip must be explicit in the script, not a faked success"
+    )
+    script = step["run"]
+    assert "::warning::GROQ_API_KEY Actions secret is not configured" in script
+    assert "raise SystemExit(0)" in script
+    assert "Groq catalog returned HTTP" in script
+    assert "missing from the Groq catalog" in script
+
+
 def test_triage_script_exists():
     assert TRIAGE_SCRIPT.is_file(), "the workflow must call a real script"
 
