@@ -5256,14 +5256,18 @@ def merge_gate(worktree: Path, pr: dict, base_branch: str,
     """
     fetch_base_ref(repo_dir, base_branch, cwd=worktree)
     if not _is_ancestor(f"origin/{base_branch}", pr["head_oid"], cwd=worktree):
+        base_sha = run_command(
+            ["git", "rev-parse", f"origin/{base_branch}"], cwd=worktree,
+        )
         event(
             "merge_gate_behind_base", level=logging.ERROR,
-            base_branch=base_branch, pr=pr["number"], head=pr["head_oid"],
+            base_branch=base_branch, base_sha=base_sha,
+            pr=pr["number"], head=pr["head_oid"],
         )
         raise RecoverableMergeGateError(
             f"PR #{pr['number']} head {pr['head_oid']} is behind latest "
-            f"remote base origin/{base_branch}; absorb the latest base, rerun "
-            "tests and review, then retry"
+            f"remote base origin/{base_branch} ({base_sha}); absorb the "
+            "latest base, rerun tests and review, then retry"
         )
     state = pr_view(pr["number"],
                     "state,mergeable,headRefOid,statusCheckRollup",
@@ -6155,11 +6159,16 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             + (f"Orbi review round {round} for PR #{pr['number']}: "
                "CI merge gate blocked: "
                f"{message} (run_id={config.run_id})" if ci_failure else
+               # Issue #879: the two recoverable gate scenes are
+               # distinguishable — the exception message names the
+               # concrete state (behind-base with the origin/<base> SHA,
+               # or a conflict with the actual mergeable value), never
+               # one ambiguous sentence for both.
                f"Orbi review round {round} for PR #{pr['number']}: "
-            "the PR is behind the latest base or has a merge conflict; "
-            f"the next review session merges the latest "
-            f"origin/{base_branch} into the branch in-session, resolves "
-            "conflicts, and reruns the full test suite"
+               f"merge gate blocked: {message} (run_id={config.run_id}); "
+               f"the next review session merges the latest "
+               f"origin/{base_branch} into the branch in-session, resolves "
+               "conflicts, and reruns the full test suite"
         )) + "\n" + _round_scene_block(scene, pr["url"], round)
         # CI evidence is best-effort observability.  A GitHub comment
         # outage must not prevent the required ai-fix-needed transition.

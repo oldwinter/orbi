@@ -1927,7 +1927,9 @@ def test_review_and_merge_behind_base_labels_fix_needed(monkeypatch, tmp_path):
         runner, "merge_gate",
         lambda *a, **k: (_ for _ in ()).throw(
             runner.RecoverableMergeGateError(
-                "wording changed: base needs absorbing before retry"
+                "PR #4 head h1 is behind latest remote base origin/main "
+                "(b2); absorb the latest base, rerun tests and review, "
+                "then retry"
             ),
         ),
     )
@@ -1949,7 +1951,12 @@ def test_review_and_merge_behind_base_labels_fix_needed(monkeypatch, tmp_path):
     )
     assert merged is False
     # A behind head is never merged: the fixer absorbs the latest base.
-    assert "behind the latest base" in calls[0][1]
+    # Issue #879: the comment carries the exception's specific cause (the
+    # behind-base fact with the origin/<base> SHA) instead of the shared
+    # ambiguous sentence, so behind-base is distinguishable from a
+    # merge conflict.
+    assert "behind latest remote base origin/main (b2)" in calls[0][1]
+    assert "behind the latest base or has a merge conflict" not in calls[0][1]
     assert calls[2] == ("edit", {"repo": "owner/repo", "add": "ai-fix-needed",
                                  "remove": "ai-pr-opened"})
 
@@ -2170,7 +2177,10 @@ def test_review_and_merge_conflict_labels_fix_needed(monkeypatch, tmp_path):
     monkeypatch.setattr(
         runner, "merge_gate",
         lambda *a, **k: (_ for _ in ()).throw(
-            runner.RecoverableMergeGateError("wording changed: conflict requires retry"),
+            runner.RecoverableMergeGateError(
+                "PR #4 is not mergeable (mergeable=CONFLICTING); "
+                "resolve conflicts and retry"
+            ),
         ),
     )
     monkeypatch.setattr(seam, "comment_issue",
@@ -2191,6 +2201,10 @@ def test_review_and_merge_conflict_labels_fix_needed(monkeypatch, tmp_path):
     )
     assert merged is False
     assert "merge conflict" in calls[0][1] or "not mergeable" in calls[0][1]
+    # Issue #879: the conflict scene states the actual mergeable value
+    # and never claims the PR is behind the base.
+    assert "mergeable=CONFLICTING" in calls[0][1]
+    assert "behind" not in calls[0][1]
     assert calls[2] == ("edit", {"repo": "owner/repo", "add": "ai-fix-needed",
                                  "remove": "ai-pr-opened"})
 
