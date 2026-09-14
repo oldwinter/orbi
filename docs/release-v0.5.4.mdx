@@ -1,0 +1,54 @@
+# v0.5.4 release (latest)
+
+`v0.5.4` was published 2026-09-14T05:21:29Z as the GitHub Release [v0.5.4](https://github.com/orbi-build/orbi/releases/tag/v0.5.4) (release task: Issue #846).
+
+## Tag state (verified against origin)
+
+| Ref | Object | Points at |
+|---|---|---|
+| `v0.5.4` | annotated tag `395ea2770d0ec2a79ee59e2f51995372d33a4e97` | commit `6ae7d4ab6df9723b10a934af13474aa2b1dff0e0` |
+
+## Release notes
+
+## Changelog
+
+### Features
+
+- Release notes Contributors avatars render on separate lines instead of one line ([Issue #835](https://github.com/orbi-build/orbi/issues/835); [PR #843](https://github.com/orbi-build/orbi/pull/843))
+- parse_review_verdict 采纳正文中间引用的 verdict JSON（#774 验收外），合法 verdict 又被引用误杀——空转换姿势复发 ([Issue #837](https://github.com/orbi-build/orbi/issues/837); [PR #838](https://github.com/orbi-build/orbi/pull/838))
+- arm_release_ticket 硬编码 ai-ready：自定义 dispatch_label 仓库的 release 票静默搁浅 ([Issue #840](https://github.com/orbi-build/orbi/issues/840); [PR #841](https://github.com/orbi-build/orbi/pull/841))
+
+### Reliability and recovery
+
+- release 声明解析报错只说缺什么，不给可复制的正确样例：用户拿到 ai-blocked 后无从下手 ([Issue #831](https://github.com/orbi-build/orbi/issues/831); [PR #844](https://github.com/orbi-build/orbi/pull/844))
+
+### Bug fixes
+
+- 外部 PR takeover 从未执行：requeue 后因票无 milestone 永不可认领（静默） ([Issue #842](https://github.com/orbi-build/orbi/issues/842); [PR #845](https://github.com/orbi-build/orbi/pull/845))
+
+## Contributors
+
+<a href="https://github.com/xqliu"><img src="https://avatars.githubusercontent.com/u/22554?v=4&s=48" width="32" height="32" alt="xqliu" /></a> <a href="https://github.com/zzuu080603"><img src="https://avatars.githubusercontent.com/u/225036550?u=e6906b0eff64377c19cd3a6831ae44fbd87afc77&v=4&s=48" width="32" height="32" alt="zzuu080603" /></a>
+
+- tag: `v0.5.4`
+- release commit: `6ae7d4ab6df9723b10a934af13474aa2b1dff0e0`
+- release task: Issue #846
+
+## Scope (verified item by item)
+
+- Issue #831 closed
+- Issue #835 closed
+- Issue #837 closed
+- Issue #840 closed
+- Issue #842 closed
+
+## Pre-release gates
+
+- no open Issue in milestone 'v0.5.4' carries ai-in-progress / ai-pr-opened / ai-fix-needed
+- CI on the release commit: 4 check(s) all success/neutral/skipped (waited 270s for pending checks)
+
+## Tests
+
+- release tests gated by GitHub Actions CI on the release commit 6ae7d4ab6df9723b10a934af13474aa2b1dff0e0 (the #268 CI-wait gate; no local test execution)
+
+run_id=c25b06cc
