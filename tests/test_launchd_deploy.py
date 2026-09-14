@@ -139,6 +139,11 @@ def test_rendered_wrapper_exports_env_and_tolerates_a_missing_env_file(
         repo, None, instance=1,
     )
     wrapper = plistlib.loads(rendered.encode("utf-8"))["ProgramArguments"][2]
+    # The RENDERED wrapper carries the #871 sync step (the acceptance
+    # target; the template-level assertion above does not see a
+    # renderer regression). Asserted BEFORE the stub below: a missing
+    # step would make that re.sub silently match nothing.
+    assert "sync-engine-source" in wrapper
     # The acceptance target swaps the exec'd CLI for /usr/bin/env so the
     # test reads the environment the wrapper actually hands over, and
     # stubs the #871 sync step with `true` (this host HAS the real
