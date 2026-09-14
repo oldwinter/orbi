@@ -4865,13 +4865,14 @@ def parse_review_verdict(text: str) -> dict:
     while lines and _is_code_fence_line(lines[-1]):
         lines.pop()
     candidates = []
-    for line in reversed(lines):
-        stripped = line.strip()
+    last_index = len(lines) - 1
+    for index in range(last_index, -1, -1):
+        stripped = lines[index].strip()
         marked = stripped.startswith(VERDICT_MARKER)
         if not marked and VERDICT_MARKER in stripped:
             continue  # a marker mention, never a verdict
-        parsed = _json_dict_span(
-            stripped[len(VERDICT_MARKER):] if marked else stripped)
+        payload = stripped[len(VERDICT_MARKER):] if marked else stripped
+        parsed = _json_dict_span(payload)
         if marked:
             # The explicit verdict channel: a malformed payload fails
             # fast, it is never silently skipped.
@@ -4879,6 +4880,17 @@ def parse_review_verdict(text: str) -> dict:
                 raise ValueError("malformed REVIEW_VERDICT JSON")
             candidates.append(_validated_verdict(parsed))
         elif parsed is not None:
+            # Issue #837: an unmarked verdict-shaped JSON is adoptable only
+            # from the LAST non-empty line embedded in natural-language
+            # phrasing (the orbi-cloud#287 scene). Anywhere else — a
+            # mid-body quote, a fenced display block, a bare payload line —
+            # it is quotation, never the reviewer's own conclusion: it
+            # enters no candidate pool, so it can neither be adopted nor
+            # kill the real verdict by conflict.
+            if index != last_index:
+                continue
+            if stripped.startswith("{") and stripped.endswith("}"):
+                continue  # a bare payload line, not phrased prose
             try:
                 candidates.append(_validated_verdict(parsed))
             except ValueError:
