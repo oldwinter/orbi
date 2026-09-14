@@ -400,7 +400,7 @@ def install_cli_step(repo_dir: Path, module_file: Path, *,
 
 
 # The scheduler-session step's per-platform repair hint (the
-# launchctl/systemdt literals live in the scheduler implementations;
+# launchctl/systemctl literals live in the scheduler implementations;
 # only the operator-facing wording lives here).
 SESSION_FIX = {
     "systemd": (
