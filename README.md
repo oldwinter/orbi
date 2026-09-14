@@ -35,12 +35,9 @@ Choose the mode in [Getting started](docs/getting-started.mdx): bootstrap uses t
 
 ```bash
 cp src/orbi/example_config.toml orbi.toml
-# 4. run one-time setup (checks prior gh auth, labels, scheduler units (systemd/launchd), and checkout; idempotent)
-orbi setup --config orbi.toml
-# 5. manually run one tick (for initial verification; the timer schedules normal runs)
-PYTHONPATH=src python3 -m orbi.runner --config orbi.toml
-# 6. verify deployment health
-orbi doctor --config orbi.toml
+orbi setup --config orbi.toml  # 4. run one-time setup (checks prior gh auth, labels, scheduler units (systemd/launchd), and checkout; idempotent)
+PYTHONPATH=src python3 -m orbi.runner --config orbi.toml  # 5. manually run one tick (for initial verification; the timer schedules normal runs)
+orbi doctor --config orbi.toml  # 6. verify deployment health
 ```
 
 ## What it does

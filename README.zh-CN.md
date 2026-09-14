@@ -47,12 +47,9 @@ uv tool install --force --reinstall --editable --python /usr/bin/python3 .
 
 ```bash
 cp src/orbi/example_config.toml orbi.toml
-# 4. 一次性 setup（检查既有 gh auth、labels、调度器 units（systemd/launchd）、checkout；幂等）
-orbi setup --config orbi.toml
-# 5. 手动跑一个 tick（首次验证；日常由 timer 调度）
-PYTHONPATH=src python3 -m orbi.runner --config orbi.toml
-# 6. 验证部署健康
-orbi doctor --config orbi.toml
+orbi setup --config orbi.toml  # 4. 一次性 setup（检查既有 gh auth、labels、调度器 units（systemd/launchd）、checkout；幂等）
+PYTHONPATH=src python3 -m orbi.runner --config orbi.toml  # 5. 手动跑一个 tick（首次验证；日常由 timer 调度）
+orbi doctor --config orbi.toml  # 6. 验证部署健康
 ```
 
 ## 它能做什么
