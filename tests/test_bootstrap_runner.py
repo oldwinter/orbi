@@ -16684,7 +16684,10 @@ def test_build_release_changelog_lists_deduped_sorted_contributor_avatars(monkey
     32px avatar per merged closing-PR author, deduped across PRs,
     sorted by login, each linking to the author's GitHub profile. The
     avatar is fetched at s=48 (retina-sharp at the displayed size), and
-    a null author neither crashes nor blocks the release."""
+    a null author neither crashes nor blocks the release. Issue #835:
+    all avatars share ONE source line — each raw-HTML line renders as
+    its own markdown block, so separate lines stacked the avatars
+    vertically on the published release."""
     source = {
         10: {
             "__typename": "Issue", "number": 10, "title": "Add A",
@@ -16737,9 +16740,7 @@ def test_build_release_changelog_lists_deduped_sorted_contributor_avatars(monkey
 
 ## Contributors
 
-<a href="https://github.com/alice"><img src="https://avatars.githubusercontent.com/u/2?v=4&s=48" width="32" height="32" alt="alice" /></a>
-<a href="https://github.com/bare"><img src="https://avatars.githubusercontent.com/u/9?s=48" width="32" height="32" alt="bare" /></a>
-<a href="https://github.com/zzz"><img src="https://avatars.githubusercontent.com/u/1?v=4&s=48" width="32" height="32" alt="zzz" /></a>"""
+<a href="https://github.com/alice"><img src="https://avatars.githubusercontent.com/u/2?v=4&s=48" width="32" height="32" alt="alice" /></a> <a href="https://github.com/bare"><img src="https://avatars.githubusercontent.com/u/9?s=48" width="32" height="32" alt="bare" /></a> <a href="https://github.com/zzz"><img src="https://avatars.githubusercontent.com/u/1?v=4&s=48" width="32" height="32" alt="zzz" /></a>"""
 
 
 def test_build_release_changelog_without_contributors_has_no_section(monkeypatch):

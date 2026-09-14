@@ -712,7 +712,10 @@ def build_release_changelog(repo: str, scope: list[int]) -> str:
                 f'<a href="https://github.com/{login}">'
                 f'<img src="{sized}" width="32" height="32" alt="{login}" /></a>'
             )
-        sections.extend(["", "## Contributors", "", *avatar_rows])
+        # One source line for all avatars (Issue #835): GitHub renders
+        # each raw-HTML line as its own markdown block, so separated
+        # lines stacked the avatars vertically instead of inline.
+        sections.extend(["", "## Contributors", "", " ".join(avatar_rows)])
     return "\n".join(sections)
 
 
