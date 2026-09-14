@@ -14,22 +14,56 @@
 #              wheel
 #   publish    upload dist/ to PyPI via Trusted Publishing
 #              (short-lived OIDC token — no API token secret lives in
-#              this repository). ONE-TIME HUMAN SETUP: configure the
-#              "orbi" project's Trusted Publisher on PyPI for
-#              orbi-build/orbi + publish.yml (pending-publisher on the
-#              first release). PyPI files are immutable: a re-run after
-#              a successful upload fails on the duplicate file — the
-#              fix is a new version and a new tag, never a re-upload.
+#              this repository). ONE-TIME HUMAN SETUP (Issue #852):
+#              the exchange is refused with `invalid-publisher: ...
+#              Publisher with matching claims was not found` until the
+#              "orbi" project on PyPI carries a (pending) trusted
+#              publisher configured with EXACTLY these four form values
+#              (a pending publisher creates the project on the first
+#              upload):
+#                owner=orbi-build repository=orbi
+#                workflow=publish.yml environment=pypi
+#              The environment field MUST read pypi (blank does NOT
+#              match) — it is this file's publish job environment and
+#              therefore the OIDC token's environment claim.
+#              PyPI files are immutable: a re-run after a successful
+#              upload fails on the duplicate file — the fix is a new
+#              version and a new tag, never a re-upload.
 #   verify-pypi  install `orbi==X.Y.Z` FROM PYPI in a clean venv
 #              (bounded retry while the upload propagates) and verify
 #              `orbi --version` matches the tag: version == tag ==
 #              wheel == PyPI file.
+#
+# Manual re-publish (Issue #852): a tag whose publish failed — e.g. the
+# v0.5.2/v0.5.3/v0.5.4 runs refused by PyPI — can be re-published
+# without a new release cycle:
+#
+#   gh workflow run publish.yml -f tag=v0.5.4
+#
+# The dispatch MUST come from a ref carrying this trigger (the default
+# branch) and name an existing `v*` tag; the trigger cannot be
+# dispatched at the old tag itself because its tree predates it. The
+# build then checks out the input tag, so the published artifacts are
+# exactly the tagged release.
+
 name: Publish
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v* release tag to (re)publish, e.g. v0.5.4"
+        required: true
+        type: string
+
+# The release being packaged: the explicit tag input on a manual
+# re-publish, otherwise the pushed tag itself (the `inputs` context is
+# empty on push events).
+env:
+  release_ref: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: read
@@ -40,6 +74,8 @@ jobs:
     steps:
       - name: Check out the tagged release commit
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Python 3.14 (production minor version)
         uses: actions/setup-python@v6
@@ -54,9 +90,9 @@ jobs:
       - name: Verify the tag matches the packaging version
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${release_ref#v}"
           if [ "$tag" != "$version" ]; then
-            echo "version mismatch: tag ${GITHUB_REF_NAME} vs pyproject ${version}" >&2
+            echo "version mismatch: tag ${release_ref} vs pyproject ${version}" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_ENV"
@@ -185,6 +221,10 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # The environment name is part of the OIDC claim set: the PyPI
+    # trusted publisher entry must carry exactly `pypi` (see the
+    # ONE-TIME HUMAN SETUP note at the top).
+    environment: pypi
     permissions:
       # Trusted Publishing: the OIDC token replaces a PyPI API token.
       id-token: write
@@ -214,7 +254,7 @@ jobs:
       # the upload propagation, then fails fast for real.
       - name: Install the published release from PyPI and verify the version
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${release_ref#v}"
           python3 -m venv /tmp/orbi-pypi-smoke
           timeout 300 bash -c '
             for attempt in 1 2 3 4 5 6 7 8 9 10; do
