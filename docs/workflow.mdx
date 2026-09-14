@@ -505,7 +505,7 @@ Only delivery-policy keys are allowed:
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `base_branch` | string | Delivery base branch for this repository; absent falls back to the matching `[[repositories]].base_branch`, else the host `base_branch`. |
-| `active_milestone` | string | The fresh-claim Milestone scope for this repository. |
+| `active_milestone` | string | The fresh-claim Milestone scope for this repository. The one exception is the external-takeover scan (Issue #842, decision D1): the fifth, last ready scan has NO Milestone qualifier — an external triage ticket (body marker `<!-- orbi:external-pr:N -->`) is claimable regardless, because an external contribution belongs to no version's scope and must never block the release gate. |
 | `context_files` | string[] | Repository-relative context files; existence and a size cap are checked before injection. |
 | `dispatch_label` | string | The claim label for this repository (default `ai-ready`); the delivery lifecycle labels stay host constants. |
 

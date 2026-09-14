@@ -94,6 +94,7 @@ from orbi.delivery_labels import (
 )
 from orbi import human_review
 from orbi.delivery_scene import (
+    EXTERNAL_PR_MARKER,
     EXTERNAL_PR_RE,
     DeliveryFacts,
     DeliveryScene,
@@ -1844,6 +1845,33 @@ def release_fallback_search(active_milestone: str | None = None,
     )
 
 
+def external_takeover_search(dispatch_label: str = READY_LABEL) -> str:
+    """Return the external-takeover scan query (Issue #842, decision D1).
+
+    The FIFTH and last ready scan: it runs only after the three
+    ordinary ready scans and the release fallback found nothing
+    claimable — an external review is supplementary capacity and never
+    competes with this version's deliveries for the slot. It is the
+    repository's FIRST scan WITHOUT the `milestone:"<title>"`
+    qualifier, and it takes no `active_milestone` argument at all: an
+    external contribution is not part of any version's delivery scope,
+    and scoping it into the active Milestone would let an external PR
+    block the release gate forever. The candidate set is the ready
+    queue whose body mentions the triage workflow's external-PR marker
+    (a body-text term — GitHub's search tokenizes the marker loosely,
+    verified against the live API, so the term is a candidate PREFILTER
+    only); the exact `EXTERNAL_PR_RE` marker check is the code-layer
+    guard in `_pick_from_scan` (`external_only=True`). `ai-epic` and
+    `ai-release` stay excluded by the same code-layer guards as every
+    other scan.
+    """
+    label = dispatch_label or READY_LABEL
+    return (
+        f'label:{label} "orbi:external-pr" in:body '
+        f"{READY_SCAN_EXCLUSIONS}"
+    )
+
+
 def _issue_label_set(issue: dict) -> frozenset[str]:
     """The Issue's label names (the scans fetch `labels`).
 
@@ -2078,6 +2106,7 @@ def _pick_from_scan(
     issues: list[dict], repo: str, allow_release: bool = False,
     active_milestone: str | None = None,
     ready_label: str = READY_LABEL,
+    external_only: bool = False,
 ) -> dict | None:
     """Return the first claimable Issue of one scan result, else None.
 
@@ -2096,6 +2125,16 @@ def _pick_from_scan(
     a release never competes with an ordinary delivery for the slot; the
     release fallback scan passes `allow_release=True` and claims it.
 
+    `external_only` (the Issue #842 takeover scan) requires the exact
+    `<!-- orbi:external-pr:N -->` body marker before any other guard:
+    the scan is the one milestone-free query, so a candidate the loose
+    body-text prefilter matched but that carries no marker is skipped
+    with `claim_yield reason=no_external_marker` — claiming it there
+    would let a plain milestone-less Issue bypass the active
+    Milestone's claim scope. Every skip is a structured event; the scan
+    never returns silently for a ticket a human might expect to be
+    claimable.
+
     A release candidate additionally passes the Milestone completeness
     gate: while the Milestone still counts any other open
     Issue (`open_issues > 1`), the release is skipped with the
@@ -2112,6 +2151,13 @@ def _pick_from_scan(
     is skipped, never claimed into a scene it is no longer in.
     """
     for issue in issues:
+        if external_only and EXTERNAL_PR_MARKER not in body_markers(
+                issue.get("body")):
+            event(
+                "claim_yield", issue=issue.get("number"),
+                reason="no_external_marker",
+            )
+            continue
         if is_epic(issue):
             event(
                 "epic_not_claimed", issue=issue.get("number"), repo=repo,
@@ -2199,7 +2245,12 @@ def pick_issue(repo: str, active_milestone: str | None = None,
     # scans (`release_not_claimed`) and claimed only by the release
     # fallback scan that runs AFTER all three found nothing claimable —
     # a release is a closing action and must never take the slot ahead
-    # of an ordinary delivery.
+    # of an ordinary delivery. The external-takeover scan (Issue #842,
+    # decision D1) runs FIFTH and last, after the release fallback: the
+    # one scan without the Milestone qualifier, restricted by the
+    # code-layer marker guard to the triage tickets an external
+    # contribution routes to — an external review is supplementary
+    # capacity, never a competitor of this version's deliveries.
     for search in ready_searches(active_milestone, dispatch_label):
         try:
             issues = list_issues(
@@ -2241,9 +2292,37 @@ def pick_issue(repo: str, active_milestone: str | None = None,
             repo=repo, error=exc,
         )
         return None
-    return _pick_from_scan(
+    picked = _pick_from_scan(
         issues, repo, allow_release=True,
         active_milestone=active_milestone,
+        ready_label=dispatch_label,
+    )
+    if picked is not None:
+        return picked
+    # External takeover fallback (Issue #842, decision D1): the FIFTH
+    # and last scan — after every ordinary delivery and the release
+    # fallback. It is the one scan WITHOUT the `milestone:"<title>"`
+    # qualifier (an external contribution belongs to no version's
+    # delivery scope, and the release gate must stay immune to external
+    # PRs), so the code layer keeps the scope: only a ticket whose body
+    # carries the exact triage marker is claimable here
+    # (`external_only`). A failed query fails open exactly like any
+    # other scan.
+    try:
+        issues = list_issues(
+            repo, state="open",
+            search=external_takeover_search(dispatch_label),
+            json_fields="number,title,body,labels,blockedBy",
+            limit=200,
+        )
+    except Exception as exc:
+        event(
+            "blocked_by_check_failed", level=logging.ERROR,
+            repo=repo, error=exc,
+        )
+        return None
+    return _pick_from_scan(
+        issues, repo, external_only=True,
         ready_label=dispatch_label,
     )
 
@@ -5828,7 +5907,11 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
       `gh pr merge --match-head-commit`) then runs against the head the
       verdict actually covers; confirm the merge landed on
       origin/<base>, sync the deployment checkout, label the Issue
-      `ai-merged`; returns True;
+      `ai-merged`; returns True. An EXTERNAL takeover (the scene marks
+      `external`) NEVER merges: its clean verdict ends at the triage
+      stop below — the review conclusion stays on the Issue and the
+      ticket is labeled `ai-blocked` for the maintainer's acceptance
+      decision (Issue #842, decision D2); returns False;
     - an intermediate gate state (CI still pending on the reviewed head,
       or mergeability still UNKNOWN) -> one journal line and return
       without a comment or a label change: "pending" is a
@@ -6029,6 +6112,40 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         # head (Issue #833): the merge record's external_commits must
         # not count the session's own fixes as external commits.
         record_pushed_head(worktree, refrozen["head_oid"])
+    if scene.get("external"):
+        # D2 (Issue #842): an external contribution's clean verdict is
+        # the engine's FINAL output — the PR is NEVER auto-merged and
+        # no Milestone is ever written. The review conclusion stays on
+        # the Issue and the ticket stops at `ai-blocked` (the human
+        # decision point): code quality is the engine's judgment, but
+        # accepting the contribution and picking its version is the
+        # maintainer's.
+        state, rollup = pr_delivery_rollup(pr["url"], source_repo)
+        checks = ", ".join(_check_summaries(rollup)) or "none"
+        body = (
+            f"{marker}\n"
+            f"Orbi external PR review round {round} for "
+            f"PR #{pr['number']}: verdict={verdict['verdict']}, "
+            f"blockers={verdict['blockers']}, majors={verdict['majors']}, "
+            f"minors={verdict['minors']}; CI={state} ({checks}).\n\n"
+            "<details>\n<summary>Review report</summary>\n\n"
+            "````\n" + output.rstrip("\n") + "\n````\n\n</details>\n\n"
+            "The engine does not merge external PRs and does not set a "
+            "Milestone: a maintainer decides whether to accept this "
+            "contribution and which version it ships in. The Issue "
+            "waits at ai-blocked until then "
+            f"(run_id={config.run_id})"
+        )
+        comment_issue(number, repo=source_repo, body=body)
+        apply_label_patch(
+            number, repo=source_repo, event=EVENT_BLOCKED,
+            current_labels=issue_labels(number, source_repo),
+        )
+        event(
+            "external_takeover_triage", pr=pr["number"], round=round,
+            verdict=verdict["verdict"],
+        )
+        return False
     def handle_gate_failure(message: str, *, ci_failure: bool) -> None:
         body = (
             f"{marker}\n"
@@ -8351,19 +8468,12 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
     # a deferred merge, the next tick resumes) and None (a terminal
     # state was already handled: ai-blocked, or the recoverable
     # ai-fix-needed scene the next tick resumes) all end the step here;
-    # the next tick's resume scan runs the next step.
-    merged_this_round = _run_review_round(
-        pr_url, issue, config, source_repo,
-    )
-    if merged_this_round is True and external_takeover:
-        # The SUCCESSFUL auto-merge path must close
-        # the triage Issue exactly like the MERGED branch
-        # above — previously only the "someone else merged" poll
-        # reached it, so every auto-merged external contribution
-        # leaked a zombie triage ticket.
-        _close_external_triage_issue(
-            number, source_repo, pr_url, marker, run_id,
-        )
+    # the next tick's resume scan runs the next step. An EXTERNAL
+    # takeover never produces True (Issue #842, decision D2): its clean
+    # verdict ends at the triage stop inside
+    # `review_and_merge_if_clean` — `ai-blocked`, the maintainer
+    # decides the merge.
+    _run_review_round(pr_url, issue, config, source_repo)
 
 
 def _preflight(config: RunnerConfig) -> None:

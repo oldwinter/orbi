@@ -214,6 +214,7 @@ JOURNAL_EVENTS: dict[str, str] = {
     "external_takeover_skipped": "the external PR is not takeover-eligible",
     "external_takeover_closed": "the external PR closed without merging; the Issue requeues",
     "external_takeover_close_failed": "closing the takeover triage Issue failed",
+    "external_takeover_triage": "the external review passed; the ticket stops at ai-blocked for the maintainer (Issue #842 D2, no auto-merge)",
     "external_pr_already_merged": "the triaged external PR is already merged",
     "external_pr_routed_takeover": "the triage Issue routes to the external PR takeover",
     "external_pr_state_probe_failed": "the external PR state probe failed",

@@ -1149,6 +1149,146 @@ def test_review_rounds_exhausted_raises_unrecoverable(monkeypatch, tmp_path):
     assert freezes == []
 
 
+# --------------------------------- Issue #842 (D2): external triage stop ----
+
+from tests.test_resume_pr import FAKE_RUN_ID
+
+
+def _external_review_env(monkeypatch, tmp_path, *, external: bool):
+    """Shared scene for the D2 direct `review_and_merge_if_clean` tests:
+    a frozen PR, a clean verdict for that head, and capture lists for
+    the Issue/PR comments and label patches. The merge gate and the
+    merge confirmation FAIL the test when reached — the caller decides
+    by scene whether they may run."""
+    frozen = {"number": 46, "url": PR_URL, "base_ref": "main",
+              "base_oid": "abc", "head_ref": "contributor-patch",
+              "head_oid": "def"}
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: frozen)
+    monkeypatch.setattr(
+        runner, "run_review",
+        lambda *a, **k: (
+            "Review of the contributor diff: the change is minimal and "
+            "tested.\nREVIEW_VERDICT "
+            '{"verdict":"pass","head":"def","blockers":0,"majors":0,'
+            '"minors":1,"findings":[]}'
+        ),
+    )
+    monkeypatch.setattr(seam, "merge_gate",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("merge gate must not run")))
+    monkeypatch.setattr(seam, "confirm_merged",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("confirm_merged must not run")))
+    monkeypatch.setattr(seam, "human_review_recovery_at",
+                        lambda *a: None)
+    monkeypatch.setattr(seam, "pr_delivery_rollup",
+                        lambda *a, **k: (
+                            "OPEN",
+                            [{"name": "tests", "status": "COMPLETED",
+                              "conclusion": "SUCCESS"}],
+                        ))
+    monkeypatch.setattr(seam, "_safe_publish", lambda *a, **k: None)
+    # The frozen head is the delivery's recorded engine push (the normal
+    # in-flight state, Issue #833): the round-start adoption
+    # short-circuits before any git call on the bare worktree.
+    runner.write_run_state(runner.RunContext(
+        run_id=FAKE_RUN_ID, issue=39, branch="contributor-patch",
+        worktree=tmp_path, source_repo="owner/repo",
+    ))
+    runner.record_pushed_head(tmp_path, "def")
+    comments: list = []
+    monkeypatch.setattr(seam, "comment_issue",
+                        lambda *args, **kwargs: comments.append(kwargs))
+    monkeypatch.setattr(seam, "comment_pr",
+                        lambda *args, **kwargs: comments.append(kwargs))
+    patches: list = []
+    monkeypatch.setattr(seam, "issue_labels",
+                        lambda *a, **k: ["ai-pr-opened"])
+    monkeypatch.setattr(seam, "apply_label_patch",
+                        lambda number, **kwargs: patches.append(kwargs))
+    config = runner.RunnerConfig(
+        run_id=FAKE_RUN_ID, base_branch="main", repo_dir=tmp_path,
+    )
+    scene = {
+        "run_id": FAKE_RUN_ID, "base_branch": "main",
+        "base_sha": "abc", "pr_url": PR_URL,
+        "external": "true" if external else "",
+        "review_round": 0, "scene_at": "2026-01-01T00:00:00Z",
+    }
+    return comments, patches
+
+
+def test_external_takeover_clean_verdict_stops_at_triage(
+    monkeypatch, tmp_path, caplog,
+):
+    """Issue #842 (D2): an external contribution's clean verdict is the
+    engine's FINAL output — the merge gate never runs, the review
+    conclusion stays on the Issue, and the ticket stops at `ai-blocked`
+    (the human decision point): a maintainer decides whether to accept
+    the PR and which version ships it. The engine never writes a
+    Milestone."""
+    comments, patches = _external_review_env(monkeypatch, tmp_path,
+                                             external=True)
+    caplog.set_level("INFO")
+    merged = runner.review_and_merge_if_clean(
+        tmp_path, "contributor-patch", "main",
+        runner.RunnerConfig(run_id=FAKE_RUN_ID, base_branch="main",
+                            repo_dir=tmp_path),
+        "owner/repo", 39, title="task", priority="normal",
+        scene={
+            "run_id": FAKE_RUN_ID, "base_branch": "main",
+            "base_sha": "abc", "pr_url": PR_URL, "external": "true",
+            "review_round": 0, "scene_at": "2026-01-01T00:00:00Z",
+        },
+    )
+    assert merged is False
+    # The review conclusion is on the ISSUE (the maintainer's decision
+    # surface), never silently merged away.
+    assert len(comments) == 1
+    body = comments[0]["body"]
+    assert f"<!-- orbi:run={FAKE_RUN_ID} -->" in body
+    assert "external PR review" in body
+    assert "verdict=pass" in body
+    assert "tests=COMPLETED/SUCCESS" in body
+    assert "Review of the contributor diff" in body
+    assert "ai-blocked" in body
+    assert comments[0]["repo"] == "owner/repo"
+    # The terminal triage state: ai-blocked ALONE (the opened-PR label
+    # is cleared with the same blocked patch as every other terminal
+    # path).
+    assert patches[-1]["event"] == runner.EVENT_BLOCKED
+    assert "external_takeover_triage" in caplog.text
+
+
+def test_internal_clean_verdict_still_merges(monkeypatch, tmp_path):
+    """Issue #842 regression guard: the D2 triage stop keys on the
+    external scene ONLY — an internal delivery's clean verdict reaches
+    the merge gate exactly as before."""
+    comments, patches = _external_review_env(monkeypatch, tmp_path,
+                                             external=False)
+    # Replace the failing gate stubs with the real merge path fakes.
+    monkeypatch.setattr(seam, "merge_gate",
+                        lambda *a, **k: {"url": PR_URL})
+    monkeypatch.setattr(seam, "confirm_merged",
+                        lambda *a, **k: {"merge_commit": "m1"})
+    monkeypatch.setattr(seam, "merge_commit_metrics",
+                        lambda *a, **k: (0, 1))
+    monkeypatch.setattr(seam, "sync_base_checkout", lambda *a, **k: None)
+    merged = runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main",
+        runner.RunnerConfig(run_id=FAKE_RUN_ID, base_branch="main",
+                            repo_dir=tmp_path),
+        "owner/repo", 39, title="task", priority="normal",
+        scene={
+            "run_id": FAKE_RUN_ID, "base_branch": "main",
+            "base_sha": "abc", "pr_url": PR_URL, "external": "",
+            "review_round": 0, "scene_at": "2026-01-01T00:00:00Z",
+        },
+    )
+    assert merged is True
+    assert patches[-1]["event"] == runner.EVENT_MERGED
+
+
 # -------------------------------------------------------------------- prompt
 
 
