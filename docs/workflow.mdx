@@ -129,6 +129,11 @@ Rules of the chain:
   rounds with findings marks the Issue `ai-blocked` (the bounded loop is
   a human decision); a recoverable failure (Issue #50) keeps it
   `ai-fix-needed`. Either way the PR, branch and worktree stay intact.
+  The reviewer guards the budget itself (Issue #878): before the work
+  its prompt reads the delivery's round comments (the same `run_id`) and,
+  when the same failure reason already appears in two or more consecutive
+  rounds, emits the findings verdict naming the repetition instead of
+  repeating the fix — a wall is hit by at most two rounds.
 - No in-tick waiting (Issue #788): the old in-process wait loop
   (`wait_for_delivery`, CI/mergeability polling with
   `release_ci_wait_seconds` / `mergeable_wait_seconds`) is gone. Every
