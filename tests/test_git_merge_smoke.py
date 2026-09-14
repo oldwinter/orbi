@@ -159,14 +159,38 @@ def test_merge_gate_rejects_head_behind_latest_base(clone, monkeypatch, caplog):
           "base_oid": git(clone, "rev-parse", "origin/main~1"),
           "head_ref": "orbi/owner-repo-issue-4",
           "head_oid": head_oid}
+    base_sha = git(clone, "rev-parse", "origin/main")
     with caplog.at_level("ERROR"), pytest.raises(
         RuntimeError, match="behind latest remote base",
-    ):
+    ) as excinfo:
         runner.merge_gate(clone, pr, "main", repo_dir=clone)
+    # The failure names the exact origin/<base> SHA the gate compared
+    # against (Issue #879): the comment distinguishes behind-base from a
+    # merge conflict without re-deriving it from git log.
+    assert base_sha in str(excinfo.value)
     # No merge was attempted: a stale baseline is never merged.
     assert not [c for c in commands if c[:2] == ["gh", "pr"]
                and "merge" in c]
     assert "merge_gate_behind_base" in caplog.text
+
+
+def test_merge_gate_rejects_conflicting_pr_reports_mergeable(
+        clone, monkeypatch, caplog):
+    # The head contains the latest base, so the only failing gate state
+    # is the conflicting mergeable answer (Issue #879).
+    git(clone, "checkout", "-b", "orbi/owner-repo-issue-4")
+    head_oid = commit_file(clone, "delivery.txt", "delivery")
+    install_fake_gh(monkeypatch, clone,
+                    make_pr(head_oid, mergeable="DIRTY"))
+    pr = {"number": 4, "url": "u", "base_ref": "main",
+          "base_oid": git(clone, "rev-parse", "origin/main"),
+          "head_ref": "orbi/owner-repo-issue-4",
+          "head_oid": head_oid}
+    with caplog.at_level("ERROR"), pytest.raises(
+        RuntimeError, match="mergeable=DIRTY",
+    ):
+        runner.merge_gate(clone, pr, "main", repo_dir=clone)
+    assert "merge_gate_not_mergeable" in caplog.text
 
 
 def test_git_helper_fails_fast_on_nonzero_exit(clone):
