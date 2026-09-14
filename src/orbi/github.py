@@ -243,7 +243,9 @@ def milestone_open_issue_count(repo: str, milestone_title: str) -> int:
     temporarily outside the ready queue (`ai-blocked`, `ai-pr-opened`,
     or not yet indexed) still counts. The title-filtered `--jq` is the
     command documented in the Issue, verified against the live API. An
-    empty result means the Milestone could not be found: that is a
+    empty result means the Milestone could not be found on the first
+    results page (the REST list the call reads is unpaginated, so a
+    target beyond the default page size reads as missing): that is a
     failed check, never a silent 0 (the caller must not release on it).
     """
     raw = run_gh_read_command(
@@ -498,10 +500,13 @@ def _epic_audit(child_evidence: list[str], version: str | None = None) -> str:
             "no open native blockers/dependencies.")
 
 
-# Only comments posted by a repo maintainer are trusted to carry the
-# recovery scene: a public comment (authorAssociation=NONE) must never
-# steer the runner into an arbitrary local worktree, branch or PR
-# A missing association is never trusted.
+# Comments are trusted through one of two channels — a repo maintainer
+# association, or the currently authenticated runner account itself (the
+# login fallback in `_comment_is_trusted`, which requires the local gh
+# credentials' identity, so a public commenter cannot satisfy it): a
+# public comment (authorAssociation=NONE) that is not from the runner's
+# own account must never steer the runner into an arbitrary local
+# worktree, branch or PR.
 TRUSTED_COMMENT_ASSOCIATIONS = frozenset({
     "OWNER", "MAINTAINER", "MEMBER", "COLLABORATOR",
 })

@@ -19,10 +19,13 @@ never fails the delivery):
   STALE_PICKUP_SECONDS while at least one `ai-ready` Issue exists (system
   stuck). An empty ready queue is idle, not a failure — no alarm.
 
-Actions are tiered: a structured `health_degraded` journal line always; a
+Actions are tiered: a structured `health_degraded` journal line on every
+degraded tick (the repeated-failure check emits it once per streak — its
+dedup guard skips the line too); a
 comment on the affected Issue for repeated failures (deduped via the state
-file — never one comment per tick); one deduplicated bug+ai-ready Issue for
-crash loop / stale pickup (the #106 body-marker mechanism).
+file — never one comment per tick); one deduplicated bug Issue for crash
+loops and stale pickups, `ai-ready` attached only for bug-kind crash loops
+(the #106 body-marker mechanism).
 
 State lives in ONE lightweight JSON file in the existing state dir
 (`repo_dir/.orbi/health.json`) — no daemon, no database, no new dependency.
@@ -88,8 +91,12 @@ CRASH_EXIT_RE = re.compile(
 CRASH_FAIL_RESULT_RE = re.compile(r"\.service: Failed with result")
 
 # journalctl --user default ("short") line clock: "Sep 04 11:41:02 …" —
-# monotonic within the bounded window; enough to tell the paired result
-# line of the same crash (same or adjacent second) from a fresh crash.
+# monotonic within the bounded window EXCEPT at month boundaries (the
+# naive (month*31+day) encoding jumps a day or three when a 30/28-day
+# month ends), so a paired result line straddling e.g. Sep 30 -> Oct 1
+# can be counted as a fresh crash; the direction is over-counting, never
+# a missed crash. Within a month it tells the paired result line of the
+# same crash (same or adjacent second) from a fresh crash.
 _JOURNAL_CLOCK_RE = re.compile(
     r"^(?P<mon>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
     r"(?P<day>\d{1,2})\s+(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})\b"
@@ -131,7 +138,7 @@ VOLATILE_TOKEN_RE = re.compile(
 # Fail-fast validation errors a HUMAN must fix in the config:
 # there is nothing for any agent to implement until a human edits the
 # config. These are the exact messages the Runner raises at config load
-# (`_check_pi_provider_api_key`, `load_config`) and the milestone errors
+# (`_pi_provider_api_key_finding`, `load_config`) and the milestone errors
 # `advance_active_milestone_on_idle` raises for a misconfigured
 # `active_milestone`; a crash loop whose journal carries one
 # of them is a deployment-config problem, not an orbi bug.
@@ -203,11 +210,13 @@ def _acquire_health_lock(state_path: Path, *,
     Health.json is the one state file two runner instances
     both read and write with no other synchronization — their
     load..save spans interleave and the last writer rolls the other's
-    updates back. This is a LEAF lock: it is never taken while holding
-    another lock (the check runs before slot acquisition; the recorders
-    run inside a delivery), so no ordering hazard exists with the slot
-    or base-sync flocks. The returned fd owns the flock — closing it
-    releases.
+    updates back. This is a LEAF lock: while holding it the code never
+    acquires another lock (the check runs before slot acquisition and
+    gives up on a busy lock; the recorders run inside a delivery but
+    only do plain file I/O), so no ordering hazard exists with the
+    slot or base-sync flocks even though the recorders may take this
+    lock while holding the slot. The returned fd owns the flock —
+    closing it releases.
 
     `blocking=False` bounds the wait at HEALTH_LOCK_TIMEOUT_S and gives
     up for the tick: the check is a documented pure bypass, so a busy

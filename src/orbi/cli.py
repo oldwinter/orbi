@@ -352,7 +352,10 @@ def deploy_home_dirty_files(repo_dir: Path, *, run_command) -> list[str]:
 
     The scheduler preflight cannot start Python when this checkout is dirty,
     so doctor uses the same porcelain status contract read-only. Untracked
-    files are deliberately excluded: they cannot block the fast-forward.
+    files are deliberately excluded, matching the preflight's own
+    tracked-change contract (note an untracked file in the way of a
+    merge CAN still abort the fast-forward — the exclusion is about
+    contract parity, not a guarantee they are harmless).
     """
     status = run_command(
         ["git", "status", "--short", "--untracked-files=no"],

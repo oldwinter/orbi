@@ -1091,8 +1091,9 @@ def run_setup(config: RunnerConfig, installed_dir: Path | None, *,
     Order (fail fast, no mutation before the prerequisites pass):
     commands -> CLI editable install (verify or reinstall, Issue
     #152) -> auth -> per target repo (permission check, then label
-    alignment) -> unit install -> read-only checkout check -> optional
-    proxy health (warning only). ``repos`` overrides the target set
+    alignment) -> unit install -> read-only checkout check -> model
+    provider starter scaffold -> optional proxy health (warning
+    only). ``repos`` overrides the target set
     (the ``--repo`` flag); it must be a non-empty subset of the
     configured ``source_repos``.
     """
@@ -1115,7 +1116,7 @@ def run_setup(config: RunnerConfig, installed_dir: Path | None, *,
     deploy_home = config.deploy_home
     defs = load_label_defs(deploy_home / LABELS_FILE)
     check_commands(run_command, config.unit_name)
-    # The CLI source step precedes every other step — the
+    # The CLI source step precedes every mutating step — the
     # running CLI must import from the deployment checkout, otherwise
     # the unit migration below (and the pre-start self-heal it
     # repairs) could never run the new code (the #152 deadlock).

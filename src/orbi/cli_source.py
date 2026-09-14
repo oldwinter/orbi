@@ -16,8 +16,9 @@ resolution failure).
 The tool env's Python imports the ``orbi`` package directly from
 the deployment checkout (the setuptools editable finder maps the WHOLE
 package directory ``src/orbi/`` onto the checkout),
-so the ``ExecStartPre`` checkout sync
-(``git fetch origin main && git merge --ff-only origin/main``) is
+so the ``ExecStartPre`` checkout sync (``orbi sync-engine-source``:
+fetch plus fast-forward of the configured engine source track, #535)
+is
 picked up by the NEXT CLI process automatically: there is no second
 copy of the source in site-packages and no per-version reinstall.
 

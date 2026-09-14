@@ -11,7 +11,8 @@ action that produced it.
 
 The module also formats the journal lines: the full invariant
 scene (branch, worktree, session file) is only ever built for the
-run_start / run_failed / run_end lines; activity and heartbeat lines carry
+run_start / run_failed lines; run_end carries only its result summary
+(result, elapsed, PR, commit), and activity and heartbeat lines carry
 short changed fields only. All lines are stable `key=value` pairs (values
 with spaces are double-quoted) so an agent can parse them without a log
 framework.
@@ -149,9 +150,10 @@ class SessionWatcher:
     With `known_files` (the session files that existed before the
     tracked Pi process started) the watcher never binds to a known file:
     it follows the newest file that appears, and switches to a newer
-    file whenever one appears, resetting its state. A resumed Fixer run
-    creates a NEW JSONL in the same `.pi-session` directory, so this is
-    what makes the journal report the session of the current invocation
+    file whenever one appears, resetting its state. A resumed review
+    session creates a NEW JSONL in the same `.pi-session` directory, so
+    this is what makes the journal report the session of the current
+    invocation
     instead of the previous run's. `known_files=None` keeps
     the original bind-once semantics used by full-scan snapshots.
     """
