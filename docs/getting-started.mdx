@@ -118,9 +118,18 @@ The official usage is the installed `orbi` console script (the
 PEP 621 packaging in `pyproject.toml` maps
 `orbi = orbi:main`), installed as an **editable**
 `uv tool` install — the official local deployment (Issue #152). From
-the clone directory, `--python` pins the production interpreter (3.14):
+the clone directory, pass `--python` a COMPATIBLE interpreter
+(Issue #861): the system `python3` when it is 3.14 or newer (Fedora 43
+and current Arch ship it), otherwise `3.14` so uv provisions or
+selects one — Ubuntu 24.04 ships Python 3.12, so pinning its system
+interpreter exits 1 with a dependency resolution failure:
 
 ```bash
+# system Python >= 3.14 (Fedora 43, current Arch):
+uv tool install --force --reinstall --editable --python python3 .
+# older system Python (e.g. Ubuntu 24.04 ships 3.12) — uv provisions 3.14:
+uv tool install --force --reinstall --editable --python 3.14 .
+# then verify:
 orbi --help
 ```
 

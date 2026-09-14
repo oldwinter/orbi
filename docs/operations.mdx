@@ -39,7 +39,11 @@ Runner instances can run concurrently. Each tick's service instance:
      console script (`orbi --version` succeeds iff the package imports)
      and, on probe failure, runs the exact editable force-reinstall
      (`uv tool install --force --reinstall --editable --python
-     /usr/bin/python3 <repo_dir>`). This is the only place that can act
+     <interpreter> <repo_dir>` — `<interpreter>` follows the compatible
+     selection rule: `python3` when the system Python satisfies the
+     `>= 3.14` floor, otherwise `3.14` provisioned by uv — the SAME
+     rule `orbi setup` applies, Issue #861). This is the only place
+     that can act
      when the console script cannot even `import orbi` — the #248
      scene, where the src-layout migration of #168 left the installed
      editable finder stale and the #158 in-Runner refresh (which runs
