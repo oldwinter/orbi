@@ -27,7 +27,7 @@ Only want the released CLI, no checkout? `python3 -m pip install orbi` (the edit
 ### Ready check (before setup)
 
 - `uv`: `uv --version`; Pi and its provider: `pi --version`, then `pi --print "reply with the single word: ok"`
-- GitHub CLI: run `gh auth login` once, then verify `gh auth status`
+- GitHub CLI ≥ 2.94 ([official repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) — Ubuntu 24.04's package 2.45.0 is too old): run `gh auth login` once, then verify `gh auth status`
 - systemd user session: `systemctl --user status`
 
 Choose the mode in [Getting started](docs/getting-started.mdx): bootstrap uses this checkout as `repo_dir`; [External single-repo mode](docs/getting-started.mdx#external-single-repo-mode-deploy_home) uses it as `deploy_home` and a foreign repository as `repo_dir`.

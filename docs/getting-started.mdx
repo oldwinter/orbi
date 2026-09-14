@@ -76,7 +76,7 @@ reason, the repair action and the official docs link.
 | [uv](https://docs.astral.sh/uv/) | Installs the `orbi` CLI into an isolated tool environment (setup's CLI editable step calls `uv tool install`) | `uv --version` |
 | [Pi](https://github.com/earendil-works/pi) CLI | The development agent; one full session per task | `pi --version` |
 | Git | Worktrees, branches, base freshness | `git --version` |
-| GitHub CLI (`gh`) | Issues, labels, PRs, merge | `gh auth status` |
+| [GitHub CLI (`gh`) ≥ 2.94](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) | Issues, labels, PRs, merge | `gh --version`, then `gh auth status` |
 | systemd (user session) | The timer that triggers one tick every 5 minutes | `systemctl --user status` |
 | A working model provider | A model Pi can actually use — either a provider configured in Pi itself, or a `pi_providers` file pointing at an OpenAI-compatible endpoint (a local `llama.cpp` server or any compatible API) | one real `pi --print` call (below); step 4 shows both paths |
 
@@ -86,6 +86,31 @@ docs](https://docs.astral.sh/uv/getting-started/installation/)):
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+Install `gh` from the official GitHub CLI repository — the minimum tested
+version is **2.94.0**: the Runner's queue scans use `gh api --paginate --slurp`
+(added in gh 2.48.0) and the native `blockedBy` dependency field (added in
+gh 2.94.0). A too-old package passes `orbi setup` and then fails every tick
+with `unknown flag: --slurp` / `Unknown JSON field: "blockedBy"` and no
+Issue is ever claimed — Ubuntu 24.04's distribution package (2.45.0) is
+such a case; Fedora (2.97.0) and Arch (2.100.0) currently satisfy the
+minimum natively. On Ubuntu/Debian, install or repair from the official
+apt repository (the [official Linux install
+instructions](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)):
+
+```bash
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+  && sudo mkdir -p -m 755 /etc/apt/keyrings \
+  && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+  && sudo apt update \
+  && sudo apt install gh -y
+```
+
+Verify with `gh --version`.
 
 Pi must be configured with a provider that can serve a coding agent
 stably (system prompt + tool schemas + long sessions). Verify the endpoint

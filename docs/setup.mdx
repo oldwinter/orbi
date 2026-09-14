@@ -33,7 +33,12 @@ non-zero exit code.
    install guidance, e.g. `required command missing: uv (not on PATH)
    — install uv first: curl -LsSf https://astral.sh/uv/install.sh | sh`),
    and a reachable `systemctl --user` user bus (a container or headless
-   session without a user bus fails with the bus error).
+   session without a user bus fails with the bus error). `gh` must be
+   ≥ 2.94.0 — the queue scans need `gh api --paginate --slurp` and the
+   `blockedBy` field, so an older distribution package (Ubuntu 24.04
+   ships 2.45.0) passes this check but fails every tick; [Getting
+   started](/getting-started) carries the official install source and
+   the repair.
 2. **CLI editable install** (Issue #152) — the official local
    deployment is the EDITABLE `uv tool` install (the why — the
    `ExecStartPre` checkout sync — is defined in [Getting
