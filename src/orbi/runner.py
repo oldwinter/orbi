@@ -5973,6 +5973,18 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             )
     round = rounds + 1
     pr = freeze_pr(worktree, branch, base_branch)
+    # Issue #877: a round that STARTS behind the base is under the absorb
+    # contract — the session must end with the branch containing
+    # origin/<base> or with a findings verdict reporting the abandoned
+    # absorb, never a bare `pass` over an unrelated push. An unreadable
+    # local ref leaves the round unarmed (the gate's own ancestor check
+    # against the fresh fetch still guards the merge either way).
+    try:
+        absorb_required = not _is_ancestor(
+            f"origin/{base_branch}", pr["head_oid"], cwd=worktree,
+        )
+    except subprocess.CalledProcessError:
+        absorb_required = False
     # A fix push whose round ended before the re-freeze record (a
     # findings verdict, or a malformed verdict head) still left an
     # engine-pushed head on the remote (Issue #833). When the frozen
@@ -6147,7 +6159,26 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
             verdict=verdict["verdict"],
         )
         return False
-    def handle_gate_failure(message: str, *, ci_failure: bool) -> None:
+    def handle_gate_failure(message: str, *, ci_failure: bool,
+                            absorb_abandoned: bool = False) -> None:
+        # Issue #877: the machine-checked absorb violation rides the same
+        # counted round comment, so the next session and the human both see
+        # that the round neither merged the base nor reported the
+        # abandonment — the gate now names the silent abandon instead of
+        # showing only the final behind/conflict state.
+        violation = ""
+        if absorb_abandoned:
+            violation = (
+                " Absorb contract violated (machine-checked): the round "
+                f"started with the head already behind origin/{base_branch} "
+                "and ended with verdict=pass while the head still does not "
+                f"contain origin/{base_branch} — the session neither merged "
+                "the base in-session nor reported the abandoned absorb as "
+                "findings; the next review session must merge "
+                f"origin/{base_branch} into the branch or emit findings "
+                "stating the attempted-and-abandoned absorb with the "
+                "concrete reason, never an unrelated push"
+            )
         body = (
             f"{marker}\n"
             # Both gate-failure scenes carry the counted `Orbi review
@@ -6169,7 +6200,8 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
                f"the next review session merges the latest "
                f"origin/{base_branch} into the branch in-session, resolves "
                "conflicts, and reruns the full test suite"
-        )) + "\n" + _round_scene_block(scene, pr["url"], round)
+               + violation)
+        ) + "\n" + _round_scene_block(scene, pr["url"], round)
         # CI evidence is best-effort observability.  A GitHub comment
         # outage must not prevent the required ai-fix-needed transition.
         try:
@@ -6202,7 +6234,26 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         )
         return False
     except RecoverableMergeGateError as exc:
-        handle_gate_failure(str(exc), ci_failure=False)
+        # Issue #877 machine check: an armed round whose verdict was `pass`
+        # and whose head STILL lacks the latest base (re-read against the
+        # gate's fresh fetch) neither absorbed nor reported findings — log
+        # the structured fact and name the violation in the round comment.
+        absorb_abandoned = False
+        if absorb_required:
+            try:
+                absorb_abandoned = not _is_ancestor(
+                    f"origin/{base_branch}", refrozen["head_oid"], cwd=worktree,
+                )
+            except subprocess.CalledProcessError:
+                absorb_abandoned = False
+        if absorb_abandoned:
+            event(
+                "review_absorb_abandoned", level=logging.ERROR,
+                pr=pr["number"], round=round, head=refrozen["head_oid"],
+                base_branch=base_branch,
+            )
+        handle_gate_failure(str(exc), ci_failure=False,
+                            absorb_abandoned=absorb_abandoned)
         return False
     except RuntimeError as exc:
         # CI failures retain their existing recoverable path. All other

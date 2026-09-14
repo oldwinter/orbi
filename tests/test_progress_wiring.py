@@ -1590,6 +1590,13 @@ def _run_review_and_merge(monkeypatch, tmp_path, *, verdict,
             # fixture is about progress traffic, the counts' real-git
             # evidence lives in test_review_merge.
             return "1"
+        if command[0] == "git" and command[1] == "merge-base" \
+                and command[2] == "--is-ancestor":
+            # The absorb-contract arm (Issue #877) probes the base
+            # ancestor at round start; this fixture is about progress
+            # traffic, so the answer is "contained" (unarmed) — the
+            # armed-round evidence lives in test_review_merge.
+            return ""
         if command[0] == "git" and command[1] == "rev-parse" \
                 and command[2] == "HEAD":
             # The round-start head adoption (Issue #833) compares the
