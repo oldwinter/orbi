@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from orbi import pilot_setup, runner, systemd_deploy
+from orbi import pilot_setup, runner, scheduler, systemd_deploy
 
 
 def test_named_units_are_distinct_and_install_without_touching_default(tmp_path):
@@ -23,7 +23,7 @@ def test_named_units_are_distinct_and_install_without_touching_default(tmp_path)
         calls.append(command)
         return "deadbeef" if command[:3] == ["git", "rev-parse", "HEAD"] else ""
 
-    systemd_deploy.install_units(
+    scheduler.install_units(
         repo, installed, max_concurrency=1, unit_name="website",
         run_command=run,
     )
@@ -34,7 +34,7 @@ def test_named_units_are_distinct_and_install_without_touching_default(tmp_path)
     assert "Unit=orbi-website@%i.service" in (
         installed / "orbi-website@.timer"
     ).read_text()
-    systemd_deploy.check_unit_drift(repo, installed, "website")
+    scheduler.check_unit_drift(repo, installed, "website")
 
 
 def test_named_setup_unit_step_passes_instance_name(tmp_path):

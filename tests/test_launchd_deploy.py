@@ -1,0 +1,462 @@
+"""The launchd scheduler implementation (Issue #849).
+
+macOS support without a macOS runner: the launchd branch is exercised
+through the injected scheduler (plist rendering, the XML-normalized
+drift comparison and the launchctl command contract), with the
+subprocess seam faked by ``FakeLaunchd``. The launchctl invocations
+assert the real subcommand contract from the modern
+launchctl(1)/launchd.plist(5) man pages: ``bootstrap``/``bootout`` on
+the ``gui/<uid>`` domain, persistent ``enable``/``disable``, ``print``
+for state.
+"""
+import plistlib
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from orbi import launchd_deploy, scheduler
+from tests.fakes.launchd import FakeLaunchd
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def make_repo(tmp_path: Path) -> Path:
+    """A deployment checkout carrying the launchd template."""
+    repo = tmp_path / "repo"
+    (repo / "launchd").mkdir(parents=True)
+    (repo / "launchd" / launchd_deploy.TEMPLATE_NAME).write_bytes(
+        (REPO_ROOT / "launchd" / launchd_deploy.TEMPLATE_NAME).read_bytes(),
+    )
+    return repo
+
+
+def test_label_naming_covers_default_and_named_deployments():
+    assert launchd_deploy.label_base(None) == "org.orbi.runner"
+    assert launchd_deploy.label_base("website") == "org.orbi.website.runner"
+    assert launchd_deploy.label_for(None, 2) == "org.orbi.runner.2"
+    assert launchd_deploy.label_for("website", 1) == (
+        "org.orbi.website.runner.1"
+    )
+
+
+def test_unit_pairs_generate_one_plist_per_instance():
+    sched = launchd_deploy.LaunchdScheduler()
+    assert sched.template_units() == (launchd_deploy.TEMPLATE_NAME,)
+    pairs = sched.unit_pairs(None, 3)
+    assert pairs == [
+        (launchd_deploy.TEMPLATE_NAME, "org.orbi.runner.1.plist"),
+        (launchd_deploy.TEMPLATE_NAME, "org.orbi.runner.2.plist"),
+        (launchd_deploy.TEMPLATE_NAME, "org.orbi.runner.3.plist"),
+    ]
+    # On launchd ONE label IS the service and the timer.
+    assert sched.timer_instances(None, 2) == (
+        "org.orbi.runner.1", "org.orbi.runner.2",
+    )
+    assert sched.service_instances(None, 2) == (
+        "org.orbi.runner.1", "org.orbi.runner.2",
+    )
+
+
+def test_template_carries_the_launchd_contract():
+    raw = (
+        REPO_ROOT / "launchd" / launchd_deploy.TEMPLATE_NAME
+    ).read_bytes()
+    plist = plistlib.loads(raw)
+    assert plist["Label"] == "{{ORBI_LABEL}}"
+    # StartInterval mirrors the systemd timer (OnCalendar=*:00/5).
+    assert plist["StartInterval"] == 300
+    # The env file (provider keys) is sourced OUTSIDE the plist — the
+    # EnvironmentFile=- contract — then the installed CLI execs.
+    program = plist["ProgramArguments"]
+    assert program[:2] == ["/bin/sh", "-c"]
+    assert ". '{{ORBI_REPO_DIR}}/.orbi/env'" in program[2]
+    assert "exec '{{ORBI_USER_HOME}}/.local/bin/orbi'" in program[2]
+    assert plist["EnvironmentVariables"]["ORBI_CONFIG"] == (
+        "{{ORBI_REPO_DIR}}/orbi.toml"
+    )
+    # Runner output lands in the gitignored state dir, per instance.
+    assert plist["StandardOutPath"] == (
+        "{{ORBI_REPO_DIR}}/.orbi/{{ORBI_LABEL}}.log"
+    )
+    assert plist["StandardErrorPath"] == plist["StandardOutPath"]
+
+
+def test_render_substitutes_every_placeholder_and_parses(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    template = (
+        REPO_ROOT / "launchd" / launchd_deploy.TEMPLATE_NAME
+    ).read_text(encoding="utf-8")
+    rendered = sched.render_unit(template, tmp_path, None, instance=2)
+    assert "{{" not in rendered
+    plist = plistlib.loads(rendered.encode("utf-8"))
+    assert plist["Label"] == "org.orbi.runner.2"
+    assert plist["WorkingDirectory"] == str(tmp_path)
+    assert plist["EnvironmentVariables"]["ORBI_CONFIG"] == (
+        f"{tmp_path}/orbi.toml"
+    )
+    # The rendered log path matches the module's log_path helper —
+    # the crash scan and the doctor tail read exactly where launchd writes.
+    assert plist["StandardOutPath"] == str(
+        launchd_deploy.log_path(tmp_path, "org.orbi.runner.2")
+    )
+
+
+def test_content_sha_is_whitespace_and_key_order_insensitive():
+    sched = launchd_deploy.LaunchdScheduler()
+    a = plistlib.dumps({"Label": "l", "StartInterval": 300}).decode()
+    b = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+        "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\">\n  <dict>\n"
+        "    <key>StartInterval</key>\n    <integer>300</integer>\n"
+        "    <key>Label</key>\n    <string>l</string>\n"
+        "  </dict>\n</plist>\n"
+    )
+    # Same plist, different key order and whitespace: NO drift.
+    assert sched.content_sha(a) == sched.content_sha(b)
+    assert sched.content_sha(a) != sched.content_sha(
+        plistlib.dumps({"Label": "l", "StartInterval": 600}).decode(),
+    )
+
+
+def test_installed_sha_falls_back_to_raw_bytes_for_broken_xml(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    broken = tmp_path / "broken.plist"
+    broken.write_text("<plist><dict>{{ nope", encoding="utf-8")
+    sha = sched.installed_sha(broken)
+    # A broken plist can never equal a canonical rendered form: drift.
+    assert sha != sched.content_sha(plistlib.dumps({"Label": "x"}).decode())
+
+
+def test_installed_sha_is_none_without_the_file(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    assert sched.installed_sha(tmp_path / "absent.plist") is None
+
+
+def test_unit_config_reads_the_env_dict(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    unit = tmp_path / "org.orbi.runner.1.plist"
+    unit.write_bytes(plistlib.dumps({
+        "Label": "org.orbi.runner.1",
+        "EnvironmentVariables": {"ORBI_CONFIG": str(tmp_path / "orbi.toml")},
+    }))
+    assert sched.unit_config(unit) == (tmp_path / "orbi.toml").resolve()
+    plain = tmp_path / "plain.plist"
+    plain.write_bytes(plistlib.dumps({"Label": "x"}))
+    assert sched.unit_config(plain) is None
+
+
+def test_probe_args_print_the_gui_domain(monkeypatch):
+    monkeypatch.setattr(launchd_deploy.os, "getuid", lambda: 501)
+    sched = launchd_deploy.LaunchdScheduler()
+    assert sched.probe_args() == ["launchctl", "print", "gui/501"]
+
+
+def test_unit_enabled_reads_the_persistent_disabled_db():
+    fake = FakeLaunchd()
+    sched = launchd_deploy.LaunchdScheduler()
+    assert sched.unit_enabled(fake, "org.orbi.runner.1") is True
+    fake.disabled.add("org.orbi.runner.1")
+    assert sched.unit_enabled(fake, "org.orbi.runner.1") is False
+
+
+def test_unit_state_maps_print_output():
+    fake = FakeLaunchd()
+    sched = launchd_deploy.LaunchdScheduler()
+    assert sched.unit_state(fake, "org.orbi.runner.1") == "inactive"
+    fake.load("org.orbi.runner.1", state="not running")
+    assert sched.unit_state(fake, "org.orbi.runner.1") == "inactive"
+    fake.load("org.orbi.runner.1", state="running")
+    assert sched.unit_state(fake, "org.orbi.runner.1") == "active"
+
+
+def test_activate_bootstraps_fresh_instances_and_disables_surplus(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(launchd_deploy.os, "getuid", lambda: 501)
+    sched = launchd_deploy.LaunchdScheduler()
+    fake = FakeLaunchd()
+    for _, name in sched.unit_pairs(None, 2):
+        (tmp_path / name).write_bytes(plistlib.dumps({"Label": "x"}))
+    sched.activate_instances(fake, tmp_path, None, max_concurrency=2)
+    # Instances 1..2 enabled (persistent) and bootstrapped;
+    # 3..5 disabled, never bootstrapped, never booted out.
+    for index in (1, 2):
+        assert (
+            f"gui/501/org.orbi.runner.{index}"
+        ) not in fake.disabled
+        assert [
+            "launchctl", "bootstrap", "gui/501",
+            str(tmp_path / f"org.orbi.runner.{index}.plist"),
+        ] in fake.commands
+        assert f"org.orbi.runner.{index}" in fake.state
+    for index in (3, 4, 5):
+        assert f"org.orbi.runner.{index}" in fake.disabled
+        assert f"org.orbi.runner.{index}" not in fake.state
+    assert not any(
+        len(command) > 1 and command[1] == "bootout"
+        for command in fake.commands
+    )
+
+
+def test_activate_reloads_an_idle_instance_without_touching_a_running_one(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(launchd_deploy.os, "getuid", lambda: 501)
+    sched = launchd_deploy.LaunchdScheduler()
+    for _, name in sched.unit_pairs(None, 1):
+        (tmp_path / name).write_bytes(plistlib.dumps({"Label": "x"}))
+
+    # Loaded but idle: the rewritten plist is reloaded (bootout +
+    # bootstrap) — the daemon-reload equivalent, safe when idle.
+    fake = FakeLaunchd()
+    fake.load("org.orbi.runner.1", state="not running")
+    sched.activate_instances(fake, tmp_path, None, max_concurrency=1)
+    assert [
+        "launchctl", "bootout", "gui/501/org.orbi.runner.1",
+    ] in fake.commands
+    assert [
+        "launchctl", "bootstrap", "gui/501",
+        str(tmp_path / "org.orbi.runner.1.plist"),
+    ] in fake.commands
+
+    # Now running: bootout would KILL a live Runner — never issued.
+    fake = FakeLaunchd()
+    fake.load("org.orbi.runner.1", state="running")
+    sched.activate_instances(fake, tmp_path, None, max_concurrency=1)
+    assert not any(
+        len(command) > 1 and command[1] == "bootout"
+        for command in fake.commands
+    )
+    assert not any(
+        len(command) > 1 and command[1] == "bootstrap"
+        for command in fake.commands
+    )
+    assert fake.state["org.orbi.runner.1"] == "running"
+
+
+def test_downscale_disables_the_surplus_and_bootouts_only_the_idle(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(launchd_deploy.os, "getuid", lambda: 501)
+    sched = launchd_deploy.LaunchdScheduler()
+    fake = FakeLaunchd()
+    # Downscale 5 -> 2 while instance 3 sits loaded and idle;
+    # 1, 2 and 4, 5 are not loaded.
+    fake.load("org.orbi.runner.3", state="not running")
+    sched.activate_instances(fake, tmp_path, None, max_concurrency=2)
+    assert "org.orbi.runner.3" in fake.disabled
+    assert [
+        "launchctl", "bootout", "gui/501/org.orbi.runner.3",
+    ] in fake.commands
+    assert "org.orbi.runner.3" not in fake.state
+    for index in (4, 5):
+        assert f"org.orbi.runner.{index}" in fake.disabled
+        assert [
+            "launchctl", "bootout", f"gui/501/org.orbi.runner.{index}",
+        ] not in fake.commands
+
+
+def test_restart_hint_targets_the_first_instance(monkeypatch):
+    monkeypatch.setattr(launchd_deploy.os, "getuid", lambda: 501)
+    sched = launchd_deploy.LaunchdScheduler()
+    assert sched.restart_hint() == (
+        "launchctl kickstart -k gui/501/org.orbi.runner.1"
+    )
+
+
+def test_journal_lines_tail_the_rendered_log_files(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    for index in (1, 2):
+        log = launchd_deploy.log_path(tmp_path, f"org.orbi.runner.{index}")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(
+            "\n".join(f"line{i}" for i in range(50)) + "\n",
+            encoding="utf-8",
+        )
+    lines = sched.journal_lines(
+        None, tmp_path, max_concurrency=2, lines=5,
+    )
+    assert lines == ["line45", "line46", "line47", "line48", "line49"] * 2
+
+
+def test_install_and_drift_flow_end_to_end_on_the_launchd_impl(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(launchd_deploy.os, "getuid", lambda: 501)
+    repo = make_repo(tmp_path)
+    installed = tmp_path / "LaunchAgents"
+    sched = launchd_deploy.LaunchdScheduler()
+    fake = FakeLaunchd(commit="beefbeef")
+
+    result = scheduler.install_units(
+        repo, installed, max_concurrency=2,
+        run_command=fake, sched=sched,
+    )
+    assert sorted(result["units"]) == [
+        "org.orbi.runner.1.plist", "org.orbi.runner.2.plist",
+    ]
+    assert result["commit"] == "beefbeef"
+    assert fake.state == {
+        "org.orbi.runner.1": "not running",
+        "org.orbi.runner.2": "not running",
+    }
+    scheduler.check_unit_drift(
+        repo, installed, max_concurrency=2, sched=sched,
+    )
+    # KEY-ORDER-ONLY tampering must NOT fabricate drift (the XML
+    # comparison is semantic).
+    unit = installed / "org.orbi.runner.1.plist"
+    reordered = plistlib.loads(unit.read_bytes())
+    reordered = dict(reversed(list(reordered.items())))
+    unit.write_bytes(plistlib.dumps(reordered))
+    status = scheduler.unit_status(
+        repo, installed, max_concurrency=2, sched=sched,
+    )
+    assert not status[0]["drifted"]
+    # A VALUE change is drift, with the structured line naming the plist.
+    reordered["StartInterval"] = 600
+    unit.write_bytes(plistlib.dumps(reordered))
+    with pytest.raises(scheduler.UnitDriftError) as excinfo:
+        scheduler.check_unit_drift(
+            repo, installed, max_concurrency=2, sched=sched,
+        )
+    assert "unit_drift unit=org.orbi.runner.1.plist" in str(excinfo.value)
+
+
+def test_unmanaged_entries_list_foreign_orbi_plists(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    installed = tmp_path
+    (installed / "org.orbi.runner.1.plist").write_bytes(
+        plistlib.dumps({"Label": "org.orbi.runner.1"}),
+    )
+    (installed / "org.orbi.rogue.plist").write_bytes(
+        plistlib.dumps({
+            "Label": "org.orbi.rogue",
+            "EnvironmentVariables": {
+                "ORBI_CONFIG": "/somewhere/orbi.toml",
+            },
+        }),
+    )
+    (installed / "com.other.plist").write_bytes(
+        plistlib.dumps({"Label": "com.other"}),
+    )
+    entries = sched.unmanaged_entries(installed)
+    assert [entry["unit"] for entry in entries] == ["org.orbi.rogue.plist"]
+    assert entries[0]["config"] == Path("/somewhere/orbi.toml")
+
+
+def test_genuine_launchctl_failure_propagates():
+    # A launchctl failure that is NOT the documented not-loaded answer
+    # must re-raise (fail fast), never map to a state.
+    fake = FakeLaunchd()
+    fake.commands = []  # silence recording
+
+    def broken(command, **kwargs):
+        fake.commands.append(command)
+        raise subprocess.CalledProcessError(1, command, stderr="boom")
+
+    sched = launchd_deploy.LaunchdScheduler()
+    with pytest.raises(subprocess.CalledProcessError):
+        sched.unit_state(broken, "org.orbi.runner.1")
+
+
+def test_installed_unit_dir_follows_the_override_chain(monkeypatch, tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    # The explicit argument wins.
+    assert sched.installed_unit_dir(str(tmp_path)) == tmp_path
+    # Then $ORBI_UNIT_DIR (the test/e2e seam).
+    monkeypatch.setenv("ORBI_UNIT_DIR", str(tmp_path / "env"))
+    assert sched.installed_unit_dir() == tmp_path / "env"
+    # The macOS default is the user's LaunchAgents directory.
+    monkeypatch.delenv("ORBI_UNIT_DIR")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert sched.installed_unit_dir() == (
+        tmp_path / "home" / "Library" / "LaunchAgents"
+    )
+
+
+def test_content_sha_falls_back_to_raw_bytes_for_unparseable_render():
+    sched = launchd_deploy.LaunchdScheduler()
+    import hashlib
+
+    junk = "<not a plist"
+    assert sched.content_sha(junk) == hashlib.sha256(
+        junk.encode("utf-8")
+    ).hexdigest()
+
+
+def test_unit_config_ignores_a_non_string_orbi_config(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    unit = tmp_path / "weird.plist"
+    unit.write_bytes(plistlib.dumps({
+        "EnvironmentVariables": {"ORBI_CONFIG": 12345},
+    }))
+    assert sched.unit_config(unit) is None
+
+
+def test_unit_state_without_a_state_line_is_inactive():
+    sched = launchd_deploy.LaunchdScheduler()
+
+    def no_state_line(command, **kwargs):
+        return "\tpid = 7\n"
+
+    assert sched.unit_state(no_state_line, "org.orbi.runner.1") == "inactive"
+
+
+def test_instances_status_reports_enabled_active_and_an_honest_next():
+    fake = FakeLaunchd()
+    sched = launchd_deploy.LaunchdScheduler()
+    fake.load("org.orbi.runner.1", state="running")
+    fake.load("org.orbi.runner.2", state="not running")
+    fake.disabled.add("org.orbi.runner.2")
+    status = sched.instances_status(fake, None, max_concurrency=2)
+    assert status == {
+        "org.orbi.runner.1": {
+            "enabled": True, "active": True, "next": "-",
+        },
+        "org.orbi.runner.2": {
+            "enabled": False, "active": False, "next": "-",
+        },
+    }
+
+
+def test_journal_lines_skip_instances_without_a_log_file(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    only = launchd_deploy.log_path(tmp_path, "org.orbi.runner.2")
+    only.parent.mkdir(parents=True)
+    only.write_text("a\nb\n", encoding="utf-8")
+    lines = sched.journal_lines(None, tmp_path, max_concurrency=2)
+    assert lines == ["a", "b"]
+
+
+def test_unmanaged_entries_is_empty_without_the_directory(tmp_path):
+    sched = launchd_deploy.LaunchdScheduler()
+    assert sched.unmanaged_entries(tmp_path / "absent") == []
+
+
+def test_fake_launchd_mirrors_the_real_launchctl_contract():
+    fake = FakeLaunchd()
+    # Unknown subcommands fail loudly, never silently succeed.
+    with pytest.raises(subprocess.CalledProcessError):
+        fake(["launchctl", "bogus"])
+    # Commands the fake does not model answer empty (e.g. git plumbing
+    # other than rev-parse).
+    assert fake(["git", "status"]) == ""
+    # Bootstrap of an already-loaded label fails (the EIO contract).
+    fake.load("org.orbi.runner.1")
+    with pytest.raises(subprocess.CalledProcessError):
+        fake([
+            "launchctl", "bootstrap", "gui/501",
+            "/Lib/LaunchAgents/org.orbi.runner.1.plist",
+        ])
+    # Bootout of a not-loaded label fails with the not-found contract.
+    with pytest.raises(subprocess.CalledProcessError):
+        fake(["launchctl", "bootout", "gui/501/org.orbi.runner.9"])
+    # kickstart is accepted and recorded (the restart entry).
+    assert fake(["launchctl", "kickstart", "gui/501/org.orbi.runner.1"]) == ""
+    assert [
+        "launchctl", "kickstart", "gui/501/org.orbi.runner.1",
+    ] in fake.commands

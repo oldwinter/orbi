@@ -1128,7 +1128,7 @@ def _fake_doctor_commands(monkeypatch, ssh_down: bool = False,
         if command[:2] == ["systemctl", "--user"]:
             assert command[2:5] == ["show", "-p", "ActiveState"]
             return "active"
-        if command[:1] == ["journalctl"]:
+        if "journalctl" in command:
             return "line one\nline two"
         raise AssertionError(f"unexpected command: {command}")
 
@@ -1138,14 +1138,14 @@ def _fake_doctor_commands(monkeypatch, ssh_down: bool = False,
 
 def test_install_units_command_reports_commit_and_hashes(monkeypatch,
                                                         tmp_path):
-    from orbi import systemd_deploy
+    from orbi import scheduler, systemd_deploy
 
     config, _ = _deploy_world(tmp_path)
     installed = tmp_path / "elsewhere"
     captured = {}
 
     def fake_install(repo_dir, installed_dir, *, max_concurrency,
-                     run_command, unit_name=None):
+                     run_command, unit_name=None, sched=None):
         captured["repo_dir"] = repo_dir
         captured["installed_dir"] = installed_dir
         captured["max_concurrency"] = max_concurrency
@@ -1160,7 +1160,7 @@ def test_install_units_command_reports_commit_and_hashes(monkeypatch,
             },
         }
 
-    monkeypatch.setattr(systemd_deploy, "install_units", fake_install)
+    monkeypatch.setattr(scheduler, "install_units", fake_install)
     report = orbi.install_units_command(config, installed)
     assert captured["repo_dir"] == config.repo_dir
     assert captured["installed_dir"] == installed
@@ -1181,7 +1181,7 @@ def test_install_units_command_uses_deploy_home(monkeypatch, tmp_path):
     """Issue #330: `orbi install-units` deploys the unit templates from
     the deployment home — the delivery checkout (repo_dir) may be a
     foreign repo without a systemd/ directory."""
-    from orbi import systemd_deploy
+    from orbi import scheduler, systemd_deploy
 
     config, _ = _deploy_world(tmp_path)
     home = tmp_path / "home"
@@ -1192,7 +1192,7 @@ def test_install_units_command_uses_deploy_home(monkeypatch, tmp_path):
     captured = {}
 
     def fake_install(repo_dir, installed_dir, *, max_concurrency, run_command,
-                     unit_name=None):
+                     unit_name=None, sched=None):
         captured["repo_dir"] = Path(repo_dir)
         captured["unit_name"] = unit_name
         return {
@@ -1201,11 +1201,11 @@ def test_install_units_command_uses_deploy_home(monkeypatch, tmp_path):
             "units": {
                 name: {"installed_path": installed_dir / name,
                        "sha256": f"hash-{name}"}
-                for name in systemd_deploy.unit_names(unit_name)
+                for name in scheduler.unit_names(unit_name)
             },
         }
 
-    monkeypatch.setattr(systemd_deploy, "install_units", fake_install)
+    monkeypatch.setattr(scheduler, "install_units", fake_install)
     orbi.install_units_command(config, installed)
     assert captured["repo_dir"] == home
     assert captured["unit_name"] == "website"
@@ -1218,7 +1218,7 @@ def test_doctor_report_routes_home_checks_to_deploy_home(
     """Issue #330: `orbi doctor` compares unit drift and the editable CLI
     source against the deployment home's templates and checkout — never
     the delivery checkout (which may be a foreign repo)."""
-    from orbi import cli_source, systemd_deploy
+    from orbi import cli_source, scheduler, systemd_deploy
 
     config, installed = _deploy_world(tmp_path, drift=False)
     home = tmp_path / "home"
@@ -1229,7 +1229,8 @@ def test_doctor_report_routes_home_checks_to_deploy_home(
     monkeypatch.setattr(orbi, "current_issue", lambda repo: None)
     seen = {}
 
-    def spy_unit_status(repo_dir, installed_dir, unit_name=None):
+    def spy_unit_status(repo_dir, installed_dir, unit_name=None, *,
+                        max_concurrency=1, sched=None):
         seen["units"] = Path(repo_dir)
         seen["unit_name"] = unit_name
         return []
@@ -1239,7 +1240,7 @@ def test_doctor_report_routes_home_checks_to_deploy_home(
         return {"actual": str(home)}
 
     monkeypatch.setattr(
-        systemd_deploy, "unit_status", spy_unit_status,
+        scheduler, "unit_status", spy_unit_status,
     )
     monkeypatch.setattr(cli_source, "cli_source", spy_cli_source)
     monkeypatch.setattr(cli_source, "drift_line", lambda source: None)
@@ -1549,8 +1550,8 @@ def test_doctor_report_clean(tmp_path, monkeypatch):
     assert "unit_drift: clean" in lines
     assert "deploy_home: clean" in lines
     # Both units are reported with their installed hash.
-    from orbi import systemd_deploy
-    status = systemd_deploy.unit_status(config.repo_dir, installed)
+    from orbi import scheduler, systemd_deploy
+    status = scheduler.unit_status(config.repo_dir, installed)
     for entry in status:
         assert (
             f"  {entry['unit']}: sha256={entry['installed_sha256']}"
@@ -1590,12 +1591,13 @@ def test_doctor_report_clean(tmp_path, monkeypatch):
             "systemctl", "--user", "show", "-p", "ActiveState",
             "--value", unit,
         ] in calls
-    assert [
-        "journalctl", "--user",
-        "-u", "orbi@1.service",
-        "-u", "orbi@2.service",
-        "-n", "20", "--no-pager",
-    ] in calls
+    # Issue #849: the journal tail goes through the scheduler layer —
+    # one bounded `journalctl` query per service instance.
+    for unit in ("orbi@1.service", "orbi@2.service"):
+        assert [
+            "timeout", "30", "journalctl", "--user", "-u", unit,
+            "-n", "20", "--no-pager", "-q",
+        ] in calls
     # Issue #747: no hand-written units in this world — the scan runs
     # and reports zero.
     assert "unmanaged_units: 0" in lines
@@ -1605,7 +1607,7 @@ def test_doctor_report_lists_unmanaged_units(tmp_path, monkeypatch):
     """Issue #747: hand-written orbi units without the @ template form
     bypass every deployment's check_unit_drift, so doctor must surface
     them with their ORBI_CONFIG and the repair path."""
-    from orbi import systemd_deploy
+    from orbi import scheduler, systemd_deploy
 
     config, installed = _deploy_world(tmp_path, drift=False)
     _fake_doctor_commands(monkeypatch)
@@ -1634,7 +1636,7 @@ def test_doctor_report_lists_unmanaged_units(tmp_path, monkeypatch):
     # A timer carries no ORBI_CONFIG — rendered as '-'.
     assert "  orbi-core.timer (ORBI_CONFIG=-)" in lines
     assert (
-        f"  fix: {systemd_deploy.UNMANAGED_FIX}"
+        f"  fix: {scheduler.UNMANAGED_FIX}"
     ) in lines
     # The managed template units are NOT listed as unmanaged.
     assert "  orbi@.service (ORBI_CONFIG=" not in report
@@ -1778,12 +1780,12 @@ def test_doctor_report_drift_carries_paths_hashes_and_fix(
     config, installed = _deploy_world(tmp_path, drift=True)
     _fake_doctor_commands(monkeypatch)
     monkeypatch.setattr(orbi, "current_issue", lambda repo: None)
-    from orbi import systemd_deploy
+    from orbi import scheduler, systemd_deploy
     report = orbi.doctor_report(config, installed)
     lines = report.splitlines()
     assert "unit_drift: DRIFT" in lines
     drifted = [
-        e for e in systemd_deploy.unit_status(
+        e for e in scheduler.unit_status(
             config.repo_dir, installed,
         ) if e["drifted"]
     ]
@@ -1795,7 +1797,7 @@ def test_doctor_report_drift_carries_paths_hashes_and_fix(
         f"repo_sha256={entry['repo_sha256']} "
         f"installed_sha256={entry['installed_sha256']}"
     ) in lines
-    assert f"  fix: {systemd_deploy.FIX_COMMAND}" in lines
+    assert f"  fix: {scheduler.FIX_COMMAND}" in lines
 
 
 def _fake_cli_source(monkeypatch, drifted: bool = False) -> dict:

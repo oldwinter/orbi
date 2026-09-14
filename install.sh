@@ -13,11 +13,41 @@ require_command() {
   fi
 }
 
+# The scheduler is platform state, not a package the user can add:
+# Orbi schedules its runner through launchd on macOS and systemd on
+# Linux (Issue #849). A machine without its platform scheduler cannot
+# run Orbi, and the error must say so plainly instead of reporting a
+# bare missing command.
+SCHEDULER_ISSUE_URL="https://github.com/orbi-build/orbi/issues/849"
+case "$(uname -s)" in
+  Darwin)
+    SCHEDULER_BIN=launchctl
+    SCHEDULER_NAME=launchd
+    ;;
+  Linux)
+    SCHEDULER_BIN=systemctl
+    SCHEDULER_NAME=systemd
+    ;;
+  *)
+    printf 'orbi install: unsupported platform: %s\n' "$(uname -s)" >&2
+    printf 'Orbi supports Linux (systemd) and macOS (launchd).\n' >&2
+    printf 'Platform support: %s\n' "$SCHEDULER_ISSUE_URL" >&2
+    exit 1
+    ;;
+esac
+if ! command -v "$SCHEDULER_BIN" >/dev/null 2>&1; then
+  printf 'orbi install: %s not found — this machine has no %s scheduler.\n' \
+    "$SCHEDULER_BIN" "$SCHEDULER_NAME" >&2
+  printf 'This is a platform limitation, not a missing package: Orbi needs\n' >&2
+  printf 'launchd on macOS or systemd on Linux to schedule its runner.\n' >&2
+  printf 'Platform support and macOS status: %s\n' "$SCHEDULER_ISSUE_URL" >&2
+  exit 1
+fi
+
 # git is needed before anything can be installed. The remaining commands are
 # setup prerequisites; report them here rather than failing halfway through.
 require_command git
 require_command gh
-require_command systemctl
 require_command curl
 
 if ! command -v uv >/dev/null 2>&1; then

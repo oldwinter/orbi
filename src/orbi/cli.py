@@ -3,8 +3,9 @@
 
 With NO subcommand the CLI IS the Runner entry: it runs one
 tick, exactly like `python3 -m orbi.runner` — this is what the
-systemd service's `ExecStart` (the installed `orbi`) invokes on
-every timer trigger. The named subcommands are the dispatch and debug
+scheduler entry (the systemd service's `ExecStart` on Linux, the
+launchd agent on macOS; the installed `orbi`) invokes on
+every trigger. The named subcommands are the dispatch and debug
 entries on top of that:
 
 `add` creates an Issue in a configured source repo and labels it
@@ -31,7 +32,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from orbi import __version__, cli_source, engine_source, git_transport, runner, systemd_deploy
+from orbi import __version__, cli_source, engine_source, git_transport, runner, scheduler
 from orbi.delivery_labels import (
     BLOCKED_LABEL,
     FIX_NEEDED_LABEL,
@@ -334,7 +335,8 @@ def slot_lines(state_dir: Path, capacity: int) -> list[str]:
 
 
 # Deployment consistency: the repo templates
-# (systemd/orbi@.service + @.timer) are the single source of
+# (systemd/orbi@.service + @.timer on Linux, launchd/org.orbi.runner.plist
+# on macOS) are the single source of
 # truth. `install-units` deploys them idempotently (it never
 # starts/stops/restarts the service — a running Runner keeps running,
 # the new config takes effect at the next service start) and enables
@@ -348,7 +350,7 @@ JOURNAL_LINES = 20
 def deploy_home_dirty_files(repo_dir: Path, *, run_command) -> list[str]:
     """Return tracked files changed in the deployment home.
 
-    The systemd preflight cannot start Python when this checkout is dirty,
+    The scheduler preflight cannot start Python when this checkout is dirty,
     so doctor uses the same porcelain status contract read-only. Untracked
     files are deliberately excluded: they cannot block the fast-forward.
     """
@@ -377,10 +379,11 @@ def install_units_command(config: RunnerConfig, installed_dir: Path | None) -> s
     # The unit templates live in the deployment home (they
     # render the home path into {{ORBI_REPO_DIR}}), never in the delivery
     # checkout.
-    result = systemd_deploy.install_units(
+    sched = scheduler.detect()
+    result = scheduler.install_units(
         config.deploy_home, installed_dir,
         max_concurrency=config.max_concurrency,
-        unit_name=config.unit_name, run_command=run_command,
+        unit_name=config.unit_name, run_command=run_command, sched=sched,
     )
     lines = [
         (
@@ -388,8 +391,7 @@ def install_units_command(config: RunnerConfig, installed_dir: Path | None) -> s
             f"installed_dir={result['installed_dir']}"
         ),
     ]
-    for name in systemd_deploy.unit_names(config.unit_name):
-        entry = result["units"][name]
+    for name, entry in result["units"].items():
         lines.append(f"unit={name} sha256={entry['sha256']}")
     return "\n".join(lines)
 
@@ -397,15 +399,16 @@ def install_units_command(config: RunnerConfig, installed_dir: Path | None) -> s
 def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
     """Read-only deployment and health report.
 
-    Checks: repo commit, unit drift (both units; the same comparison
+    Checks: repo commit, unit drift (the same comparison
     the pre-start check uses), timer/service active state, Runner
     slots, the live Pi session, the current Issue per source repo and
     the recent journal activity. Read-only: no labels, no units, no
     git mutation. A failed command fails fast (run_command).
     """
+    sched = scheduler.detect()
     repo_dir = config.repo_dir
     if installed_dir is None:
-        installed_dir = systemd_deploy.installed_unit_dir()
+        installed_dir = sched.installed_unit_dir()
     lines = [f"repo: {repo_dir}"]
     lines.append(
         f"commit: {run_command(['git', 'rev-parse', 'HEAD'], cwd=repo_dir)}"
@@ -442,7 +445,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
         lines.append(
             "  fix: git -C "
             f"{config.deploy_home} stash && "
-            "systemctl --user start orbi@1.service"
+            f"{sched.restart_hint(config.unit_name)}"
         )
     else:
         lines.append("deploy_home: clean")
@@ -478,12 +481,10 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
         lines.append(f"transport: FAILED {exc}")
     # Unit drift is compared against the deployment home's
     # templates (the same comparison the pre-start check uses).
-    if config.unit_name is None:
-        status = systemd_deploy.unit_status(config.deploy_home, installed_dir)
-    else:
-        status = systemd_deploy.unit_status(
-            config.deploy_home, installed_dir, config.unit_name,
-        )
+    status = scheduler.unit_status(
+        config.deploy_home, installed_dir, config.unit_name,
+        max_concurrency=config.max_concurrency, sched=sched,
+    )
     drifted = [entry for entry in status if entry["drifted"]]
     if drifted:
         lines.append("unit_drift: DRIFT")
@@ -494,18 +495,18 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
                 f"repo_sha256={entry['repo_sha256'] or '-'} "
                 f"installed_sha256={entry['installed_sha256'] or '-'}"
             )
-        lines.append(f"  fix: {systemd_deploy.FIX_COMMAND}")
+        lines.append(f"  fix: {scheduler.FIX_COMMAND}")
     else:
         lines.append("unit_drift: clean")
         for entry in status:
             lines.append(
                 f"  {entry['unit']}: sha256={entry['installed_sha256']}"
             )
-    # Hand-written orbi units without the @ template form
+    # Hand-written orbi units without the managed template form
     # are invisible to every deployment's check_unit_drift — the drift
     # self-heal never reaches them. Doctor surfaces them read-only so
     # the bypass becomes visible instead of silently failing.
-    unmanaged = systemd_deploy.unmanaged_units(installed_dir)
+    unmanaged = sched.unmanaged_entries(installed_dir)
     lines.append(f"unmanaged_units: {len(unmanaged)}")
     for entry in unmanaged:
         lines.append(
@@ -513,7 +514,7 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
             f"{entry['config'] if entry['config'] else '-'})"
         )
     if unmanaged:
-        lines.append(f"  fix: {systemd_deploy.UNMANAGED_FIX}")
+        lines.append(f"  fix: {scheduler.UNMANAGED_FIX}")
     finding = config.pi_provider_key_finding
     if finding and finding.get("variable") != "-":
         lines.append(
@@ -554,18 +555,15 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
     else:
         lines.append("cli_source: DRIFT")
         lines.append(f"  {line}")
-    # Report the INSTANCES (verified against the real CLI:
-    # `systemctl show` rejects the bare template name, and `journalctl
+    # Report the INSTANCES (verified against the real CLIs: `systemctl
+    # show` rejects the bare template name, and `journalctl
     # -u` with a template-name glob fails when no instance exists —
     # instance names always work).
-    for unit in (*systemd_deploy.timer_instances(
-                     config.unit_name, config.max_concurrency),
-                 *systemd_deploy.service_instances(
-                     config.unit_name, config.max_concurrency)):
-        state = run_command([
-            "systemctl", "--user", "show", "-p", "ActiveState",
-            "--value", unit,
-        ])
+    for unit in dict.fromkeys((
+            *sched.timer_instances(config.unit_name, config.max_concurrency),
+            *sched.service_instances(
+                config.unit_name, config.max_concurrency))):
+        state = sched.unit_state(run_command, unit)
         lines.append(f"{unit}: {state}")
     lines.extend(slot_lines(config.slot_dir, config.max_concurrency))
     session = find_session_file(repo_dir)
@@ -574,13 +572,10 @@ def doctor_report(config: RunnerConfig, installed_dir: Path | None) -> str:
         lines.append(f"source: {repo}")
         current = current_issue(repo)
         lines.append(f"  current: {format_issue(current) if current else '-'}")
-    journal_args: list[str] = ["journalctl", "--user"]
-    for unit in systemd_deploy.service_instances(
-            config.unit_name, config.max_concurrency):
-        journal_args.extend(["-u", unit])
-    journal = run_command(journal_args + [
-        "-n", str(JOURNAL_LINES), "--no-pager",
-    ])
+    journal = "\n".join(sched.journal_lines(
+        run_command, config.deploy_home, config.unit_name,
+        max_concurrency=config.max_concurrency, lines=JOURNAL_LINES,
+    ))
     lines.append("journal:")
     for line in journal.splitlines():
         lines.append(f"  {line}")
@@ -655,8 +650,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     install_parser = subparsers.add_parser(
         "install-units", parents=[common],
-        help="idempotently install the repo's systemd units (never "
-             "restarts a running Runner)",
+        help="idempotently install the repo's scheduler units (systemd "
+             "on Linux, launchd on macOS; never restarts a running "
+             "Runner)",
     )
     install_parser.add_argument(
         "--installed-dir", type=Path, default=None,
@@ -679,15 +675,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers.add_parser(
         "check", parents=[common],
-        help="read-only prerequisite gate: python, commands, systemd "
-             "user bus, gh auth, pi, config, repo access, transport, "
-             "model provider — fails fast with reason, fix and "
+        help="read-only prerequisite gate: python, commands, the "
+             "scheduler user session, gh auth, pi, config, repo access, "
+             "transport, model provider — fails fast with reason, fix and "
              "official docs link (Issue #163)",
     )
     setup_parser = subparsers.add_parser(
         "setup", parents=[common],
         help="one-time, idempotent initialization: gh auth + repo "
-             "permissions, platform labels, systemd user units, checkout "
+             "permissions, platform labels, scheduler units, checkout "
              "check and the optional model proxy (Issue #117)",
     )
     setup_parser.add_argument(

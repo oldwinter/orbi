@@ -356,7 +356,7 @@ def test_check_commands_reports_the_required_commands(monkeypatch):
         # Issue #140: the installed CLI is a prerequisite too (the
         # systemd entry it documents must exist on the machine).
         "orbi": "/usr/bin/orbi",
-        "systemctl": "user-bus-ok",
+        "systemd": "session-ok",
     }
 
 
@@ -391,13 +391,29 @@ def test_check_commands_fails_fast_when_uv_is_missing(monkeypatch):
     assert "https://docs.astral.sh/uv/" in reason
 
 
+def test_check_commands_fails_fast_on_an_unsupported_platform(monkeypatch):
+    """Issue #849: the platform dispatch raises the honest limitation
+    error; the setup gate reports it as a SetupError, never a
+    traceback."""
+    from orbi import scheduler
+
+    def refuse(system=None):
+        raise scheduler.UnsupportedPlatformError(
+            "orbi has no scheduler support for platform 'FreeBSD'"
+        )
+
+    monkeypatch.setattr(scheduler, "detect", refuse)
+    with pytest.raises(pilot_setup.SetupError, match="FreeBSD"):
+        pilot_setup.check_commands(run_command=lambda c, **k: "")
+
+
 def test_check_commands_fails_fast_without_a_user_bus(monkeypatch):
     monkeypatch.setattr(
         pilot_setup.shutil, "which",
         lambda name: f"/usr/bin/{name}",
     )
     with pytest.raises(
-        pilot_setup.SetupError, match="user bus",
+        pilot_setup.SetupError, match="user session unavailable",
     ):
         pilot_setup.check_commands(
             run_command=lambda command, **kwargs: (
@@ -850,7 +866,7 @@ def test_install_units_step_fails_fast_on_a_genuine_is_enabled_failure(
         return fake_run(command, **kwargs)
 
     with pytest.raises(
-        pilot_setup.SetupError, match="is-enabled failed for orbi@1.timer",
+        pilot_setup.SetupError, match="status query failed for the instances",
     ) as excinfo:
         pilot_setup.install_units_step(
             repo, tmp_path / "units", max_concurrency=1, run_command=failing,
@@ -891,13 +907,13 @@ def test_timer_next_trigger_parses_the_list_timers_row():
         "Thu 2026-08-27 09:18:18 +08    28min ago "
         "orbi@1.timer                orbi@1.service\n"
     )
-    assert pilot_setup.timer_next_trigger(
+    assert systemd_deploy.timer_next_trigger(
         raw, "orbi@1.timer",
     ) == "Thu 2026-08-27 10:00:00 +08"
 
 
 def test_timer_next_trigger_returns_dash_when_the_timer_is_absent():
-    assert pilot_setup.timer_next_trigger(
+    assert systemd_deploy.timer_next_trigger(
         "NEXT\n", "orbi@1.timer",
     ) == "-"
 
@@ -909,7 +925,7 @@ def test_timer_next_trigger_ignores_other_timers():
         "Thu 2026-08-27 09:18:18 +08    28min ago "
         "other.timer                         other.service\n"
     )
-    assert pilot_setup.timer_next_trigger(
+    assert systemd_deploy.timer_next_trigger(
         raw, "orbi@1.timer",
     ) == "-"
 
@@ -925,10 +941,10 @@ def test_timer_next_trigger_distinguishes_the_two_instances():
         "Thu 2026-08-27 10:00:00 +08     5min ago "
         "orbi@2.timer                orbi@2.service\n"
     )
-    assert pilot_setup.timer_next_trigger(
+    assert systemd_deploy.timer_next_trigger(
         raw, "orbi@1.timer",
     ) == "Thu 2026-08-27 10:00:00 +08"
-    assert pilot_setup.timer_next_trigger(
+    assert systemd_deploy.timer_next_trigger(
         raw, "orbi@2.timer",
     ) == "Fri 2026-08-27 10:05:00 +08"
 
@@ -1848,7 +1864,7 @@ def test_timer_next_trigger_falls_back_to_the_first_column():
     # A timer row without the two-space column separator (defensive
     # fallback): the first column is reported as-is.
     raw = "X orbi@1.timer orbi@1.service\n"
-    assert pilot_setup.timer_next_trigger(
+    assert systemd_deploy.timer_next_trigger(
         raw, "orbi@1.timer",
     ) == "X"
 

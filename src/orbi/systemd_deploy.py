@@ -1,8 +1,13 @@
-"""Systemd deployment consistency for Orbi.
+"""The systemd scheduler implementation (Linux).
 
 The repo templates ``systemd/orbi@.service`` and
 ``systemd/orbi@.timer`` are the single source of truth for the
-user-level units. This module provides:
+user-level units on Linux. This module is the systemd member of the
+scheduler layer (:mod:`orbi.scheduler` owns the interface, the platform
+dispatch and the platform-independent orchestration); every
+``systemctl``/``journalctl`` literal in ``src/orbi/`` lives here.
+
+Platform hooks (see :class:`orbi.scheduler.Scheduler`):
 
 - an idempotent install (copy the templates into the user unit
   directory after confirming an existing deployment uses the same
@@ -14,10 +19,10 @@ user-level units. This module provides:
   non-templated units away once (stop the legacy timer — a timer stop
   never touches the service — and remove the legacy files), so the
   old single-instance schedule cannot keep firing the old service;
-- a pre-start consistency check that compares BOTH installed template
-  units against the templates and fails fast with a structured
-  ``unit_drift`` line (repo path, installed path, hashes, fix
-  command) when they drift.
+- a pre-start consistency check (the layer's ``check_unit_drift``
+  running on this class's raw-byte content identity) that fails fast
+  with a structured ``unit_drift`` line when the installed units
+  drift from the templates.
 
 No database, queue, daemon or second state store: the installed files
 and systemd itself are the only state.
@@ -25,146 +30,27 @@ and systemd itself are the only state.
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 import re
+import subprocess
 from pathlib import Path
 
-from orbi.progress import quote_value
+from orbi.scheduler import (
+    MAX_RUNNER_INSTANCES,
+    REPO_DIR_PLACEHOLDER,
+    service_instances,
+    timer_instances,
+    unit_names,
+)
 from orbi.journal import event
 
 SERVICE_UNIT = "orbi@.service"
 TIMER_UNIT = "orbi@.timer"
 UNIT_NAMES = (SERVICE_UNIT, TIMER_UNIT)
-# The config declaration cap (Issue #827): a deployment may declare up to
-# MAX_RUNNER_INSTANCES concurrent Runner instances. It is NOT a machine-
-# capacity assertion and NOT derived from any unit-name list — the names
-# are generated per count below, and the real concurrency boundary stays
-# the flock slots in the Runner (max_concurrency).
-MAX_RUNNER_INSTANCES = 5
-# The pre-#149 non-templated units: install_units migrates them away
+# The pre-#149 non-templated units: the install migrates them away
 # once (a template change is a deployment change, no human step).
 LEGACY_TIMER_UNIT = "orbi.timer"
 LEGACY_UNIT_NAMES = ("orbi.service", "orbi.timer")
-
-# The unit templates are machine-independent. The single
-# machine-specific value (the deployment checkout path) is carried as
-# this placeholder and substituted at install time with the checkout's
-# resolved absolute path — the templates no longer hardcode
-# ``%h/Documents/orbi/orbi``, so a checkout at ANY path deploys cleanly.
-REPO_DIR_PLACEHOLDER = "{{ORBI_REPO_DIR}}"
-
-# The idempotent install command that repairs any drift (carried on
-# every unit_drift line as the fix command). The official
-# entry is the installed `orbi` CLI (the uv-tool console
-# script), not a hand-written Python file entry.
-FIX_COMMAND = "orbi install-units"
-
-# The repair path for a hand-written orbi unit — every
-# deployment declares its own unit_name and installs its own managed
-# set; a hand-written unit file is never migrated automatically.
-UNMANAGED_FIX = (
-    "set unit_name in each deployment config and run `orbi install-units`"
-)
-
-
-class UnitDriftError(RuntimeError):
-    """The installed units have drifted from the repo templates."""
-
-
-class UnitConflictError(RuntimeError):
-    """An existing unit belongs to a different deployment checkout."""
-
-
-def unit_names(unit_name: str | None = None) -> tuple[str, str]:
-    prefix = "orbi" if unit_name is None else f"orbi-{unit_name}"
-    return f"{prefix}@.service", f"{prefix}@.timer"
-
-
-def timer_instances(unit_name: str | None = None,
-                    count: int = 1) -> tuple[str, ...]:
-    prefix = "orbi" if unit_name is None else f"orbi-{unit_name}"
-    return tuple(f"{prefix}@{index}.timer" for index in range(1, count + 1))
-
-
-def service_instances(unit_name: str | None = None,
-                      count: int = 1) -> tuple[str, ...]:
-    prefix = "orbi" if unit_name is None else f"orbi-{unit_name}"
-    return tuple(f"{prefix}@{index}.service" for index in range(1, count + 1))
-
-
-def installed_config(unit_path: Path) -> Path | None:
-    """Return the ORBI_CONFIG value from an installed service unit."""
-    if not unit_path.is_file():
-        return None
-    text = unit_path.read_text(encoding="utf-8")
-    match = re.search(
-        r"\bORBI_CONFIG=(?:\"([^\"]+)\"|([^\s\"]+))", text,
-    )
-    if match is None:
-        return None
-    value = match.group(1) or match.group(2)
-    # Older templates used systemd's %h specifier in ORBI_CONFIG.  Resolve
-    # it before comparing with the absolute path used by current templates;
-    # otherwise a reinstall of the same deployment is mistaken for a conflict.
-    value = value.replace("%h", str(Path.home()))
-    return Path(value).expanduser().resolve()
-
-
-def unmanaged_units(installed_dir: Path) -> list[dict]:
-    """List the orbi unit files no deployment's drift check can see.
-
-    Every managed orbi unit is an installed template (``orbi@.service``,
-    ``orbi-<unit_name>@.service``, and their ``@`` instances):
-    ``check_unit_drift`` compares exactly those names. A hand-written
-    orbi unit WITHOUT the ``@`` template form (``orbi-core.service``,
-    the pre-#149 ``orbi.timer``, ...) is invisible to every
-    ``unit_names()`` set — it never drift-checks and never self-heals.
-    One entry per such file, sorted by name: the unit
-    name and the ``ORBI_CONFIG`` the unit points at (``None`` when the
-    file carries none — timers never do). A missing unit dir has
-    nothing to scan (the missing managed units are ``unit_drift``'s
-    report, not this one).
-    """
-    installed_dir = Path(installed_dir)
-    if not installed_dir.is_dir():
-        return []
-    entries: list[dict] = []
-    for path in sorted(installed_dir.iterdir(), key=lambda p: p.name):
-        name = path.name
-        if not (
-            path.is_file()
-            and name.startswith("orbi")
-            and (name.endswith(".service") or name.endswith(".timer"))
-        ):
-            continue
-        if "@" in name:
-            continue
-        entries.append({"unit": name, "config": installed_config(path)})
-    return entries
-
-
-def reject_different_deployment(repo_dir: Path, installed_dir: Path,
-                                unit_name: str | None = None) -> None:
-    """Refuse to overwrite units owned by another checkout."""
-    service_unit, _ = unit_names(unit_name)
-    existing = installed_config(installed_dir / service_unit)
-    if existing is None:
-        return
-    expected = (Path(repo_dir).resolve() / "orbi.toml").resolve()
-    if existing == expected:
-        return
-    message = (
-        "existing systemd deployment points at a different ORBI_CONFIG: "
-        f"{existing} (this checkout uses {expected}); uninstall the existing "
-        "deployment before installing this checkout"
-    )
-    event(
-        "unit_conflict", level=logging.ERROR, unit=service_unit,
-        installed_config=existing, expected_config=expected,
-        action="uninstall_existing_deployment",
-    )
-    raise UnitConflictError(message)
 
 
 def repo_unit_dir(repo_dir: Path) -> Path:
@@ -207,175 +93,77 @@ def render_unit_template(template_text: str, repo_dir: Path,
     return rendered
 
 
-def unit_status(repo_dir: Path, installed_dir: Path,
-                unit_name: str | None = None) -> list[dict]:
-    """Compare the installed units against the repo templates.
+def installed_config(unit_path: Path) -> Path | None:
+    """Return the ORBI_CONFIG value from an installed service unit."""
+    if not unit_path.is_file():
+        return None
+    text = unit_path.read_text(encoding="utf-8")
+    match = re.search(
+        r"\bORBI_CONFIG=(?:\"([^\"]+)\"|([^\s\"]+))", text,
+    )
+    if match is None:
+        return None
+    value = match.group(1) or match.group(2)
+    # Older templates used systemd's %h specifier in ORBI_CONFIG.  Resolve
+    # it before comparing with the absolute path used by current templates;
+    # otherwise a reinstall of the same deployment is mistaken for a conflict.
+    value = value.replace("%h", str(Path.home()))
+    return Path(value).expanduser().resolve()
 
-    One entry per unit (service and timer, in order): the repo and
-    installed paths, both sha256s (None when the file is missing) and
-    whether the unit drifted. A missing template or a missing
-    installed unit is drift: the deployment is not verifiable.
+
+def unmanaged_units(installed_dir: Path) -> list[dict]:
+    """List the orbi unit files no deployment's drift check can see.
+
+    Every managed orbi unit is an installed template (``orbi@.service``,
+    ``orbi-<unit_name>@.service``, and their ``@`` instances):
+    the layer's drift check compares exactly those names. A hand-written
+    orbi unit WITHOUT the ``@`` template form (``orbi-core.service``,
+    the pre-#149 ``orbi.timer``, ...) is invisible to every
+    ``unit_names()`` set — it never drift-checks and never self-heals.
+    One entry per such file, sorted by name: the unit
+    name and the ``ORBI_CONFIG`` the unit points at (``None`` when the
+    file carries none — timers never do). A missing unit dir has
+    nothing to scan (the missing managed units are ``unit_drift``'s
+    report, not this one).
     """
-    repo_dir = Path(repo_dir)
     installed_dir = Path(installed_dir)
+    if not installed_dir.is_dir():
+        return []
     entries: list[dict] = []
-    names = unit_names(unit_name)
-    for template_name, name in zip(UNIT_NAMES, names):
-        repo_path = repo_unit_dir(repo_dir) / template_name
-        installed_path = installed_dir / name
-        if repo_path.is_file():
-            # The installed unit is the RENDERED template
-            # (the checkout path substituted), so the drift check must
-            # compare against the rendered form — otherwise a clean
-            # install would always look drifted.
-            rendered = render_unit_template(
-                repo_path.read_text(encoding="utf-8"), repo_dir, unit_name,
-            )
-            repo_sha = hashlib.sha256(
-                rendered.encode("utf-8"),
-            ).hexdigest()
-        else:
-            repo_sha = None
-        installed_sha = (
-            sha256_hex(installed_path) if installed_path.is_file() else None
-        )
-        entries.append({
-            "unit": name,
-            "repo_path": repo_path,
-            "installed_path": installed_path,
-            "repo_sha256": repo_sha,
-            "installed_sha256": installed_sha,
-            "missing": installed_sha is None,
-            "drifted": (
-                repo_sha is None
-                or installed_sha is None
-                or repo_sha != installed_sha
-            ),
-        })
+    for path in sorted(installed_dir.iterdir(), key=lambda p: p.name):
+        name = path.name
+        if not (
+            path.is_file()
+            and name.startswith("orbi")
+            and (name.endswith(".service") or name.endswith(".timer"))
+        ):
+            continue
+        if "@" in name:
+            continue
+        entries.append({"unit": name, "config": installed_config(path)})
     return entries
 
 
-def drift_lines(status: list[dict]) -> list[str]:
-    """One ``unit_drift`` report line per drifted unit.
+def timer_next_trigger(list_timers_output: str, unit_name: str) -> str:
+    """The NEXT column of the given timer instance's row, or ``-``.
 
-    Builds the lines carried by the ``UnitDriftError`` message: the
-    repo path, the installed path, both hashes and the idempotent fix
-    command. Values containing spaces are quoted (the
-    progress.quote_value convention) so the line stays parseable.
-    This helper never logs — the journal emission goes through
-    ``event()`` (`_log_drifted_units`).
+    ``systemctl --user list-timers --no-pager`` prints a header line
+    (``NEXT  LEFT ...``) followed by one row per timer; the row whose
+    UNIT column is the given instance (e.g. ``orbi@1.timer``)
+    carries the next trigger time.
     """
-    lines: list[str] = []
-    for entry in status:
-        if not entry["drifted"]:
-            continue
-        lines.append(
-            "unit_drift "
-            f"unit={entry['unit']} "
-            f"repo={quote_value(str(entry['repo_path']))} "
-            f"installed={quote_value(str(entry['installed_path']))} "
-            f"repo_sha256={entry['repo_sha256'] or '-'} "
-            f"installed_sha256={entry['installed_sha256'] or '-'} "
-            f"fix={FIX_COMMAND}"
-        )
-    return lines
-
-
-def _log_drifted_units(status: list[dict]) -> None:
-    """Emit one structured ``unit_drift`` failure line per drifted unit
-    through the single journal emission point: same fields
-    as ``drift_lines``, minus the report-only message role."""
-    for entry in status:
-        if not entry["drifted"]:
-            continue
-        event(
-            "unit_drift", level=logging.ERROR, unit=entry["unit"],
-            repo=entry["repo_path"], installed=entry["installed_path"],
-            repo_sha256=entry["repo_sha256"] or "-",
-            installed_sha256=entry["installed_sha256"] or "-",
-            fix=FIX_COMMAND,
-        )
-
-
-def check_unit_drift(repo_dir: Path,
-                     installed_dir: Path | None = None,
-                     unit_name: str | None = None) -> None:
-    """Pre-start deployment check.
-
-    Compares BOTH installed units against the repo templates. Clean:
-    logs ``unit_drift clean`` and returns. Drift: logs one structured
-    ``unit_drift`` line per drifted unit and raises
-    ``UnitDriftError`` — the caller fails fast and claims no Issue
-    until the units are synced with the idempotent install command.
-    """
-    if installed_dir is None:
-        installed_dir = installed_unit_dir()
-    status = unit_status(repo_dir, installed_dir, unit_name)
-    lines = drift_lines(status)
-    if not lines:
-        event("unit_drift", result="clean", installed_dir=installed_dir)
-        return
-    _log_drifted_units(status)
-    raise UnitDriftError(
-        "installed systemd units have drifted from the repo templates; "
-        f"sync with: {FIX_COMMAND}\n" + "\n".join(lines)
-    )
-
-
-def sync_drifted_units(repo_dir: Path,
-                       installed_dir: Path | None = None,
-                       *, max_concurrency: int,
-                       unit_name: str | None = None, run_command) -> list[dict]:
-    """Pre-start self-heal for drifted units.
-
-    The normal scene: a template change merged to main, the
-    ExecStartPre-synced checkout carries the new templates, and the
-    installed units are still the old ones. Runs the SAME idempotent
-    install (``install_units``: copy the templates, daemon-reload,
-    sync the configured timer instances — never start/stop/restart the service, so a
-    currently running Runner is untouched) and re-verifies with the
-    SAME hash check (``unit_status``). Clean after the sync: logs one
-    structured ``unit_drift auto_synced`` line per unit (unit,
-    before/after sha256, deployed commit) and returns the per-unit
-    report. Still drifted after the sync: logs the structured
-    ``unit_drift`` lines and raises ``UnitDriftError`` (fail fast —
-    the caller claims no Issue). A failing install step propagates
-    unchanged. No drift: returns ``[]`` without touching anything.
-    """
-    repo_dir = Path(repo_dir)
-    if installed_dir is None:
-        installed_dir = installed_unit_dir()
-    installed_dir = Path(installed_dir)
-    before = unit_status(repo_dir, installed_dir, unit_name)
-    if not any(entry["drifted"] for entry in before):
-        return []
-    result = install_units(
-        repo_dir, installed_dir, max_concurrency=max_concurrency,
-        unit_name=unit_name, run_command=run_command,
-    )
-    after = unit_status(repo_dir, installed_dir, unit_name)
-    lines = drift_lines(after)
-    if lines:
-        _log_drifted_units(after)
-        raise UnitDriftError(
-            "installed systemd units still drift after the pre-start "
-            f"sync; sync with: {FIX_COMMAND}\n" + "\n".join(lines)
-        )
-    report: list[dict] = []
-    for entry_before, entry_after in zip(before, after):
-        event(
-            "unit_drift", result="auto_synced", unit=entry_after["unit"],
-            before_sha256=entry_before["installed_sha256"] or "-",
-            after_sha256=entry_after["installed_sha256"],
-            commit=result["commit"],
-        )
-        report.append({
-            "unit": entry_after["unit"],
-            "before_sha256": entry_before["installed_sha256"],
-            "after_sha256": entry_after["installed_sha256"],
-            "commit": result["commit"],
-        })
-    return report
+    for line in list_timers_output.splitlines():
+        columns = line.split()
+        if len(columns) >= 2 and columns[-2] == unit_name:
+            # NEXT is the first fixed-width column and itself contains
+            # spaces ("Thu 2026-08-27 10:00:00 +08"): it ends where the
+            # all-whitespace column separator begins, so take the line
+            # up to the first run of two or more spaces.
+            match = re.match(r"^(\S+(?: \S+)*?)  ", line)
+            if match:
+                return match.group(1)
+            return columns[0]
+    return "-"
 
 
 def migrate_legacy_units(installed_dir: Path, *, run_command) -> bool:
@@ -409,82 +197,165 @@ def migrate_legacy_units(installed_dir: Path, *, run_command) -> bool:
     return True
 
 
-def install_units(repo_dir: Path, installed_dir: Path | None = None,
-                  *, max_concurrency: int,
-                  unit_name: str | None = None, run_command) -> dict:
-    """Idempotently install the repo templates as the user units.
+class SystemdScheduler:
+    """The Linux member of the scheduler layer (systemd user units).
 
-    Overwrites BOTH installed template units with the repo templates
-    (the repo is the single source of truth), unless the installed
-    service belongs to a different config, which fails before any
-    migration or write. Migrates the pre-#149
-    non-templated units away once (see ``migrate_legacy_units``), runs
-    ``systemctl --user daemon-reload``, enables instances through
-    ``max_concurrency`` and disables the surplus timers up to
-    ``MAX_RUNNER_INSTANCES`` (Issue #827: the whole 1..MAX universe
-    converges onto the configured capacity, so a downscale disables the
-    surplus instance). These operations
-    activate or stop only timers, never services. The services are NEVER started,
-    stopped or restarted: a currently running Runner keeps running,
-    and the new config takes effect at the next service start.
-    Returns the deployed commit (the deployment checkout's HEAD) and
-    the installed units' hashes.
+    The bare ``timer_instances``/``service_instances`` names used in
+    the methods below resolve to the MODULE functions (a class
+    namespace is not in the lookup chain of its methods' bodies).
     """
-    if not 1 <= max_concurrency <= MAX_RUNNER_INSTANCES:
-        # Issue #829: the error names the CURRENT value too — the
-        # operator must see what the config wrote, not just the range.
-        raise ValueError(
-            "max_concurrency must be a positive integer no greater than "
-            f"{MAX_RUNNER_INSTANCES} (MAX_RUNNER_INSTANCES); "
-            f"got {max_concurrency!r}"
-        )
-    repo_dir = Path(repo_dir)
-    if installed_dir is None:
-        installed_dir = installed_unit_dir()
-    installed_dir = Path(installed_dir)
-    names = unit_names(unit_name)
-    instances = timer_instances(unit_name, MAX_RUNNER_INSTANCES)
-    reject_different_deployment(repo_dir, installed_dir, unit_name)
-    for name in UNIT_NAMES:
-        template = repo_unit_dir(repo_dir) / name
-        if not template.is_file():
-            raise FileNotFoundError(
-                f"unit template missing: {template} (the repo "
-                "templates are the single source of truth)"
-            )
-    installed_dir.mkdir(parents=True, exist_ok=True)
-    if unit_name is None:
-        migrate_legacy_units(installed_dir, run_command=run_command)
-    for template_name, name in zip(UNIT_NAMES, names):
-        # Render the template (substitute the deployment
-        # checkout path for the {{ORBI_REPO_DIR}} placeholder) so the
-        # installed unit points at THIS checkout regardless of where it
-        # lives. A template without the placeholder is written unchanged.
-        template_text = (
-            repo_unit_dir(repo_dir) / template_name
-        ).read_text(encoding="utf-8")
-        rendered = render_unit_template(template_text, repo_dir, unit_name)
-        (installed_dir / name).write_bytes(rendered.encode("utf-8"))
-    run_command(["systemctl", "--user", "daemon-reload"])
-    for instance in instances[:max_concurrency]:
-        run_command(["systemctl", "--user", "enable", "--now", instance])
-    for instance in instances[max_concurrency:]:
-        run_command(["systemctl", "--user", "disable", "--now", instance])
-    commit = run_command(["git", "rev-parse", "HEAD"], cwd=repo_dir)
-    units = {
-        name: {
-            "installed_path": installed_dir / name,
-            "sha256": sha256_hex(installed_dir / name),
-        }
-        for name in names
-    }
-    event(
-        "units_installed", commit=commit, installed_dir=installed_dir,
-        units=",".join(names),
-        instances=",".join(instances[:max_concurrency]),
-    )
-    return {
-        "commit": commit,
-        "installed_dir": installed_dir,
-        "units": units,
-    }
+
+    name = "systemd"
+    display = "systemd"
+    template_dir = "systemd"
+
+    def template_units(self) -> tuple[str, ...]:
+        return UNIT_NAMES
+
+    def unit_pairs(self, unit_name: str | None,
+                   count: int) -> list[tuple[str, str]]:
+        # systemd ships TWO count-independent template files; the
+        # instances are systemd-side instantiations of them.
+        return list(zip(UNIT_NAMES, unit_names(unit_name)))
+
+    def timer_instances(self, unit_name: str | None = None,
+                        count: int = 1) -> tuple[str, ...]:
+        return timer_instances(unit_name, count)
+
+    def service_instances(self, unit_name: str | None = None,
+                          count: int = 1) -> tuple[str, ...]:
+        return service_instances(unit_name, count)
+
+    def installed_unit_dir(self, override: str | None = None) -> Path:
+        return installed_unit_dir(override)
+
+    def render_unit(self, template_text: str, repo_dir: Path,
+                    unit_name: str | None = None,
+                    instance: int = 1) -> str:
+        # systemd instantiates instances from one template (%i); the
+        # install renders the same text for every instance.
+        return render_unit_template(template_text, repo_dir, unit_name)
+
+    def content_sha(self, rendered: str) -> str:
+        # The systemd drift identity is the rendered text's raw bytes.
+        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+    def installed_sha(self, path: Path) -> str | None:
+        path = Path(path)
+        return sha256_hex(path) if path.is_file() else None
+
+    def unit_config(self, path: Path) -> Path | None:
+        return installed_config(path)
+
+    def probe_args(self, unit_name: str | None = None) -> list[str]:
+        """The `systemctl --user` probe command proving the user bus.
+
+        Probes an INSTANCE name (verified against the real CLI: `systemctl
+        show` rejects the bare template name `orbi@.timer` but accepts
+        instance names, exiting 0 with `not-found` before the units are
+        installed — the probe only needs the user bus).
+        """
+        return [
+            "systemctl", "--user", "show", "-p", "LoadState", "--value",
+            timer_instances(unit_name, 1)[0],
+        ]
+
+    def unit_enabled(self, run_command, instance: str) -> bool:
+        """Whether the systemd unit is enabled.
+
+        ``systemctl --user is-enabled`` exits non-zero with the state word on
+        stdout (``disabled``, ``masked``, ...) for a unit that is NOT enabled —
+        that non-zero exit is documented systemd behavior, not a command
+        failure. A genuine systemctl failure (no user bus: empty
+        stdout, error on stderr) re-raises so setup fails fast.
+        """
+        try:
+            state = run_command(["systemctl", "--user", "is-enabled", instance])
+        except subprocess.CalledProcessError as exc:
+            state = (exc.stdout or "").strip()
+            if state not in ("disabled", "masked", "static", "indirect"):
+                raise
+        return state == "enabled"
+
+    def unit_state(self, run_command, instance: str) -> str:
+        """The instance's ActiveState via `systemctl --user show`."""
+        return run_command([
+            "systemctl", "--user", "show", "-p", "ActiveState",
+            "--value", instance,
+        ])
+
+    def instances_status(self, run_command, unit_name: str | None = None,
+                         *, max_concurrency: int) -> dict[str, dict]:
+        """One report entry per configured timer instance.
+
+        The enabled state (``is-enabled``), the active state
+        (``show -p ActiveState``) and the next trigger time
+        (``list-timers``, read once).
+        """
+        list_timers = run_command([
+            "systemctl", "--user", "list-timers", "--no-pager",
+        ])
+        instances: dict[str, dict] = {}
+        for instance in timer_instances(unit_name, max_concurrency):
+            instances[instance] = {
+                "enabled": self.unit_enabled(run_command, instance),
+                "active": self.unit_state(run_command, instance) == "active",
+                "next": timer_next_trigger(list_timers, instance),
+            }
+        return instances
+
+    def journal_lines(self, run_command, repo_dir: Path | None = None,
+                      unit_name: str | None = None, *,
+                      max_concurrency: int,
+                      since_minutes: int | None = None,
+                      lines: int | None = None) -> list[str]:
+        """One bounded `journalctl` query per service instance.
+
+        ``since_minutes`` bounds the window (the crash scan);
+        ``lines`` bounds the tail (the doctor report). ``repo_dir``
+        is the file-backed implementations' anchor; journalctl needs
+        nothing from it.
+        """
+        collected: list[str] = []
+        for unit in service_instances(unit_name, max_concurrency):
+            command = ["timeout", "30", "journalctl", "--user", "-u", unit]
+            if since_minutes is not None:
+                command += ["--since", f"-{since_minutes}min"]
+            if lines is not None:
+                command += ["-n", str(lines)]
+            output = run_command(command + ["--no-pager", "-q"])
+            collected.extend(output.splitlines())
+        return collected
+
+    def restart_hint(self, unit_name: str | None = None) -> str:
+        return f"systemctl --user start {service_instances(unit_name, 1)[0]}"
+
+    def activate_instances(self, run_command, installed_dir: Path,
+                           unit_name: str | None = None, *,
+                           max_concurrency: int) -> None:
+        """daemon-reload, then converge the timer instances.
+
+        Enables instances through ``max_concurrency`` and disables the
+        surplus up to ``MAX_RUNNER_INSTANCES`` (Issue #827: the whole
+        1..MAX universe converges onto the configured capacity, so a
+        downscale disables the surplus instance). These operations
+        activate or stop only timers, never services. The services are
+        NEVER started, stopped or restarted: a currently running
+        Runner keeps running, and the new config takes effect at the
+        next service start.
+        """
+        run_command(["systemctl", "--user", "daemon-reload"])
+        instances = timer_instances(unit_name, MAX_RUNNER_INSTANCES)
+        for instance in instances[:max_concurrency]:
+            run_command(["systemctl", "--user", "enable", "--now", instance])
+        for instance in instances[max_concurrency:]:
+            run_command(["systemctl", "--user", "disable", "--now", instance])
+
+    def pre_install(self, run_command, installed_dir: Path,
+                    unit_name: str | None = None) -> None:
+        # The pre-#149 legacy units belong to the default deployment only.
+        if unit_name is None:
+            migrate_legacy_units(installed_dir, run_command=run_command)
+
+    def unmanaged_entries(self, installed_dir: Path) -> list[dict]:
+        return unmanaged_units(installed_dir)
