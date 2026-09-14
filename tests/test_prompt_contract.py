@@ -502,12 +502,18 @@ REPEAT_FAILURE_GUARD_ITEMS = (
     ("guard-never-walked", "never walked again"),
     # The round comments are the source: their recognizable prefix and the
     # run_id grouping (the criteria lives in the GitHub comments themselves).
+    # The run id rides the HIDDEN marker (the findings and gate-failure
+    # comment shapes carry no visible run_id= field), so the marker text is
+    # the pinned carrier.
     ("guard-round-prefix", "orbi review round"),
+    ("guard-run-marker", "<!-- orbi:run=<run_id> -->"),
     ("guard-run-id-grouping", "group the round comments by their"),
-    # The PR-side read is the real gh contract (the same command shape the
-    # runner's own pr_comments in src/orbi/github.py runs).
+    # The PR-side read is the real gh contract (the same command shape AND
+    # the same 30 s bound the runner's own pr_comments in src/orbi/github.py
+    # runs — Issue #95: a network wait is wrapped in timeout).
     ("guard-pr-read",
-     "gh pr view {{pr_number}} --repo {{source_repo}} --json comments"),
+     "timeout 30 gh pr view {{pr_number}} --repo {{source_repo}} "
+     "--json comments"),
     # The decision rule: >= 2 consecutive rounds with the same failure
     # reason (the same wall — semantic recurrence, not byte-identical text).
     ("guard-same-reason", "same failure reason"),

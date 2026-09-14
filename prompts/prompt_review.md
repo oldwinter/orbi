@@ -31,11 +31,14 @@ comments were omitted, you are NOT seeing the full history.
 Before starting the review work, read this delivery's round history so a
 path that already failed is never walked again. Every completed round
 left one comment on the Issue and the PR starting with
-`Orbi review round <N> for PR #{{PR_NUMBER}}:` and carrying the visible
-`run_id` field. The `{{ISSUE_COMMENTS}}` block above is the Issue side of
-that history; the PR conversation carries the same comments (one bounded
-read: `gh pr view {{PR_NUMBER}} --repo {{SOURCE_REPO}} --json comments`).
-Group the round comments by their `run_id` field — the run id shared by
+`Orbi review round <N> for PR #{{PR_NUMBER}}:` and carrying the run
+marker `<!-- orbi:run=<run_id> -->` (a hidden HTML comment; the raw
+comment body carries it verbatim). The `{{ISSUE_COMMENTS}}` block above
+is the Issue side of that history; the PR conversation carries the same
+comments (one bounded read:
+`timeout 30 gh pr view {{PR_NUMBER}} --repo {{SOURCE_REPO}} --json
+comments`). Group the round comments by their `run_id` field (the
+marker's `orbi:run=` value) — the run id shared by
 the most recent round comments is THIS attempt — and read that group
 oldest first. Each round comment names its outcome right after the round
 counter: `CI merge gate blocked: <message>`, the behind-base /
