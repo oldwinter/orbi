@@ -26,6 +26,37 @@ comments were omitted, you are NOT seeing the full history.
 
 {{ISSUE_COMMENTS}}
 
+## Repeated-failure guard (before the review work)
+
+Before starting the review work, read this delivery's round history so a
+path that already failed is never walked again. Every completed round
+left one comment on the Issue and the PR starting with
+`Orbi review round <N> for PR #{{PR_NUMBER}}:` and carrying the visible
+`run_id` field. The `{{ISSUE_COMMENTS}}` block above is the Issue side of
+that history; the PR conversation carries the same comments (one bounded
+read: `gh pr view {{PR_NUMBER}} --repo {{SOURCE_REPO}} --json comments`).
+Group the round comments by their `run_id` field — the run id shared by
+the most recent round comments is THIS attempt — and read that group
+oldest first. Each round comment names its outcome right after the round
+counter: `CI merge gate blocked: <message>`, the behind-base /
+merge-conflict scene, or the `Findings:` payload.
+
+Compare the failure reason of consecutive rounds. When the same failure
+reason (the same wall — the same error, the same finding — not
+necessarily byte-identical text) appears in two or more consecutive
+rounds at the end of this run's history, do not repeat the same fix
+path: the wall has been hit twice already, and another normal fix
+attempt would only burn the remaining round budget. A round that already
+reported the repetition counts as the failure it named. Instead emit
+immediately, before any other review work, the findings verdict with
+exactly one Major finding: its location is the PR round comments, its
+note names the repetition (`same failure repeated in <N> consecutive
+rounds: <reason>`), and its fix direction hands the decision to a human.
+The verdict covers the untouched head (`{{HEAD_SHA}}`; you push nothing).
+The findings verdict keeps the PR in the existing `ai-fix-needed` loop
+and escalates to human judgment — the runner publishes it; you create
+and close nothing.
+
 ## Scope
 
 Review the exact diff from base `{{BASE_SHA}}` to head `{{HEAD_SHA}}` (run
