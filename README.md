@@ -19,7 +19,7 @@ Orbi is a local AI development Worker: put work in a GitHub Issue, and it automa
 
 ```bash
 git clone https://github.com/orbi-build/orbi.git && cd orbi
-uv tool install --force --reinstall --editable --python /usr/bin/python3 .
+uv tool install --force --reinstall --editable --python python3 .  # compatible system Python (>= 3.14, e.g. Fedora 43 / current Arch); older system Python (e.g. Ubuntu 24.04 ships 3.12): --python 3.14 so uv provisions it
 ```
 
 Only want the released CLI, no checkout? `python3 -m pip install orbi` (the editable install stays the official deployment — [Getting started](docs/getting-started.mdx)).

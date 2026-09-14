@@ -48,11 +48,11 @@ def _cli_source_world(monkeypatch, tmp_path):
         PACKAGE_DIR=Path("src") / "orbi",
         reinstall_args=lambda repo_dir: [
             "uv", "tool", "install", "--force", "--reinstall",
-            "--editable", "--python", "/usr/bin/python3", str(repo_dir),
+            "--editable", "--python", "python3", str(repo_dir),
         ],
         reinstall_command=lambda repo_dir: (
             "uv tool install --force --reinstall --editable "
-            f"--python /usr/bin/python3 {repo_dir}"
+            f"--python python3 {repo_dir}"
         ),
     )
     monkeypatch.setattr(pilot_setup, "cli_source", stub)
@@ -1328,7 +1328,7 @@ def test_install_cli_step_installs_the_editable_tool_when_drifted(tmp_path):
     )
     assert calls == [[
         "uv", "tool", "install", "--force", "--reinstall", "--editable",
-        "--python", "/usr/bin/python3", str(repo),
+        "--python", "python3", str(repo),
     ]]
     assert result == {
         "action": "installed",
@@ -1526,7 +1526,7 @@ def test_run_setup_installs_the_editable_cli_when_drifted(tmp_path,
     uv_calls = [c for c in calls if c[:2] == ["uv", "tool"]]
     assert uv_calls == [[
         "uv", "tool", "install", "--force", "--reinstall", "--editable",
-        "--python", "/usr/bin/python3", str(repo),
+        "--python", "python3", str(repo),
     ]]
     # The reinstall precedes the unit install (daemon-reload).
     uv_index = calls.index(uv_calls[0])

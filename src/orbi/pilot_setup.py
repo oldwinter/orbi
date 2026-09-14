@@ -163,8 +163,11 @@ COMMAND_INSTALL_HINTS = {
     ),
     "orbi": (
         "install the editable uv tool CLI from the deployment checkout: "
-        "uv tool install --force --reinstall --editable --python "
-        "/usr/bin/python3 <repo_dir>"
+        # The SAME compatible interpreter selection the CLI editable
+        # step passes (Issue #861): the system python3 when it
+        # satisfies the floor, the uv-provisioned 3.14 otherwise.
+        f"uv tool install --force --reinstall --editable --python "
+        f"{cli_source.PYTHON_INTERPRETER} <repo_dir>"
     ),
 }
 
@@ -203,11 +206,12 @@ def format_check_failure(exc: CheckError) -> str:
     )
 
 
-# The Python floor the `orbi check` gate enforces. Pinned
+# The Python floor the `orbi check` gate enforces. An alias of the
+# interpreter-selection floor (Issue #861) in cli_source — pinned
 # against the PEP 621 `requires-python` by tests/test_cli_packaging.py:
 # pip enforces the same floor at install time, the gate re-states it at
 # runtime so a hand-rolled interpreter cannot silently run the CLI.
-REQUIRED_PYTHON = (3, 14)
+REQUIRED_PYTHON = cli_source.REQUIRED_PYTHON
 
 # Official documentation links the check failures carry:
 # every failure names its repair action AND the official doc.

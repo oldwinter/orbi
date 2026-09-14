@@ -45,7 +45,15 @@ TimeoutStartSec=infinity
 # Issue #191: disabling fetch's automatic maintenance prevents Git from
 # detaching a maintenance child beyond this preflight and flock lifetime
 # (engine_source.py passes --no-auto-maintenance to every fetch).
-ExecStartPre=/usr/bin/timeout 300s /usr/bin/flock {{ORBI_REPO_DIR}}/.orbi/base-sync.lock -c '%h/.local/bin/orbi --version >/dev/null 2>&1 || uv tool install --force --reinstall --editable --python python3 {{ORBI_REPO_DIR}}'
+# Issue #861: the reinstall's interpreter follows the SAME compatible
+# selection rule as `orbi setup` (cli_source.select_python_interpreter):
+# the system `python3` when it satisfies the packaging floor
+# (requires-python >= 3.14 — Fedora 43, current Arch), otherwise the
+# bare `3.14` so uv provisions or selects a compatible interpreter
+# (Ubuntu 24.04 ships Python 3.12). The shell probe is cli_source's
+# PYTHON_PROBE_CODE verbatim (pinned by tests); the `$$I` is the
+# systemd escape for a literal `$I` the shell expands after the probe.
+ExecStartPre=/usr/bin/timeout 300s /usr/bin/flock {{ORBI_REPO_DIR}}/.orbi/base-sync.lock -c 'if python3 -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 14) else 1)" 2>/dev/null; then I=python3; else I=3.14; fi; %h/.local/bin/orbi --version >/dev/null 2>&1 || uv tool install --force --reinstall --editable --python $$I {{ORBI_REPO_DIR}}'
 ExecStartPre=/usr/bin/timeout 90s /usr/bin/flock {{ORBI_REPO_DIR}}/.orbi/base-sync.lock -c '%h/.local/bin/orbi sync-engine-source'
 # Issue #140: the Runner is the installed `orbi` CLI (the
 # uv-tool console script, `uv tool install` / `uv tool upgrade`; the

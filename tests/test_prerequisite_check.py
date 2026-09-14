@@ -182,6 +182,19 @@ def test_missing_command_carries_the_install_hint_and_link(monkeypatch):
     assert failure.docs == "https://cli.github.com/"
 
 
+def test_orbi_install_hint_uses_the_selected_interpreter():
+    """Issue #861: the actionable `orbi` install hint names the SAME
+    interpreter the CLI editable step actually passes (cli_source's
+    compatible selection: system python3 when it satisfies the floor,
+    uv-provisioned 3.14 otherwise) — never a hardcoded
+    /usr/bin/python3 that fails on Ubuntu 24.04."""
+    from orbi import cli_source
+
+    hint = pilot_setup.COMMAND_INSTALL_HINTS["orbi"]
+    assert f"--python {cli_source.PYTHON_INTERPRETER}" in hint
+    assert "/usr/bin/python3" not in hint
+
+
 def test_user_bus_failure_names_the_session_and_the_systemd_docs(tmp_path):
     state: dict = {"bus_down": True}
     config_path = tmp_path / "orbi.toml"

@@ -29,7 +29,7 @@ Pi 在隔离 worktree 中完成开发、测试并创建 PR，再经过独立审�
 
 ```bash
 git clone https://github.com/orbi-build/orbi.git && cd orbi
-uv tool install --force --reinstall --editable --python /usr/bin/python3 .
+uv tool install --force --reinstall --editable --python python3 .  # 兼容的系统 Python（>= 3.14，如 Fedora 43、当前 Arch）；更老的系统 Python（如 Ubuntu 24.04 自带 3.12）改用 --python 3.14，让 uv 自动供应
 ```
 
 只想要已发布的 CLI、不 clone 源码？`python3 -m pip install orbi`

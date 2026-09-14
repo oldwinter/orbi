@@ -48,7 +48,14 @@ non-zero exit code.
    configured `deploy_home` the step verifies it (no uv call,
    `cli=verified`); otherwise it runs the exact force editable
    reinstall (`uv tool install --force --reinstall --editable
-   --python /usr/bin/python3 <deploy_home>`, `cli=installed`). In the
+   --python <interpreter> <deploy_home>`, `cli=installed`).
+   `<interpreter>` follows the compatible selection rule (Issue #861):
+   `--python python3` when the system Python satisfies Orbi's
+   `requires-python` floor (`>= 3.14` — Fedora 43 and current Arch
+   ship it), otherwise `--python 3.14` so uv provisions or selects a
+   compatible interpreter (Ubuntu 24.04 ships Python 3.12 — a hard pin
+   to its system interpreter exits 1 with a dependency resolution
+   failure). In the
    external single-repo mode the CLI is NEVER (re)installed from the
    delivery checkout — `repo_dir` may be a foreign repo X without any
    orbi packaging input. A failing install fails fast — no unit install,
@@ -210,7 +217,7 @@ Failures (non-zero exit code, `setup_failed reason=...` on stderr):
 ```text
 setup_failed reason=required command missing: uv (not on PATH) — install uv first: curl -LsSf https://astral.sh/uv/install.sh | sh (https://docs.astral.sh/uv/getting-started/installation/)
 setup_failed reason=systemctl --user user bus unavailable (is a systemd user session running?): ...
-setup_failed reason=editable tool install failed for /path/to/checkout: ... (fix: uv tool install --force --reinstall --editable --python /usr/bin/python3 /path/to/checkout)
+setup_failed reason=editable tool install failed for /path/to/checkout: ... (fix: uv tool install --force --reinstall --editable --python 3.14 /path/to/checkout)
 setup_failed reason=repo not accessible: nobody/no-such (gh repo view failed: ...)
 setup_failed reason=insufficient permission for owner/repo: viewerPermission='READ' (one of ['ADMIN', 'MAINTAIN', 'WRITE'] required to manage labels)
 setup_failed reason=installation token cannot manage labels in owner/repo: ... (the GitHub App needs the Issues read/write repository permission and must be installed on owner/repo)

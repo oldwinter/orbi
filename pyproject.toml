@@ -12,9 +12,13 @@
 # per-version reinstall):
 #
 #     uv tool install --force --reinstall --editable \
-#         --python /usr/bin/python3 <this repo>
+#         --python <interpreter> <this repo>
 #     orbi --help
 #
+# (<interpreter>, Issue #861: the system `python3` when it satisfies
+# this file's `requires-python` floor, otherwise the bare `3.14` so
+# uv provisions or selects a compatible interpreter — a hard pin to a
+# system interpreter below the floor, e.g. Ubuntu 24.04's 3.12, fails.)
 # src layout (Issue #168): the runtime code lives in `src/orbi/`
 # and setuptools discovers the package automatically (no hand-maintained
 # module list). The editable finder maps the WHOLE package directory, so
