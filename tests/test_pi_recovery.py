@@ -470,6 +470,20 @@ def test_find_idle_descendants_uses_real_clock_when_not_given(
     assert real_btime > 0 and real_hz > 0
 
 
+def test_find_idle_descendants_returns_empty_when_proc_absent(
+    tmp_path, monkeypatch,
+):
+    # Issue #870: on macOS there is no /proc at all — the default
+    # boot_time() read raises FileNotFoundError BEFORE the guarded
+    # descendant_pids() runs, killing the poll loop instead of
+    # recovering. No /proc means "no determinable idle descendants":
+    # an empty list, never an exception.
+    monkeypatch.setattr(pi_recovery, "PROC", tmp_path / "no-such-proc")
+    assert pi_recovery.find_idle_descendants(
+        100, start_epoch(1000),
+    ) == []
+
+
 # --- signaling ---------------------------------------------------------------
 
 
