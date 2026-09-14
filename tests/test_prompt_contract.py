@@ -490,7 +490,7 @@ def test_agents_md_tdd_section_keeps_the_run_dir_coverage_commands():
 # the wall as a first hit, until the round budget burned out into
 # UnrecoverableDeliveryError / ai-blocked. The failure comments are ALREADY
 # on GitHub (handle_gate_failure and the findings path write them to the
-# Issue AND the PR with the round counter and the visible run_id field), so
+# Issue AND the PR with the round counter and the hidden run marker), so
 # the guard is a reviewer-prompt contract: read the round history before the
 # work, and on the same failure reason in >= 2 consecutive rounds emit the
 # findings verdict naming the repetition instead of repeating the fix. No
@@ -502,9 +502,9 @@ REPEAT_FAILURE_GUARD_ITEMS = (
     ("guard-never-walked", "never walked again"),
     # The round comments are the source: their recognizable prefix and the
     # run_id grouping (the criteria lives in the GitHub comments themselves).
-    # The run id rides the HIDDEN marker (the findings and gate-failure
-    # comment shapes carry no visible run_id= field), so the marker text is
-    # the pinned carrier.
+    # The run id rides the HIDDEN marker (only the gate-failure shapes add
+    # a visible (run_id=...) field; the findings shape carries none), so
+    # the marker text is the one carrier every shape shares.
     ("guard-round-prefix", "orbi review round"),
     ("guard-run-marker", "<!-- orbi:run=<run_id> -->"),
     ("guard-run-id-grouping", "group the round comments by their"),
@@ -546,8 +546,11 @@ def test_prompt_review_md_keeps_the_variable_set_unchanged():
     # Issue #878 acceptance: the criteria comes from the GitHub comments
     # themselves — the guard adds NO new runner-side prompt variable, so
     # the template's placeholder set stays exactly the pre-#878 ten.
+    # The scan matches EVERY {{...}} token, not only uppercase names:
+    # render_prompt substitutes the exact uppercase keys alone, so a
+    # lowercase drift ({{head_sha}}) would ship as literal prompt text.
     found = set(re.findall(
-        r"\{\{([A-Z_]+)\}\}",
+        r"\{\{([^{}]*)\}\}",
         PROMPT_REVIEW.read_text(encoding="utf-8"),
     ))
     assert found == {
