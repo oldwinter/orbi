@@ -245,7 +245,8 @@ def issue_field(issue: int, title: str) -> str:
 
 
 def format_elapsed(seconds: float) -> str:
-    """Format seconds as `45s`, `3m 12s` or `1h 2m 3s` (zero units omitted)."""
+    """Format seconds as `45s`, `3m 12s` or `1h 2m 3s` (hours are omitted
+    when zero; once a larger unit renders, zero lower units stay)."""
     total = max(0, int(seconds))
     hours, remainder = divmod(total, 3600)
     minutes, secs = divmod(remainder, 60)
@@ -488,8 +489,9 @@ def _is_section_header(line: str) -> bool:
 
 
 # A pytest summary line reports an outcome only when its FIRST count
-# category is failed/passed/error(s): pytest orders the counts
-# failed, passed, skipped, errors, xfailed, xpassed, deselected, so a
+# category is failed/passed/errors: pytest always renders the outcome
+# counts (failed/passed) before the auxiliary ones (skipped,
+# deselected, xfailed, xpassed, warnings, errors last), so a
 # run that collected tests always leads with failed or passed (or a
 # collection error). `no tests ran in 0.01s` matches no summary regex
 # at all; `3 deselected in 0.02s` / `2 skipped in 0.01s` match but

@@ -7,8 +7,9 @@ file per allowed task under ``<repo_dir>/.orbi/slots/``.
 Each slot file is a plain file whose exclusive ``flock(2)`` lock is the
 ownership token:
 
-- Take: open the slot file (created if missing), write the holder PID as
-  observational metadata, then try ``flock(fd, LOCK_EX | LOCK_NB)``. The
+- Take: open the slot file (created if missing), try
+  ``flock(fd, LOCK_EX | LOCK_NB)``, and only once the lock is held write
+  the holder PID as observational metadata. The
   kernel grants the lock to at most one process at a time, so at most one
   Runner ever owns a given slot. No in-process counter, no GitHub label,
   no distributed lock, no stale-PID or age heuristic.
