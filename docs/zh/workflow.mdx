@@ -104,6 +104,10 @@ branch、base、head、精确 URL 校验全部保留，#45/#89 的防串 PR 语�
   ai-fix-needed 的恢复仍会重置预算，Issue #483）。超轮仍有 findings 时
   Issue 标记 `ai-blocked`（超轮是人工决策）；可恢复失败（Issue #50）
   保持 `ai-fix-needed`。无论哪种，PR、branch 和 worktree 原样保留。
+  评审会话自己也守卫预算（Issue #878）：开工前其 prompt 会读本交付
+  （同一 `run_id`）的轮次评论，当同一失败原因已连续出现在两轮及以上
+  时，直接发点名重复的 findings verdict，不再重复同一修复路径——
+  同一堵墙最多撞两轮。
 - tick 内零等待（Issue #788）：旧进程内等待循环（`wait_for_delivery`、
   对 CI/mergeability 的轮询、`release_ci_wait_seconds` /
   `mergeable_wait_seconds`）已移除。所有等待都走 waiting 原语——写状态、

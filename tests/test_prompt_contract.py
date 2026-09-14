@@ -30,6 +30,7 @@ review session, and the real pytest exit code as the only test result.
 The key wording is locked here so it cannot be silently deleted or
 weakened.
 """
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -480,3 +481,79 @@ def test_agents_md_tdd_section_keeps_the_run_dir_coverage_commands():
         f"AGENTS.md TDD section is missing the run-dir coverage commands "
         f"(Issue #302): {missing}"
     )
+
+
+# --- Issue #878: the repeated-failure guard (read the round history) -----------
+
+# orbi-cloud#450: the same failure text repeated across five consecutive
+# review rounds (16:37/16:42/16:46/16:52/16:57 UTC), every round treating
+# the wall as a first hit, until the round budget burned out into
+# UnrecoverableDeliveryError / ai-blocked. The failure comments are ALREADY
+# on GitHub (handle_gate_failure and the findings path write them to the
+# Issue AND the PR with the round counter and the hidden run marker), so
+# the guard is a reviewer-prompt contract: read the round history before the
+# work, and on the same failure reason in >= 2 consecutive rounds emit the
+# findings verdict naming the repetition instead of repeating the fix. No
+# new runner-side prompt variable feeds it (the acceptance forbids it), so
+# the variable-set test below pins the template's placeholder set too.
+REPEAT_FAILURE_GUARD_ITEMS = (
+    # The guard runs BEFORE the review work starts.
+    ("guard-before-work", "before starting the review work"),
+    ("guard-never-walked", "never walked again"),
+    # The round comments are the source: their recognizable prefix and the
+    # run_id grouping (the criteria lives in the GitHub comments themselves).
+    # The run id rides the HIDDEN marker (only the gate-failure shapes add
+    # a visible (run_id=...) field; the findings shape carries none), so
+    # the marker text is the one carrier every shape shares.
+    ("guard-round-prefix", "orbi review round"),
+    ("guard-run-marker", "<!-- orbi:run=<run_id> -->"),
+    ("guard-run-id-grouping", "group the round comments by their"),
+    # The PR-side read is the real gh contract (the same command shape AND
+    # the same 30 s bound the runner's own pr_comments in src/orbi/github.py
+    # runs — Issue #95: a network wait is wrapped in timeout).
+    ("guard-pr-read",
+     "timeout 30 gh pr view {{pr_number}} --repo {{source_repo}} "
+     "--json comments"),
+    # The decision rule: >= 2 consecutive rounds with the same failure
+    # reason (the same wall — semantic recurrence, not byte-identical text).
+    ("guard-same-reason", "same failure reason"),
+    ("guard-two-consecutive", "two or more consecutive rounds"),
+    ("guard-not-byte-identical", "not necessarily byte-identical text"),
+    # A previous repetition report counts as the failure it named, so the
+    # guard keeps firing instead of re-attempting the fix.
+    ("guard-report-counts", "counts as the failure it named"),
+    # The response: findings, not another fix attempt.
+    ("guard-no-repeat-fix", "do not repeat the same fix path"),
+    ("guard-findings-verdict", "the findings verdict"),
+    ("guard-names-repetition", "same failure repeated in"),
+    ("guard-human-judgment", "hands the decision to a human"),
+    # The state contract: ai-fix-needed is kept, nothing is created or
+    # closed (the runner publishes the findings).
+    ("guard-fix-needed", "ai-fix-needed"),
+    ("guard-creates-nothing", "create and close nothing"),
+)
+
+
+def test_prompt_review_md_keeps_the_repeated_failure_guard():
+    missing = _missing(_text(PROMPT_REVIEW), REPEAT_FAILURE_GUARD_ITEMS)
+    assert not missing, (
+        f"prompt_review.md is missing the repeated-failure guard "
+        f"(Issue #878): {missing}"
+    )
+
+
+def test_prompt_review_md_keeps_the_variable_set_unchanged():
+    # Issue #878 acceptance: the criteria comes from the GitHub comments
+    # themselves — the guard adds NO new runner-side prompt variable, so
+    # the template's placeholder set stays exactly the pre-#878 ten.
+    # The scan matches EVERY {{...}} token, not only uppercase names:
+    # render_prompt substitutes the exact uppercase keys alone, so a
+    # lowercase drift ({{head_sha}}) would ship as literal prompt text.
+    found = set(re.findall(
+        r"\{\{([^{}]*)\}\}",
+        PROMPT_REVIEW.read_text(encoding="utf-8"),
+    ))
+    assert found == {
+        "SOURCE_REPO", "PR_NUMBER", "PR_URL", "BASE_BRANCH", "BASE_SHA",
+        "HEAD_SHA", "HEAD_REF", "ROUND", "BASE_SYNC_LOCK", "ISSUE_COMMENTS",
+    }, f"prompt_review.md prompt variables drifted: {found}"
