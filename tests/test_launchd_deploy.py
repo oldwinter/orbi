@@ -10,6 +10,7 @@ the ``gui/<uid>`` domain, persistent ``enable``/``disable``, ``print``
 for state.
 """
 import plistlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -67,14 +68,26 @@ def test_template_carries_the_launchd_contract():
     # StartInterval mirrors the systemd timer (OnCalendar=*:00/5).
     assert plist["StartInterval"] == 300
     # The env file (provider keys) is sourced OUTSIDE the plist — the
-    # EnvironmentFile=- contract — then the installed CLI execs.
+    # EnvironmentFile=- contract — with `set -a` so the bare KEY=value
+    # assignments reach exec's environment (Issue #867), guarded by
+    # `[ -r` so a missing file cannot abort the shell (the optional `-`
+    # semantics), then the installed CLI execs.
     program = plist["ProgramArguments"]
     assert program[:2] == ["/bin/sh", "-c"]
-    assert ". '{{ORBI_REPO_DIR}}/.orbi/env'" in program[2]
+    assert "[ -r '{{ORBI_REPO_DIR}}/.orbi/env' ]" in program[2]
+    assert "set -a; . '{{ORBI_REPO_DIR}}/.orbi/env'; set +a" in program[2]
     assert "exec '{{ORBI_USER_HOME}}/.local/bin/orbi'" in program[2]
     assert plist["EnvironmentVariables"]["ORBI_CONFIG"] == (
         "{{ORBI_REPO_DIR}}/orbi.toml"
     )
+    # The PATH leads with the Apple Silicon Homebrew prefix (Issue #869):
+    # gh, uv and the global npm pi all resolve there on arm64 macs; the
+    # Intel prefix /usr/local/bin stays in the list behind it.
+    path = plist["EnvironmentVariables"]["PATH"]
+    assert path.startswith("/opt/homebrew/bin:")
+    assert "{{ORBI_USER_HOME}}/.npm-global/bin" in path
+    assert "{{ORBI_USER_HOME}}/.local/bin" in path
+    assert "/usr/local/bin" in path
     # Runner output lands in the gitignored state dir, per instance.
     assert plist["StandardOutPath"] == (
         "{{ORBI_REPO_DIR}}/.orbi/{{ORBI_LABEL}}.log"
@@ -100,6 +113,56 @@ def test_render_substitutes_every_placeholder_and_parses(tmp_path):
     assert plist["StandardOutPath"] == str(
         launchd_deploy.log_path(tmp_path, "org.orbi.runner.2")
     )
+
+
+def test_rendered_wrapper_exports_env_and_tolerates_a_missing_env_file(
+    tmp_path,
+):
+    """The rendered ProgramArguments[2] behaves like EnvironmentFile=-
+    under a real POSIX sh: the env-file keys reach exec's environment,
+    and a missing env file still lets the exec happen (Issue #867).
+    The old form sourced bare KEY=value without `set -a` (shell-only
+    variables, invisible to exec) and aborted on a missing file."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sched = launchd_deploy.LaunchdScheduler()
+    rendered = sched.render_unit(
+        (REPO_ROOT / "launchd" / launchd_deploy.TEMPLATE_NAME).read_text(
+            encoding="utf-8",
+        ),
+        repo, None, instance=1,
+    )
+    wrapper = plistlib.loads(rendered.encode("utf-8"))["ProgramArguments"][2]
+    # The acceptance target swaps the exec'd CLI for /usr/bin/env so the
+    # test reads the environment the wrapper actually hands over.
+    wrapper = re.sub(
+        r"exec '[^']*/\.local/bin/orbi'", "exec /usr/bin/env", wrapper,
+    )
+    assert "/usr/bin/env" in wrapper
+
+    # Success path: the key written as bare KEY=value reaches the exec.
+    (repo / ".orbi").mkdir()
+    (repo / ".orbi" / "env").write_text(
+        "ORBI_TICK_KEY=issue-867-ok\n", encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", wrapper], capture_output=True, text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ORBI_TICK_KEY=issue-867-ok" in result.stdout
+
+    # Failure path: no env file — exec still runs, no shell abort, no
+    # error noise (the old `2>/dev/null` form died before the exec).
+    (repo / ".orbi" / "env").unlink()
+    result = subprocess.run(
+        ["/bin/sh", "-c", wrapper], capture_output=True, text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == "", result.stderr
+    assert "ORBI_TICK_KEY" not in result.stdout
+    assert "PATH=" in result.stdout
 
 
 def test_content_sha_is_whitespace_and_key_order_insensitive():

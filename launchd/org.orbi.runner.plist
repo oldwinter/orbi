@@ -19,15 +19,21 @@
       <string>-c</string>
       <!-- Mirrors the systemd EnvironmentFile=- contract: the
            optional env file carries the provider keys OUTSIDE the
-           template; then the installed CLI runs one Runner tick. -->
-      <string>. '{{ORBI_REPO_DIR}}/.orbi/env' 2>/dev/null; exec '{{ORBI_USER_HOME}}/.local/bin/orbi'</string>
+           template. `set -a` exports the bare KEY=value assignments to
+           the exec'd runner; the `[ -r` guard keeps a missing env file
+           from aborting the non-interactive sh (the `-` optional
+           semantics); `&&` is XML-escaped as &amp;&amp; in this file. -->
+      <string>[ -r '{{ORBI_REPO_DIR}}/.orbi/env' ] &amp;&amp; { set -a; . '{{ORBI_REPO_DIR}}/.orbi/env'; set +a; }; exec '{{ORBI_USER_HOME}}/.local/bin/orbi'</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
       <key>ORBI_CONFIG</key>
       <string>{{ORBI_REPO_DIR}}/orbi.toml</string>
       <key>PATH</key>
-      <string>{{ORBI_USER_HOME}}/.npm-global/bin:{{ORBI_USER_HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <!-- /opt/homebrew/bin leads: the Apple Silicon Homebrew prefix
+           carries gh, uv and the global npm pi (Issue #869); Intel's
+           /usr/local/bin stays for x86_64 macs. -->
+      <string>/opt/homebrew/bin:{{ORBI_USER_HOME}}/.npm-global/bin:{{ORBI_USER_HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
     <key>StartInterval</key>
     <integer>300</integer>

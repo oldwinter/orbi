@@ -266,10 +266,11 @@ Orbi checkout、配置的 `repo_dir`、任务 worktree、`orbi.toml` 或
 完全不再使用 Orbi CLI，再把卸载 editable tool 作为单独的最后一步（可选）：
 
 ```bash
-uv tool uninstall orbi
+uv tool uninstall orbi-cli
 ```
 
-`uv tool uninstall orbi` 不属于暂停或迁移步骤，也不会清理 systemd unit 或
+`uv tool uninstall orbi-cli`（tool 名跟随 PyPI 发布包名 `orbi-cli`，
+Issue #874）不属于暂停或迁移步骤，也不会清理 systemd unit 或
 仓库状态。没有 `orbi uninstall` 或 `orbi teardown` 命令。
 
 ## Unit 模板变更后（Issue #131、#142）

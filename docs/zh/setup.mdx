@@ -40,8 +40,10 @@ setup 是 **fail-fast**：核心前提失败会在任何后续变更之前停下
    `cli=installed`）。`<interpreter>` 遵循兼容选取规则（Issue #861）：
    系统 Python 满足 `requires-python` 下限（`>= 3.14`——Fedora 43 与
    当前 Arch 自带）时用 `--python python3`，否则用 `--python 3.14`
-   让 uv 自动供应或选择兼容解释器（Ubuntu 24.04 自带 Python 3.12，
-   硬编码其系统解释器会因依赖解析失败而退出 1）。
+   让 uv 自动供应或选择兼容解释器（Ubuntu 24.04 自带 Python 3.12——
+   用精确路径钉死该系统解释器会因依赖解析失败而退出
+   1；`python3`、`3.14` 这类宽泛写法会让 uv 选取或供应满足要求的
+   解释器）。
    外部单仓库模式下**绝不**从交付 checkout 重装 CLI——`repo_dir` 可能是
    没有任何 orbi 打包输入的外部仓库 X。安装失败 fail fast——不装 unit、
    不半初始化。该步骤从不碰运行中的 Runner 进程（新源码由下一个 CLI
