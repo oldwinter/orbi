@@ -406,6 +406,28 @@ def test_prompt_review_md_keeps_the_same_pr_round_behavior():
     )
 
 
+# --- prompt_review.md: machine-checked absorb contract (Issue #877) ------------
+
+ABSORB_CONTRACT_ITEMS = (
+    ("absorb-contract", "absorb contract"),
+    ("absorb-machine-checked", "machine-checked"),
+    ("absorb-ancestor-check", "merge-base --is-ancestor"),
+    ("absorb-findings-report",
+     "attempted the absorb and abandoned it"),
+    ("absorb-reason", "concrete reason"),
+    ("absorb-pass-rejected", "machine-rejected"),
+    ("absorb-no-unrelated", "unrelated to the merge"),
+)
+
+
+def test_prompt_review_md_keeps_the_absorb_contract():
+    missing = _missing(_text(PROMPT_REVIEW), ABSORB_CONTRACT_ITEMS)
+    assert not missing, (
+        f"prompt_review.md is missing the machine-checked absorb contract "
+        f"(Issue #877): {missing}"
+    )
+
+
 # --- AGENTS.md (TDD section) ---------------------------------------------------
 
 AGENTS_TDD_ITEMS = (

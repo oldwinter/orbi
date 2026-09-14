@@ -1961,6 +1961,266 @@ def test_review_and_merge_behind_base_labels_fix_needed(monkeypatch, tmp_path):
                                  "remove": "ai-pr-opened"})
 
 
+def _install_base_probe(monkeypatch, ancestor: list) -> None:
+    """Reuse `make_fake_gh` and answer the round-start merge-base probe.
+
+    `ancestor` is a per-read queue: one entry per
+    `git merge-base --is-ancestor` the runner issues. True = the base is
+    contained; an int is the exit code (1 = behind — real git's normal
+    negative, 128 = unreadable — the non-answer `_is_ancestor`
+    re-raises). The runner's `_is_ancestor` resolves the command through
+    the same seam, so this drives the REAL gitops check with no
+    runner-module patch (the patch ratchet, Issue #789)."""
+    make_fake_gh(monkeypatch)
+    gh_fake = seam.run_command
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git" and command[1] == "merge-base":
+            answer = ancestor.pop(0)
+            if answer is True:
+                return ""
+            raise subprocess.CalledProcessError(
+                answer, command, output="", stderr="",
+            )
+        return gh_fake(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+
+
+def test_review_and_merge_absorb_abandon_is_machine_named(
+        monkeypatch, tmp_path, caplog):
+    """Issue #877: a round that STARTS behind the base is under the absorb
+    contract — it must end with the branch containing origin/<base> or with
+    findings reporting the abandoned absorb. A `pass` whose head still lacks
+    the base is the silent abandon the gate must NAME in the counted round
+    comment (machine-checked), not a generic retry sentence."""
+    calls = []
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: _pr())
+    monkeypatch.setattr(seam, "run_review",
+                        lambda *a, **k: _pass_verdict_text())
+    # Behind at round start (the arm) and still behind at gate time.
+    _install_base_probe(monkeypatch, [1, 1])
+    monkeypatch.setattr(
+        seam, "merge_gate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            runner.RecoverableMergeGateError(
+                "PR #4 head h1 is behind latest remote base origin/main "
+                "(b2); absorb the latest base, rerun tests and review, "
+                "then retry"
+            ),
+        ),
+    )
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda *a, **k: calls.append(("issue", k.get("body"))),
+    )
+    monkeypatch.setattr(
+        seam, "comment_pr", lambda *a, **k: calls.append(("pr", k.get("body"))),
+    )
+    monkeypatch.setattr(seam, "edit_issue",
+        lambda *a, **k: calls.append(("edit", k)),
+    )
+    with caplog.at_level("ERROR"):
+        merged = runner.review_and_merge_if_clean(
+            tmp_path, "branch", "main", _review_merge_config(tmp_path),
+            "owner/repo", 4, title="Review task",
+            priority="normal",
+            scene=_scene(),
+        )
+    assert merged is False
+    # The counted round comment names the machine-checked violation: the
+    # session neither merged the base nor reported the abandonment.
+    assert "Absorb contract violated (machine-checked)" in calls[0][1]
+    assert ("neither merged the base in-session nor reported the abandoned "
+            "absorb as findings") in calls[0][1]
+    # The next session gets the concrete two-way instruction (Issue #877
+    # Expected 1): absorb, or findings stating the attempted-and-abandoned
+    # absorb with the reason.
+    assert "attempted-and-abandoned absorb" in calls[0][1]
+    assert "review_absorb_abandoned" in caplog.text
+    assert calls[2] == ("edit", {"repo": "owner/repo", "add": "ai-fix-needed",
+                                 "remove": "ai-pr-opened"})
+
+
+def test_review_and_merge_unreadable_base_probe_leaves_round_unarmed(
+        monkeypatch, tmp_path):
+    """Issue #877: an unreadable local ref (merge-base exits 128, the
+    non-answer `_is_ancestor` re-raises) degrades the arm, never invents a
+    violation — the round keeps today's plain recoverable comment and the
+    gate's own fresh-fetch ancestor check still guards the merge."""
+    calls = []
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: _pr())
+    monkeypatch.setattr(seam, "run_review",
+                        lambda *a, **k: _pass_verdict_text())
+    make_fake_gh(monkeypatch)
+    gh_fake = seam.run_command
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git" and command[1] == "merge-base":
+            raise subprocess.CalledProcessError(
+                128, command, output="", stderr="fatal: not a git repository",
+            )
+        return gh_fake(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    monkeypatch.setattr(
+        seam, "merge_gate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            runner.RecoverableMergeGateError(
+                "PR #4 head h1 is behind latest remote base origin/main "
+                "(b2); absorb the latest base, rerun tests and review, "
+                "then retry"
+            ),
+        ),
+    )
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda *a, **k: calls.append(("issue", k.get("body"))),
+    )
+    monkeypatch.setattr(
+        seam, "comment_pr", lambda *a, **k: calls.append(("pr", k.get("body"))),
+    )
+    monkeypatch.setattr(seam, "edit_issue",
+        lambda *a, **k: calls.append(("edit", k)),
+    )
+    merged = runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", _review_merge_config(tmp_path),
+        "owner/repo", 4, title="Review task",
+        priority="normal",
+        scene=_scene(),
+    )
+    assert merged is False
+    assert "behind latest remote base origin/main (b2)" in calls[0][1]
+    assert "Absorb contract violated" not in calls[0][1]
+
+
+def test_review_and_merge_gate_time_probe_unreadable_keeps_plain_comment(
+        monkeypatch, tmp_path):
+    """Issue #877: an armed round whose gate-time re-read cannot answer
+    (exit 128, the non-answer `_is_ancestor` re-raises) never invents a
+    violation either — the comment stays the plain recoverable sentence."""
+    calls = []
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: _pr())
+    monkeypatch.setattr(seam, "run_review",
+                        lambda *a, **k: _pass_verdict_text())
+    # Armed at round start (exit 1); the gate-time re-read is unreadable.
+    _install_base_probe(monkeypatch, [1, 128])
+    monkeypatch.setattr(
+        seam, "merge_gate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            runner.RecoverableMergeGateError(
+                "PR #4 head h1 is behind latest remote base origin/main "
+                "(b2); absorb the latest base, rerun tests and review, "
+                "then retry"
+            ),
+        ),
+    )
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda *a, **k: calls.append(("issue", k.get("body"))),
+    )
+    monkeypatch.setattr(
+        seam, "comment_pr", lambda *a, **k: calls.append(("pr", k.get("body"))),
+    )
+    monkeypatch.setattr(seam, "edit_issue",
+        lambda *a, **k: calls.append(("edit", k)),
+    )
+    merged = runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", _review_merge_config(tmp_path),
+        "owner/repo", 4, title="Review task",
+        priority="normal",
+        scene=_scene(),
+    )
+    assert merged is False
+    assert "behind latest remote base origin/main (b2)" in calls[0][1]
+    assert "Absorb contract violated" not in calls[0][1]
+
+
+def test_review_and_merge_midround_base_advance_is_not_a_violation(
+        monkeypatch, tmp_path):
+    """Issue #877 control: the innocent race — the head contained the base
+    at round start and the base advanced mid-round — keeps today's plain
+    recoverable comment. The session could not have known; the arm never
+    engages and no violation is named."""
+    calls = []
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: _pr())
+    monkeypatch.setattr(seam, "run_review",
+                        lambda *a, **k: _pass_verdict_text())
+    # The base is contained at round start (the only probe the runner
+    # issues on this path — the gate itself is a stub).
+    _install_base_probe(monkeypatch, [True])
+    monkeypatch.setattr(
+        seam, "merge_gate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            runner.RecoverableMergeGateError(
+                "PR #4 head h1 is behind latest remote base origin/main "
+                "(b2); absorb the latest base, rerun tests and review, "
+                "then retry"
+            ),
+        ),
+    )
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda *a, **k: calls.append(("issue", k.get("body"))),
+    )
+    monkeypatch.setattr(
+        seam, "comment_pr", lambda *a, **k: calls.append(("pr", k.get("body"))),
+    )
+    monkeypatch.setattr(seam, "edit_issue",
+        lambda *a, **k: calls.append(("edit", k)),
+    )
+    merged = runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", _review_merge_config(tmp_path),
+        "owner/repo", 4, title="Review task",
+        priority="normal",
+        scene=_scene(),
+    )
+    assert merged is False
+    assert "behind latest remote base origin/main (b2)" in calls[0][1]
+    assert "Absorb contract violated" not in calls[0][1]
+
+
+def test_review_and_merge_absorbed_head_is_not_a_violation(
+        monkeypatch, tmp_path):
+    """Issue #877 control: an armed round whose session DID absorb the base
+    (the head contains it at gate time) is never named — the gate fails for
+    some other reason, but the absorb contract is satisfied."""
+    calls = []
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: _pr())
+    monkeypatch.setattr(seam, "run_review",
+                        lambda *a, **k: _pass_verdict_text())
+    # Behind at round start (the arm), contains the base at gate time.
+    _install_base_probe(monkeypatch, [1, True])
+    monkeypatch.setattr(
+        seam, "merge_gate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            runner.RecoverableMergeGateError(
+                "PR #4 is not mergeable (mergeable=DIRTY); "
+                "resolve conflicts and retry"
+            ),
+        ),
+    )
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda *a, **k: calls.append(("issue", k.get("body"))),
+    )
+    monkeypatch.setattr(
+        seam, "comment_pr", lambda *a, **k: calls.append(("pr", k.get("body"))),
+    )
+    monkeypatch.setattr(seam, "edit_issue",
+        lambda *a, **k: calls.append(("edit", k)),
+    )
+    merged = runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", _review_merge_config(tmp_path),
+        "owner/repo", 4, title="Review task",
+        priority="normal",
+        scene=_scene(),
+    )
+    assert merged is False
+    assert "not mergeable (mergeable=DIRTY)" in calls[0][1]
+    assert "Absorb contract violated" not in calls[0][1]
+
+
 def test_review_and_merge_ci_failure_labels_fix_needed(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
