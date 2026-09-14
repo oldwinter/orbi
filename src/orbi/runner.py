@@ -133,7 +133,7 @@ from orbi.progress import (
     validate_run_id,
 )
 from orbi import runner_health
-from orbi.systemd_deploy import (
+from orbi.scheduler import (
     MAX_RUNNER_INSTANCES,
     UnitDriftError,
     check_unit_drift,
@@ -8532,17 +8532,20 @@ def _preflight(config: RunnerConfig) -> None:
     # to a warning (explicit offline escape hatch, never silent).
     check_runner_source_freshness(config, run_command=run_command)
     # Deployment consistency: BEFORE any slot or
-    # claim the installed systemd units must match the repo templates
+    # claim the installed scheduler units must match the repo templates
     # (the templates the ExecStartPre-synced checkout just loaded).
     # Drift is self-healed with the SAME idempotent install (copy the
-    # templates, daemon-reload, enable the timer — never start/stop/
-    # restart the service: a currently RUNNING task is never
-    # interrupted) and re-verified with the SAME hash check. Drift
+    # templates, reload the scheduler, enable the schedules — never
+    # start/stop/restart the service: a currently RUNNING task is never
+    # interrupted) and re-verified with the SAME comparison. Drift
     # that survives the sync — or a failing install step — logs a
     # structured `unit_drift` line per unit and fails fast: this
     # start takes no slot, claims no Issue and changes no label.
     try:
-        check_unit_drift(config.deploy_home, unit_name=config.unit_name)
+        check_unit_drift(
+            config.deploy_home, unit_name=config.unit_name,
+            max_concurrency=config.max_concurrency,
+        )
     except UnitDriftError:
         sync_drifted_units(
             config.deploy_home,

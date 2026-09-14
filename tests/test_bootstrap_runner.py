@@ -10750,13 +10750,13 @@ def test_main_unit_drift_blocks_claim_before_slot(monkeypatch, tmp_path,
     (non-zero exit), no slot is taken and nothing is claimed — while
     a currently RUNNING task is never interrupted (only the next
     start is blocked)."""
-    from orbi import systemd_deploy
+    from orbi import scheduler, systemd_deploy
 
     repo, installed = _drift_world(tmp_path, drift=True)
     monkeypatch.setenv("ORBI_UNIT_DIR", str(installed))
     # The real preflight (overrides the conftest default no-op).
     monkeypatch.setattr(
-        runner, "check_unit_drift", systemd_deploy.check_unit_drift,
+        runner, "check_unit_drift", scheduler.check_unit_drift,
     )
     # The install's copy is real; the external steps are recorded.
     calls = _fake_preflight_run(monkeypatch, installed)
@@ -10825,12 +10825,12 @@ def test_main_unit_drift_auto_syncs_and_proceeds_to_claim(
     clean, the structured `auto_synced` line is logged and the tick
     proceeds to the normal claim flow (slot taken, queue scanned).
     No more per-tick drift loop until a human intervenes."""
-    from orbi import systemd_deploy
+    from orbi import scheduler, systemd_deploy
 
     repo, installed = _drift_world(tmp_path, drift=True)
     monkeypatch.setenv("ORBI_UNIT_DIR", str(installed))
     monkeypatch.setattr(
-        runner, "check_unit_drift", systemd_deploy.check_unit_drift,
+        runner, "check_unit_drift", scheduler.check_unit_drift,
     )
     calls = _fake_preflight_run(monkeypatch, installed)
     _write_prompts(tmp_path)
@@ -10857,7 +10857,7 @@ def test_main_unit_drift_auto_syncs_and_proceeds_to_claim(
         if command[:2] == ["systemctl", "--user"]:
             assert command[2] in ("daemon-reload", "enable", "disable")
     # The repo template won: the installed unit matches it again.
-    status = systemd_deploy.unit_status(repo, installed)
+    status = scheduler.unit_status(repo, installed)
     assert all(entry["drifted"] is False for entry in status)
     assert "unit_drift result=auto_synced unit=orbi@.timer" in caplog.text
     assert "commit=0123456789abcdef0123456789abcdef01234567" in caplog.text
@@ -10871,12 +10871,12 @@ def test_main_unit_drift_auto_sync_failure_blocks_claim(
     """Issue #142: a failing self-heal (e.g. daemon-reload fails) fails
     fast BEFORE any slot or claim — the install error propagates,
     nothing is claimed, and the scene stays in the journal."""
-    from orbi import systemd_deploy
+    from orbi import scheduler, systemd_deploy
 
     repo, installed = _drift_world(tmp_path, drift=True)
     monkeypatch.setenv("ORBI_UNIT_DIR", str(installed))
     monkeypatch.setattr(
-        runner, "check_unit_drift", systemd_deploy.check_unit_drift,
+        runner, "check_unit_drift", scheduler.check_unit_drift,
     )
 
     def failing_run(command, **kwargs):
@@ -10910,12 +10910,12 @@ def test_main_unit_drift_clean_proceeds_to_claim(monkeypatch, tmp_path,
                                                  caplog):
     """Issue #103: matching units log `unit_drift result=clean` and the tick
     proceeds to the normal claim flow (slot taken, queue scanned)."""
-    from orbi import systemd_deploy
+    from orbi import scheduler, systemd_deploy
 
     repo, installed = _drift_world(tmp_path, drift=False)
     monkeypatch.setenv("ORBI_UNIT_DIR", str(installed))
     monkeypatch.setattr(
-        runner, "check_unit_drift", systemd_deploy.check_unit_drift,
+        runner, "check_unit_drift", scheduler.check_unit_drift,
     )
     _write_prompts(tmp_path)
     config = tmp_path / "orbi.toml"

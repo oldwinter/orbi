@@ -7,7 +7,8 @@ initialization entry for a new machine or new task-pool repository:
   every target repo;
 - verifies the required commands (``git``, ``gh``, ``uv``, the ``orbi``
   CLI — a missing one fails fast with its
-  actionable install guidance) and the ``systemctl --user`` user bus;
+  actionable install guidance) and the platform scheduler's user
+  session (systemd on Linux, launchd on macOS — Issue #849);
 - aligns the platform labels (``ai-ready``, ``ai-in-progress``,
   ``ai-pr-opened``, ``ai-fix-needed``, ``ai-merged``, ``ai-blocked``,
   ``p0``, ``ai-epic``) declaratively from the repo-managed
@@ -16,9 +17,10 @@ initialization entry for a new machine or new task-pool repository:
   missing label is created, a drifted label is updated, nothing is
   deleted, and no business label (``bug``, ``enhancement``, ...) is
   ever touched;
-- installs the repo's user systemd service/timer templates idempotently
-  (reusing ``systemd_deploy.install_units``: copy, daemon-reload,
-  sync timer instances through ``max_concurrency`` — never start/stop/restart
+- installs the repo's scheduler units idempotently
+  (systemd service/timer templates on Linux, launchd agent plists on
+  macOS; copy, converge the instance schedules onto
+  ``max_concurrency`` — never start/stop/restart
   the service) and
   reports each instance's enable/active state plus next trigger time;
 - checks the local checkout read-only (remote, current branch, clean
@@ -61,12 +63,15 @@ from orbi.delivery_labels import (
     READY_LABEL,
 )
 from orbi import git_transport
-from orbi import systemd_deploy
+from orbi import scheduler
 from orbi.progress import quote_value
 from orbi.journal import event
 
 # Bumped whenever the setup output contract changes shape.
-SETUP_VERSION = 3
+# 4 (Issue #849): the scheduler session check and its fields are
+# platform-named (`systemd_session` / `launchd_session`, the `paths`
+# key is the scheduler name), no longer systemd-only.
+SETUP_VERSION = 4
 
 PROVIDER_FILE_NAME = "pi-providers.json"
 PROVIDER_ENV_NAME = "PROVIDER_API_KEY"
@@ -127,7 +132,7 @@ COLOR_PATTERN = re.compile(r"^[0-9a-fA-F]{6}$")
 WRITE_PERMISSIONS = frozenset({"WRITE", "MAINTAIN", "ADMIN"})
 
 # Required local commands (checked with shutil.which). The
-# the installed `orbi` CLI is a prerequisite too — the systemd
+# the installed `orbi` CLI is a prerequisite too — the scheduler
 # entry it documents (and the service's ExecStart) must exist.
 # `uv` is a prerequisite too — the CLI editable step
 # calls `uv tool install`, so a machine that has the CLI
@@ -212,9 +217,7 @@ DOCS_LINKS = {
     "gh": "https://cli.github.com/",
     "gh_auth": "https://docs.github.com/en/authentication",
     "uv": "https://docs.astral.sh/uv/getting-started/installation/",
-    "systemd": (
-        "https://www.freedesktop.org/software/systemd/man/systemctl.html"
-    ),
+    **scheduler.DOCS,
     "ssh": (
         "https://docs.github.com/en/authentication/"
         "connecting-to-github-with-ssh"
@@ -396,34 +399,48 @@ def install_cli_step(repo_dir: Path, module_file: Path, *,
     }
 
 
-def user_bus_probe(unit_name: str | None) -> list[str]:
-    """The `systemctl --user` probe command proving the user bus.
+# The scheduler-session step's per-platform repair hint (the
+# launchctl/systemdt literals live in the scheduler implementations;
+# only the operator-facing wording lives here).
+SESSION_FIX = {
+    "systemd": (
+        "run orbi inside a systemd user session (log in locally or "
+        "start the user session)"
+    ),
+    "launchd": (
+        "log in to the macOS GUI session (launchd's gui domain must "
+        "exist for this user)"
+    ),
+}
 
-    Probes an INSTANCE name (verified against the real CLI: `systemctl
-    show` rejects the bare template name `orbi@.timer` but accepts
-    instance names, exiting 0 with `not-found` before the units are
-    installed — the probe only needs the user bus). Shared by the setup
-    command check and the `orbi check` gate.
-    """
-    return [
-        "systemctl", "--user", "show", "-p", "LoadState", "--value",
-        systemd_deploy.timer_instances(unit_name, 1)[0],
-    ]
+
+def session_unavailable_message(sched, detail: str) -> str:
+    """The one human-readable line for an unreachable scheduler session."""
+    return (
+        f"{sched.display} user session unavailable (is a {sched.display} "
+        f"session running?): {detail}"
+    )
 
 
-def check_commands(run_command, unit_name: str | None = None) -> dict:
-    """Verify the required commands and the systemctl --user bus.
+def check_commands(run_command, unit_name: str | None = None,
+                   *, sched=None) -> dict:
+    """Verify the required commands and the scheduler user session.
 
     ``git``, ``gh``, ``uv`` and the installed ``orbi`` CLI must be on
     the PATH (``uv`` is
     checked explicitly because the CLI editable step calls
     ``uv tool install``); a missing command fails fast with the
     actionable install guidance for that command (``COMMAND_INSTALL_
-    HINTS``). The systemd user bus must be reachable (the
-    :func:`user_bus_probe` must succeed — a container or a headless
-    session without a user bus fails fast with the concrete reason).
+    HINTS``). The platform scheduler's user session must be reachable
+    (the scheduler's ``probe_args`` must succeed — a machine without
+    systemd/launchd or a headless session without a user session fails
+    fast with the concrete reason).
     No mutation happens here.
     """
+    try:
+        sched = sched or scheduler.detect()
+    except scheduler.UnsupportedPlatformError as exc:
+        raise SetupError(str(exc)) from exc
     paths: dict[str, str] = {}
     for name in REQUIRED_COMMANDS:
         path = shutil.which(name)
@@ -434,14 +451,12 @@ def check_commands(run_command, unit_name: str | None = None) -> dict:
             )
         paths[name] = path
     try:
-        run_command(user_bus_probe(unit_name))
+        run_command(sched.probe_args(unit_name))
     except Exception as exc:
-        detail = str(exc)
         raise SetupError(
-            "systemctl --user user bus unavailable (is a systemd user "
-            f"session running?): {detail}"
+            session_unavailable_message(sched, str(exc))
         ) from exc
-    paths["systemctl"] = "user-bus-ok"
+    paths[sched.name] = "session-ok"
     return paths
 
 
@@ -637,89 +652,38 @@ def align_labels(repo: str, defs: list[dict], run_command) -> dict:
     return {"repo": repo, "aligned": aligned, "total": len(defs)}
 
 
-def timer_next_trigger(list_timers_output: str, unit_name: str) -> str:
-    """The NEXT column of the given timer instance's row, or ``-``.
-
-    ``systemctl --user list-timers --no-pager`` prints a header line
-    (``NEXT  LEFT ...``) followed by one row per timer; the row whose
-    UNIT column is the given instance (e.g. ``orbi@1.timer``)
-    carries the next trigger time.
-    """
-    for line in list_timers_output.splitlines():
-        columns = line.split()
-        if len(columns) >= 2 and columns[-2] == unit_name:
-            # NEXT is the first fixed-width column and itself contains
-            # spaces ("Thu 2026-08-27 10:00:00 +08"): it ends where the
-            # all-whitespace column separator begins, so take the line
-            # up to the first run of two or more spaces.
-            match = re.match(r"^(\S+(?: \S+)*?)  ", line)
-            if match:
-                return match.group(1)
-            return columns[0]
-    return "-"
-
-
-def unit_is_enabled(run_command, instance: str) -> bool:
-    """Whether the systemd unit is enabled.
-
-    ``systemctl --user is-enabled`` exits non-zero with the state word on
-    stdout (``disabled``, ``masked``, ...) for a unit that is NOT enabled —
-    that non-zero exit is documented systemd behavior, not a command
-    failure. A genuine systemctl failure (no user bus: empty
-    stdout, error on stderr) re-raises so setup fails fast.
-    """
-    try:
-        state = run_command(["systemctl", "--user", "is-enabled", instance])
-    except subprocess.CalledProcessError as exc:
-        state = (exc.stdout or "").strip()
-        if state not in ("disabled", "masked", "static", "indirect"):
-            raise
-    return state == "enabled"
-
-
 def install_units_step(repo_dir: Path, installed_dir: Path | None,
                        *, max_concurrency: int,
-                       unit_name: str | None = None, run_command) -> dict:
+                       unit_name: str | None = None, run_command,
+                       sched=None) -> dict:
     """Install the repo's user units and report their live state.
 
-    Reuses the idempotent ``systemd_deploy.install_units`` (copy the
-    repo templates, migrate the pre-#149 non-templated units away,
-    ``daemon-reload``, sync timer instances through ``max_concurrency`` — never
-    start/stop/restart the service), then reports EACH configured timer
-    instance (@1..@max_concurrency, Issue #827)'s enabled state
-    (``systemctl --user is-enabled``),
-    active state (``show -p ActiveState``) and next trigger time
-    (``list-timers``).
+    Runs the scheduler layer's idempotent install (copy the repo
+    templates, converge the instance schedules onto ``max_concurrency``
+    — never start/stop/restart a live Runner), then reports each
+    configured instance (@1..@max_concurrency, Issue #827)'s enabled
+    state, active state and next trigger time (``-`` on launchd,
+    which exposes no next-fire time).
     """
+    sched = sched or scheduler.detect()
     try:
-        kwargs = {"max_concurrency": max_concurrency, "run_command": run_command}
-        if unit_name is not None:
-            kwargs["unit_name"] = unit_name
-        result = systemd_deploy.install_units(repo_dir, installed_dir, **kwargs)
+        result = scheduler.install_units(
+            repo_dir, installed_dir, max_concurrency=max_concurrency,
+            unit_name=unit_name, run_command=run_command, sched=sched,
+        )
     except Exception as exc:
         raise SetupError(
-            f"systemd units install failed: {exc}"
+            f"{sched.display} units install failed: {exc}"
         ) from exc
-    list_timers = run_command([
-        "systemctl", "--user", "list-timers", "--no-pager",
-    ])
-    instances = {}
-    for instance in systemd_deploy.timer_instances(unit_name, max_concurrency):
-        try:
-            enabled = unit_is_enabled(run_command, instance)
-        except subprocess.CalledProcessError as exc:
-            raise SetupError(
-                f"systemctl is-enabled failed for {instance}: {exc}"
-            ) from exc
-        instances[instance] = {
-            "enabled": enabled,
-            "active": run_command([
-                "systemctl", "--user", "show", "-p", "ActiveState",
-                "--value", instance,
-            ]) == "active",
-            "next": timer_next_trigger(list_timers, instance),
-        }
-    service = result["units"][systemd_deploy.unit_names(unit_name)[0]]
+    try:
+        instances = sched.instances_status(
+            run_command, unit_name, max_concurrency=max_concurrency,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise SetupError(
+            f"{sched.display} status query failed for the instances: {exc}"
+        ) from exc
+    service = result["units"][sched.unit_pairs(unit_name, 1)[0][1]]
     return {
         "service": {
             "installed": True,
@@ -951,7 +915,7 @@ def check_pi_command() -> None:
     """The `pi` CLI (one Pi session per task) is on the PATH.
 
     Deliberately NOT part of the setup ``REQUIRED_COMMANDS`` gate: setup
-    provisions GitHub/systemd state, while Pi is the model-facing
+    provisions GitHub and the scheduler state, while Pi is the model-facing
     runtime the prerequisite gate verifies.
     """
     if shutil.which("pi") is None:
@@ -972,7 +936,8 @@ def run_checks(config_path: Path, *, run_command) -> list[str]:
     creation (`orbi setup` owns that) — a missing or invalid orbi.toml
     is a ``config`` finding with the repair action, not a traceback.
     Order: the machine-level checks that need no config first (python,
-    required commands, systemd user bus, gh auth, pi), then the config
+    required commands, the scheduler user session, gh auth, pi), then
+    the config
     (existence, parse, validation), then the config-dependent probes
     (per-source-repo access + permission, git transport, model
     provider — the status is value-free, never a secret). The first
@@ -987,6 +952,18 @@ def run_checks(config_path: Path, *, run_command) -> list[str]:
         f"{sys.version_info.major}.{sys.version_info.minor}."
         f"{sys.version_info.micro}"
     )
+    # The platform gate comes before every scheduler-dependent probe:
+    # an unsupported platform is a `platform` finding with the honest
+    # limitation message (Issue #849), never a traceback.
+    try:
+        sched = scheduler.detect()
+    except scheduler.UnsupportedPlatformError as exc:
+        raise CheckError(
+            "platform",
+            str(exc),
+            "run orbi on Linux (systemd) or macOS (launchd)",
+            scheduler.ISSUE_URL,
+        ) from exc
     for name in REQUIRED_COMMANDS:
         if shutil.which(name) is None:
             raise CheckError(
@@ -997,17 +974,15 @@ def run_checks(config_path: Path, *, run_command) -> list[str]:
             )
         lines.append(f"check=command ok name={name}")
     try:
-        run_command(user_bus_probe(None))
+        run_command(sched.probe_args(None))
     except Exception as exc:
         raise CheckError(
-            "systemd_user_bus",
-            "systemctl --user user bus unavailable (is a systemd user "
-            f"session running?): {exc}",
-            "run orbi inside a systemd user session (log in locally or "
-            "start the user session)",
-            DOCS_LINKS["systemd"],
+            f"{sched.name}_session",
+            session_unavailable_message(sched, str(exc)),
+            SESSION_FIX[sched.name],
+            DOCS_LINKS[sched.name],
         ) from exc
-    lines.append("check=systemd_user_bus ok")
+    lines.append(f"check={sched.name}_session ok")
     try:
         check_auth(run_command)
     except SetupError as exc:

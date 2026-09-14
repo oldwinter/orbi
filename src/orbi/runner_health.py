@@ -40,9 +40,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from orbi.delivery_labels import READY_LABEL
+from orbi import scheduler
 from orbi.journal import RunIdFilter, event
 from orbi.progress import format_status_comment, run_marker
-from orbi.systemd_deploy import service_instances
 
 if TYPE_CHECKING:
     # Annotation-only: `orbi.runner` imports this module at runtime.
@@ -320,32 +320,33 @@ def record_pickup(repo_dir: Path) -> None:
 def crash_journal_lines(
     run_command, since_minutes: int = CRASH_WINDOW_MINUTES,
     unit_name: str | None = None, *, max_concurrency: int,
+    repo_dir: Path | None = None,
 ) -> list[str]:
-    """Return the systemd journal lines for every service instance in the
+    """Return the Runner output lines for every service instance in the
     window.
 
-    One bounded `journalctl` query per service instance of THIS deployment
-    through the configured `max_concurrency` (Issue #827 — the instance
-    set follows the capacity, not a hardcoded count; a `unit_name`
-    deployment installs `orbi-<name>@N.service`,
-    so the query must follow the same naming — `None` keeps the default
-    `orbi@N.service`). The lines are the raw scene the crash-loop alert
-    needs: the exit lines plus the structured fail-fast reason
-    the Runner logged before each crash.
+    Delegates to the scheduler layer (Issue #849): systemd queries the
+    journal per service instance of THIS deployment through the
+    configured `max_concurrency` (Issue #827 — the instance set follows
+    the capacity, not a hardcoded count; a `unit_name` deployment
+    installs `orbi-<name>@N.service`, so the query must follow the same
+    naming — `None` keeps the default `orbi@N.service`). On launchd the
+    lines are the tails of the per-instance log files the agent plist
+    renders. The lines are the raw scene the crash-loop alert needs.
+    NOTE: the crash line patterns below are systemd journal shapes, so
+    on macOS the crash-loop check stays inert by design.
     """
-    lines: list[str] = []
-    for unit in service_instances(unit_name, max_concurrency):
-        output = run_command([
-            "timeout", "30", "journalctl", "--user", "-u", unit,
-            "--since", f"-{since_minutes}min", "--no-pager", "-q",
-        ])
-        lines.extend(output.splitlines())
-    return lines
+    sched = scheduler.detect()
+    return sched.journal_lines(
+        run_command, repo_dir, unit_name,
+        max_concurrency=max_concurrency, since_minutes=since_minutes,
+    )
 
 
 def count_crashes(
     run_command, since_minutes: int = CRASH_WINDOW_MINUTES,
     unit_name: str | None = None, *, max_concurrency: int,
+    repo_dir: Path | None = None,
 ) -> int:
     """Count crash EVENTS in the window from the systemd journal.
 
@@ -363,7 +364,7 @@ def count_crashes(
     events = 0
     for line in crash_journal_lines(
         run_command, since_minutes, unit_name=unit_name,
-        max_concurrency=max_concurrency,
+        max_concurrency=max_concurrency, repo_dir=repo_dir,
     ):
         if not (CRASH_EXIT_RE.search(line) or CRASH_FAIL_RESULT_RE.search(line)):
             continue
@@ -631,11 +632,13 @@ def _run_health_check_locked(config: RunnerConfig, *, run_command) -> list[str]:
         crashes = count_crashes(
             run_command, unit_name=unit_name,
             max_concurrency=config.max_concurrency,
+            repo_dir=config.deploy_home,
         )
         if crashes >= CRASH_THRESHOLD:
             journal_lines = crash_journal_lines(
                 run_command, unit_name=unit_name,
                 max_concurrency=config.max_concurrency,
+                repo_dir=config.deploy_home,
             )
             kind, reason_line = classify_crash(journal_lines)
             event(
