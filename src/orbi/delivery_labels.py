@@ -3,7 +3,7 @@
 The single source of truth for the delivery label states, the event →
 label patch transition rules, and the pickup/resume/human-intervention
 decisions. GitHub Issues/labels are the only state store; the GitHub
-adapter (`orbi.runner.edit_issue`) reads and applies the patches.
+adapter (`orbi.github.edit_issue`) reads and applies the patches.
 
 The module is pure: every function is a deterministic function of its
 inputs, with no I/O. The same current labels and event always produce

@@ -4,8 +4,8 @@
 Spawns a Pi session and streams its live activity into the journal, owns the
 Pi-process failure classes and the poll/idle/model-wait/recovery tuning
 constants. It imports `orbi.pi_activity` and `orbi.pi_recovery` only; the
-runner-side lifecycle hooks it needs (`issue_context`, `set_active_pi`) are
-imported lazily inside `stream_pi` so this module never imports `runner`
+lifecycle hooks it needs (`issue_context`, `set_active_pi`) come from
+`orbi.journal` at module level, so this module never imports `runner`
 (the runner imports this module — the circular-import rule).
 """
 from __future__ import annotations
@@ -245,8 +245,9 @@ def _record_429_attempts(cwd: Path, run_id: str, attempts: int) -> None:
 # live activity pipeline; implement/review share the same
 # line format and carry their role (one run_id end to end, the
 # roles are steps of the same run). There is no cold-start fixer
-# role: the review session fixes findings in the same session, so a run
-# has at most two Pi sessions (implement, then review).
+# role: the review session fixes findings in the same session, so a
+# run has one implement session and up to MAX_REVIEW_ROUNDS review
+# sessions (one per review round; the runner owns the budget).
 ROLE_IMPLEMENT = "implement"
 
 
@@ -662,11 +663,11 @@ def _pending_timeout_targets(targets: list[dict]) -> list[tuple[dict, float]]:
 
 
 class IdleRecoveryTracker:
-    """The idle-stall escalation strategy: the seven mutable pieces of
+    """The idle-stall escalation strategy: the mutable pieces of
     escalation state — once inline in the stream loop — live here
-    (`idle_start_epoch` /
-    `idle_start_monotonic` / `recovery` / `recovery_targets` /
-    `recovery_step` / `deadline_passed` / `idle_wait_logged`), so the escalation is one replaceable strategy the loop
+    (`_window_epoch` / `_window_monotonic` / `_state` / `_targets` /
+    `_step` / `_deadline_passed` / `_wait_logged` / `_exhausted`), so
+    the escalation is one replaceable strategy the loop
     drives with `reset` (the stall ended), `open_window` (the #18 idle
     warning opened the window) and one `escalate` call per idle poll,
     then reads `state` (the progress-comment value) and `exhausted`

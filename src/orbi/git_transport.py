@@ -97,9 +97,10 @@ def https_url_for(repo: str) -> str:
 def remote_protocol(url: str) -> str:
     """The protocol family of one git remote URL.
 
-    `ssh` for the GitHub SCP-style form (`git@github.com:...`) and the
-    `ssh://` scheme, `https`/`http` for the web forms, `other` for
-    everything else (local paths, unknown hosts).
+    `ssh` for the GitHub forms with the pinned user and host — the
+    SCP-style `git@github.com:...` and the `ssh://git@github.com/...`
+    scheme — `https`/`http` for the web forms, `other` for
+    everything else (local paths, unknown hosts, other SSH users).
     """
     if url.startswith("https://"):
         return "https"
@@ -116,8 +117,10 @@ def remote_protocol(url: str) -> str:
 def _remote_repo_path(url: str) -> str | None:
     """The `owner/name` path of one GitHub remote URL, or None.
 
-    Accepts the SCP-style SSH form (`git@github.com:owner/name[.git]`),
-    the `ssh://` scheme and the `https://`/`http://` web forms; the
+    Accepts the GitHub SSH forms with the pinned user and host (the
+    SCP-style `git@github.com:owner/name[.git]` and
+    `ssh://git@github.com/owner/name[.git]`) and the
+    `https://`/`http://` web forms; the
     optional `.git` suffix is stripped so a remote configured without
     it still matches the expected repo. A URL on any other host (or a
     local path) has no GitHub repo path: it can never be migrated, a

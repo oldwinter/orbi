@@ -14,7 +14,7 @@ keys — everything that routes credentials or crosses repositories — are
 permanently host-only: a repository file that carries one fails the claim
 fast with the offending key names. This module owns the strict schema, the
 pure per-key merge/diff helpers and the `gh api` read; the decision to block
-a claim lives in ``runner.process_issue``.
+a claim lives in the claim loop in ``runner.main``.
 
 The read is deliberately fail-open: a repository with no such file (the
 contents API 404) behaves exactly as before #527, and an API/network failure

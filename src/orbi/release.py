@@ -1593,7 +1593,7 @@ def sync_release_docs(*, source_repo: str, repo_dir: Path,
     """Sync the docs-site Release notes for one published release.
 
      Release state machine step 8 — runs AFTER the GitHub
-    Release exists (step 7) and BEFORE the Milestone is closed (step 9):
+    Release exists (step 7) and BEFORE the Milestone is closed (step 10):
 
     - fetches the published Release (`gh release view`, the same call
       `publish_release` uses) — the page content is that body, no
@@ -1825,8 +1825,11 @@ def process_release(issue: dict, config: RunnerConfig,
        failure path. No local test execution.
     6. Tag: the remote tag must not exist or must point EXACTLY at
        the release commit (a mismatch fails — an existing tag is
-       never moved); otherwise create an annotated tag at the release
-       commit and push it with a plain push (never `--force`).
+       never moved; one exception: a tag pointing at an ancestor of
+       the frozen base resumes the docs-sync path by rewinding the
+       release commit to the tag); otherwise create an annotated tag
+       at the release commit and push it with a plain push (never
+       `--force`).
     7. Publish the GitHub Release (idempotent) with the full
        verification evidence.
     8. Sync the docs-site Release notes: generate
