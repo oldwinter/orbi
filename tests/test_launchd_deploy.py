@@ -77,6 +77,20 @@ def test_template_carries_the_launchd_contract():
     assert "[ -r '{{ORBI_REPO_DIR}}/.orbi/env' ]" in program[2]
     assert "set -a; . '{{ORBI_REPO_DIR}}/.orbi/env'; set +a" in program[2]
     assert "exec '{{ORBI_USER_HOME}}/.local/bin/orbi'" in program[2]
+    # Issue #871: the wrapper mirrors the Linux ExecStartPre step 2 —
+    # `orbi sync-engine-source` runs before the exec (chained with `&&`,
+    # so a failed sync — exit 1 — stops the chain and the Runner never
+    # starts: the ExecStartPre failure semantics, fail closed). It sits
+    # AFTER the env sourcing because the sync's git transport may need
+    # the env-file credentials. No flock/timeout wrapper: macOS ships
+    # neither /usr/bin/flock nor timeout (the plain Issue-pinned shape).
+    assert (
+        "'{{ORBI_USER_HOME}}/.local/bin/orbi' sync-engine-source && exec"
+        in program[2]
+    )
+    assert program[2].index("set +a") < program[2].index(
+        "sync-engine-source",
+    )
     assert plist["EnvironmentVariables"]["ORBI_CONFIG"] == (
         "{{ORBI_REPO_DIR}}/orbi.toml"
     )
@@ -126,7 +140,14 @@ def test_rendered_wrapper_exports_env_and_tolerates_a_missing_env_file(
     )
     wrapper = plistlib.loads(rendered.encode("utf-8"))["ProgramArguments"][2]
     # The acceptance target swaps the exec'd CLI for /usr/bin/env so the
-    # test reads the environment the wrapper actually hands over.
+    # test reads the environment the wrapper actually hands over, and
+    # stubs the #871 sync step with `true` (this host HAS the real
+    # `<home>/.local/bin/orbi` — running it here would sync the REAL
+    # deploy home). The `&&` chain itself stays real.
+    wrapper = re.sub(
+        r"'[^']*/\.local/bin/orbi' sync-engine-source",
+        "true sync-engine-source", wrapper,
+    )
     wrapper = re.sub(
         r"exec '[^']*/\.local/bin/orbi'", "exec /usr/bin/env", wrapper,
     )
@@ -155,6 +176,38 @@ def test_rendered_wrapper_exports_env_and_tolerates_a_missing_env_file(
     assert result.stderr == "", result.stderr
     assert "ORBI_TICK_KEY" not in result.stdout
     assert "PATH=" in result.stdout
+
+
+def test_rendered_wrapper_fail_closed_when_the_sync_fails(tmp_path):
+    """The #871 failure path under a real POSIX sh: a failed
+    `sync-engine-source` (the CLI exits 1 on EngineSourceError) stops
+    the `&&` chain, the exec never runs and the tick does not start —
+    the macOS mirror of a failed Linux ExecStartPre. The sync is
+    stubbed with `false` (same exit shape, no deploy-home access); the
+    failure reason itself lands in StandardErrorPath in production."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sched = launchd_deploy.LaunchdScheduler()
+    wrapper = plistlib.loads(sched.render_unit(
+        (REPO_ROOT / "launchd" / launchd_deploy.TEMPLATE_NAME).read_text(
+            encoding="utf-8",
+        ),
+        repo, None, instance=1,
+    ).encode("utf-8"))["ProgramArguments"][2]
+    wrapper = re.sub(
+        r"'[^']*/\.local/bin/orbi' sync-engine-source",
+        "false sync-engine-source", wrapper,
+    )
+    wrapper = re.sub(
+        r"exec '[^']*/\.local/bin/orbi'", "exec /usr/bin/env", wrapper,
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", wrapper], capture_output=True, text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    # The exec never happened: no environment dump reached stdout.
+    assert "PATH=" not in result.stdout
 
 
 def test_content_sha_is_whitespace_and_key_order_insensitive():
