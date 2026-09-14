@@ -32,9 +32,8 @@ git clone https://github.com/orbi-build/orbi.git && cd orbi
 uv tool install --force --reinstall --editable --python python3 .  # 兼容的系统 Python（>= 3.14，如 Fedora 43、当前 Arch）；更老的系统 Python（如 Ubuntu 24.04 自带 3.12）改用 --python 3.14，让 uv 自动供应
 ```
 
-只想要已发布的 CLI、不 clone 源码？`python3 -m pip install orbi`
-（PyPI 版本化发布包；上面的 editable 安装仍是官方部署方式——两者区别见
-[快速开始](docs/zh/getting-started.mdx)）。
+只想要 CLI 本体？它还没上 PyPI（[Issue #852](https://github.com/orbi-build/orbi/issues/852)）；
+[快速开始](docs/zh/getting-started.mdx)顶部的一键安装是最短的受支持安装路径。
 
 ### 就绪检查（setup 之前）
 
