@@ -14942,6 +14942,141 @@ def test_parse_release_declaration_rejects_zero_scope_item():
         release.parse_release_declaration(body)
 
 
+# Issue #831: every declaration parse error names the violation AND the
+# expected form, so the user whose ticket lands `ai-blocked` can repair
+# the Issue body by copy-paste. The example constant is itself valid
+# parser input (locked below) and the `version_file` value range quoted
+# in the errors is generated from RELEASE_VERSION_FILE_OPTIONS — the
+# error copy cannot drift from the parser's supported set.
+
+def test_release_declaration_example_is_valid_parser_input():
+    assert release.parse_release_declaration(
+        release.RELEASE_DECLARATION_EXAMPLE,
+    ) == {
+        "version": "v1.2.0",
+        "base_branch": "main",
+        "scope": [53, 54],
+        "scope_from_milestone": None,
+        "version_file": "pyproject.toml",
+    }
+
+
+def test_missing_section_error_carries_the_copyable_example():
+    with pytest.raises(ValueError) as excinfo:
+        release.parse_release_declaration("release 1.2.0\n")
+    message = str(excinfo.value)
+    assert release.RELEASE_DECLARATION_EXAMPLE in message
+    for option in release.RELEASE_VERSION_FILE_OPTIONS:
+        assert option in message
+    assert "docs/workflow.mdx" in message
+
+
+_SCOPE_ITEMS_DROPPED = [
+    line for line in RELEASE_DECLARATION_BODY.splitlines()
+    if not line.strip().startswith("- #")
+]
+_EMPTY_SCOPE_BODY = "\n".join(_SCOPE_ITEMS_DROPPED) + "\n"
+_NEITHER_SCOPE_BODY = (
+    "\n".join(
+        line for line in _SCOPE_ITEMS_DROPPED if line.strip() != "- scope:"
+    ) + "\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_form"),
+    [
+        ("release 1.2.0\n", release.RELEASE_DECLARATION_EXAMPLE),
+        (
+            RELEASE_DECLARATION_BODY.replace("- version: v0.3.0\n", ""),
+            "- version: v1.2.0",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace("- base_branch: main",
+                                             "- base_branch:"),
+            "- base_branch: main",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace(
+                "\n## Notes", "\n- version: v9.9.9\n\n## Notes",
+            ),
+            "- version: v1.2.0",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace(
+                "\n## Notes", "\n- channel: stable\n\n## Notes",
+            ),
+            "e.g. `- version: v1.2.0`",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace("## Release\n",
+                                             "## Release\n\n- broken\n"),
+            "e.g. `- version: v1.2.0`",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace("- scope:\n", "- scope: 123\n"),
+            "- scope:` followed by `  - #53` item lines",
+        ),
+        (_EMPTY_SCOPE_BODY, "- scope:` followed by `  - #53` item lines"),
+        (
+            RELEASE_DECLARATION_BODY.replace("  - #123", "  - #0"),
+            "expected form: `  - #53`",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace("  - #123", "  - #abc"),
+            "e.g. `  - #53`",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace("  - #123", "hello"),
+            "e.g. `  - #53`",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace("## Release\n",
+                                             "## Release\n\nhello\n"),
+            "e.g. `- version: v1.2.0`",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace(
+                "- base_branch: main",
+                "- base_branch: main\n- scope_from_milestone: v0.3.0",
+            ),
+            "`- scope_from_milestone: v1.2.0`",
+        ),
+        (_NEITHER_SCOPE_BODY, "`- scope_from_milestone: v1.2.0`"),
+        (
+            RELEASE_DECLARATION_BODY.replace("- version: v0.3.0",
+                                             "- version: v0.3 .0"),
+            "- version: v1.2.0",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace(
+                "- scope:\n  - #123\n  - #124\n",
+                "- scope_from_milestone:\n",
+            ),
+            "`- scope_from_milestone: v1.2.0`",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace(
+                "- scope:\n  - #123\n  - #124\n",
+                "- scope_from_milestone: v0.3 .0\n",
+            ),
+            "`- scope_from_milestone: v1.2.0`",
+        ),
+        (
+            RELEASE_DECLARATION_BODY.replace(
+                "- version: v0.3.0\n",
+                "- version: v0.3.0\n- version_file: version.txt\n",
+            ),
+            ", ".join(release.RELEASE_VERSION_FILE_OPTIONS),
+        ),
+    ],
+)
+def test_parse_error_messages_carry_the_expected_form(body, expected_form):
+    with pytest.raises(ValueError) as excinfo:
+        release.parse_release_declaration(body)
+    assert expected_form in str(excinfo.value)
+
+
 RELEASE_MILESTONE_DECLARATION_BODY = """Ship v0.3.0 to the remote.
 
 ## Release
