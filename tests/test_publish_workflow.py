@@ -1,4 +1,4 @@
-"""Publish workflow contract (Issue #163).
+"""Publish workflow contract (Issue #163, #852).
 
 `.github/workflows/publish.yml` is the packaging side of the release
 contract: it reacts to the `v*` tag the ai-release state machine pushes
@@ -9,6 +9,16 @@ clean-venv wheel smoke (the artifact shape users install), the
 structured failure-path smoke, the Trusted-Publishing-only upload, and
 the post-publish `orbi==X.Y.Z` installation from PyPI — or when it
 drifts into unpinned actions.
+
+Issue #852 adds the manual (re)publish path: the PyPI-side trusted
+publisher entry is configured by a human against an exact claim tuple,
+so the workflow must (a) carry a `workflow_dispatch` trigger with a
+`tag` input so an already-tagged release whose publish failed can be
+re-published without a new release cycle, (b) resolve every
+tag/version consumer from one `release_ref` mapping, and (c) declare
+the publish job's environment — the OIDC `environment` claim the PyPI
+entry must match exactly (a MISSING claim forced a blank field and a
+fragile match).
 """
 import re
 from pathlib import Path
@@ -60,14 +70,73 @@ def test_publish_workflow_triggers_on_version_tags_only():
     )
 
 
-def test_publish_workflow_verifies_tag_matches_packaging_version():
-    commands = " ".join(step_commands(steps_of(load_workflow(), "build")))
-    assert "GITHUB_REF_NAME" in commands, "the pushed tag must be read"
-    assert 'pyproject.toml"["project"]["version"]' in commands.replace(
-        "open(", "(",
-    ) or '["project"]["version"]' in commands, (
+def test_publish_workflow_supports_manual_republish():
+    """Issue #852: a failed publish of an EXISTING tag must be
+    re-publishable without a new release cycle. The trigger must live
+    in the file AT the dispatched ref, so the re-publish dispatches
+    from the default branch and checks out the input tag explicitly —
+    dispatching the old tag itself cannot work (its file predates the
+    trigger)."""
+    workflow = load_workflow()
+    dispatch = on_section(workflow).get("workflow_dispatch")
+    assert isinstance(dispatch, dict), "workflow_dispatch trigger missing"
+    inputs = dispatch.get("inputs") or {}
+    tag = inputs.get("tag") or {}
+    assert tag.get("required") is True, (
+        "the tag input is required: it names the release to (re)publish"
+    )
+    env = workflow.get("env") or {}
+    assert env.get("release_ref") == "${{ inputs.tag || github.ref_name }}", (
+        "every tag/version consumer must read ONE release_ref mapping "
+        "(dispatch input, else the pushed tag)"
+    )
+    checkout = [
+        step for step in steps_of(workflow, "build")
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert len(checkout) == 1, checkout
+    assert checkout[0].get("with", {}).get("ref") == (
+        "${{ inputs.tag || github.ref }}"
+    ), "the build must package the input TAG, not the dispatched branch head"
+
+
+def test_publish_workflow_publishes_from_one_release_ref():
+    """The tag/version consistency chain must consume the same
+    release_ref in build (tag vs pyproject version) and verify-pypi
+    (PyPI install), for both the tag push and the manual re-publish."""
+    build = "\n".join(step_commands(steps_of(load_workflow(), "build")))
+    verify = "\n".join(step_commands(steps_of(load_workflow(), "verify-pypi")))
+    assert 'tag="${release_ref#v}"' in build, (
+        "the pushed/dispatched tag must be compared against the packaging version"
+    )
+    assert '["project"]["version"]' in build, (
         "the PEP 621 version must be compared against the tag"
     )
+    assert 'version="${release_ref#v}"' in verify, (
+        "the exact published version must be installed from PyPI"
+    )
+
+
+def test_publish_workflow_declares_the_trusted_publisher_environment():
+    """The publish job's environment becomes the OIDC `environment`
+    claim (Issue #852): the PyPI entry must carry exactly `pypi` — a
+    MISSING claim used to force a blank, fragile match."""
+    publish = load_workflow()["jobs"]["publish"]
+    assert publish.get("environment") == "pypi", publish.get("environment")
+
+
+def test_publish_workflow_documents_the_pypi_trusted_publisher_setup():
+    """The PyPI-side entry is a human step against an exact claim tuple
+    (Issue #852): the workflow header is its single source of truth —
+    the four form values plus the re-publish command."""
+    text = PUBLISH_FILE.read_text(encoding="utf-8")
+    for needle in (
+        "orbi-build",
+        "publish.yml",
+        "environment=pypi",
+        "gh workflow run publish.yml",
+    ):
+        assert needle in text, f"the trusted publisher runbook must carry {needle!r}"
 
 
 def test_publish_workflow_builds_the_sdist_and_the_wheel():
