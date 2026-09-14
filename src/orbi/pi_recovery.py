@@ -359,7 +359,13 @@ def find_idle_descendants(root_pid: int, idle_start_epoch: float,
     never a target. `btime`/`hz` default to the real clock constants.
     """
     if btime is None:
-        btime = boot_time()
+        try:
+            btime = boot_time()
+        except OSError:
+            # No /proc (macOS): no determinable idle descendants — the
+            # caller must keep its poll loop alive, never see a
+            # FileNotFoundError from the recovery probe itself.
+            return []
     if hz is None:
         hz = clk_tck()
     targets: list[dict] = []
