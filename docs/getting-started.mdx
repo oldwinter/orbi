@@ -25,7 +25,8 @@ less install.sh
 bash install.sh
 ```
 
-The installer requires `git`, `gh`, and a systemd user session; uv provisions
+The installer requires `git`, `gh`, and a scheduler user session
+(systemd on Linux, launchd on macOS); uv provisions
 Python 3.14 when needed. For manual installations, `orbi setup` creates `orbi.toml`
 when absent — from the adjacent `.orbi.example.toml` when one exists, otherwise
 from the example shipped inside the CLI package — without overwriting it.
@@ -54,15 +55,16 @@ upgraded by reinstalling (`python3 -m pip install --upgrade orbi` /
 stays the official DEPLOYMENT: it imports the `orbi` package from the
 deployment checkout, so the `ExecStartPre` sync delivers new engine code
 to the next CLI process with no reinstall. Running a Runner still needs
-that deployment layout (config, deploy home, systemd user units); verify
+that deployment layout (config, deploy home, scheduler user units); verify
 a machine's readiness with the read-only prerequisite gate `orbi check`
 ([Operations](/operations) carries the command reference).
 
 ## Prerequisites
 
 You install these yourself — `orbi setup` only **checks** them
-(it verifies `git`, `gh`, `uv` and the systemd user session on the
-machine; uv provisions the required Python interpreter). It never installs
+(it verifies `git`, `gh`, `uv` and the scheduler user session on the
+machine — systemd on Linux, launchd on macOS; uv provisions the
+required Python interpreter). It never installs
 system packages, never installs
 `gh`, and never runs `gh auth login` (you log in first, setup only
 verifies the login). `orbi check` is the read-only prerequisite gate over
@@ -77,7 +79,8 @@ reason, the repair action and the official docs link.
 | [Pi](https://github.com/earendil-works/pi) CLI | The development agent; one full session per task | `pi --version` |
 | Git | Worktrees, branches, base freshness | `git --version` |
 | [GitHub CLI (`gh`) ≥ 2.94](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) | Issues, labels, PRs, merge | `gh --version`, then `gh auth status` |
-| systemd (user session) | The timer that triggers one tick every 5 minutes | `systemctl --user status` |
+| systemd user session (Linux) | The user timer that triggers one tick every 5 minutes | `systemctl --user status` |
+| launchd (macOS) | The user agent that triggers one tick every 5 minutes — not yet verified on real hardware, reports welcome | `launchctl print gui/$(id -u)` |
 | A working model provider | A model Pi can actually use — either a provider configured in Pi itself, or a `pi_providers` file pointing at an OpenAI-compatible endpoint (a local `llama.cpp` server or any compatible API) | one real `pi --print` call (below); step 4 shows both paths |
 
 Install `uv` with the official installer (verified against the [uv
@@ -159,7 +162,7 @@ orbi --help
 ```
 
 `uv tool` keeps the CLI in an isolated tool environment; the executable
-lands in `~/.local/bin` (on the PATH of the systemd unit).
+lands in `~/.local/bin` (on the PATH of the scheduler unit).
 
 **Two deployment modes** (Issue #330, PR #334): the install command is
 identical in both — orbi is always installed ONCE from the orbi clone —

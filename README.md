@@ -10,7 +10,7 @@ Orbi is a local AI development Worker: put work in a GitHub Issue, and it automa
 ## Why Orbi
 
 - **GitHub Issues are the task pool**: the `ai-ready` label dispatches work, and the delivery record (comments, PRs, and CI) is complete by default, with no second task system;
-- **Fully automated**: a systemd user timer triggers a tick every 5 minutes. Normal operation needs no status command, polling, or supervision;
+- **Fully automated**: a user scheduler timer (systemd on Linux, launchd on macOS) triggers a tick every 5 minutes. Normal operation needs no status command, polling, or supervision;
 - **Independent review + merge gates**: after a PR opens, an independent review session reviews it and fixes findings in the same session. Only the reviewed head can merge, and AI never merges or pushes protected branches;
 - **Fail fast**: command errors fail immediately and leave the evidence in the logs. The Issue is marked `ai-blocked` for a human decision, with no silent fallback;
 - **Observable end to end**: every journal log and GitHub progress comment carries the same `run_id`, so the complete timeline can be reconstructed with one grep.
@@ -28,18 +28,16 @@ Only want the released CLI, no checkout? `python3 -m pip install orbi` (the edit
 
 - `uv`: `uv --version`; Pi and its provider: `pi --version`, then `pi --print "reply with the single word: ok"`
 - GitHub CLI ≥ 2.94 ([official repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) — Ubuntu 24.04's package 2.45.0 is too old): run `gh auth login` once, then verify `gh auth status`
-- systemd user session: `systemctl --user status`
+- Linux — systemd user session: `systemctl --user status`
+- macOS — launchd GUI session: `launchctl print gui/$(id -u)` (not yet verified on real hardware; reports welcome)
 
 Choose the mode in [Getting started](docs/getting-started.mdx): bootstrap uses this checkout as `repo_dir`; [External single-repo mode](docs/getting-started.mdx#external-single-repo-mode-deploy_home) uses it as `deploy_home` and a foreign repository as `repo_dir`.
 
 ```bash
 cp src/orbi/example_config.toml orbi.toml
-# 4. run one-time setup (checks prior gh auth, labels, systemd units, and checkout; idempotent)
-orbi setup --config orbi.toml
-# 5. manually run one tick (for initial verification; the timer schedules normal runs)
-PYTHONPATH=src python3 -m orbi.runner --config orbi.toml
-# 6. verify deployment health
-orbi doctor --config orbi.toml
+orbi setup --config orbi.toml  # 4. run one-time setup (checks prior gh auth, labels, scheduler units (systemd/launchd), and checkout; idempotent)
+PYTHONPATH=src python3 -m orbi.runner --config orbi.toml  # 5. manually run one tick (for initial verification; the timer schedules normal runs)
+orbi doctor --config orbi.toml  # 6. verify deployment health
 ```
 
 ## What it does
@@ -55,7 +53,7 @@ GitHub Issue (ai-ready)
 
 - Each task gets its own run: the branch, worktree, logs, and PR are all associated with the same `run_id`; retries create a new run and preserve the old evidence unchanged;
 - Failures are classified clearly: recoverable failures return to the same PR for continued fixes, while unrecoverable failures mark the Issue `ai-blocked` for a human;
-- Supports `orbi add` for dispatching work, `status` for viewing the queue, `session` for following the Pi session, `install-units` for idempotently installing systemd units, and `doctor` for read-only diagnostics.
+- Supports `orbi add` for dispatching work, `status` for viewing the queue, `session` for following the Pi session, `install-units` for idempotently installing the scheduler units (systemd on Linux, launchd on macOS), and `doctor` for read-only diagnostics.
 
 ## Documentation
 

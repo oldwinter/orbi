@@ -16,7 +16,7 @@ Pi 在隔离 worktree 中完成开发、测试并创建 PR，再经过独立审�
 
 - **GitHub Issue 就是任务池**：`ai-ready` 标签派活，交付记录（评论、PR、CI）
   天然完整，无需第二套任务系统；
-- **全自动运行**：systemd user timer 每 5 分钟触发一次 tick，正常运行不需要
+- **全自动运行**：用户级调度 timer（Linux 为 systemd，macOS 为 launchd）每 5 分钟触发一次 tick，正常运行不需要
   status 命令、轮询或督工；
 - **独立审查 + 合并门禁**：PR 打开后由独立审查会话审查并在会话内修复，只有被
   审查的 head 能合并，AI 从不 merge 或 push 保护分支；
@@ -40,18 +40,16 @@ uv tool install --force --reinstall --editable --python python3 .  # 兼容的�
 
 - `uv`：`uv --version`；Pi 和其 provider：`pi --version`，然后运行 `pi --print "reply with the single word: ok"`
 - GitHub CLI ≥ 2.94（从[官方仓库](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)安装——Ubuntu 24.04 自带的 2.45.0 过旧）：先运行一次 `gh auth login`，再验证 `gh auth status`
-- systemd user session：`systemctl --user status`
+- Linux —— systemd user session：`systemctl --user status`
+- macOS —— launchd GUI session：`launchctl print gui/$(id -u)`（尚未在真机验证，欢迎回报）
 
 按 [Getting started](docs/zh/getting-started.mdx) 选择模式：自举模式使用本 checkout 作为 `repo_dir`；[External single-repo mode](docs/zh/getting-started.mdx#external-single-repo-mode-deploy_home) 使用本 checkout 作为 `deploy_home`，外部仓库作为 `repo_dir`。
 
 ```bash
 cp src/orbi/example_config.toml orbi.toml
-# 4. 一次性 setup（检查既有 gh auth、labels、systemd units、checkout；幂等）
-orbi setup --config orbi.toml
-# 5. 手动跑一个 tick（首次验证；日常由 timer 调度）
-PYTHONPATH=src python3 -m orbi.runner --config orbi.toml
-# 6. 验证部署健康
-orbi doctor --config orbi.toml
+orbi setup --config orbi.toml  # 4. 一次性 setup（检查既有 gh auth、labels、调度器 units（systemd/launchd）、checkout；幂等）
+PYTHONPATH=src python3 -m orbi.runner --config orbi.toml  # 5. 手动跑一个 tick（首次验证；日常由 timer 调度）
+orbi doctor --config orbi.toml  # 6. 验证部署健康
 ```
 
 ## 它能做什么
@@ -70,7 +68,7 @@ GitHub Issue（ai-ready）
 - 失败分类明确：可恢复失败回到同一 PR 继续修复，不可恢复失败标记
   `ai-blocked` 交给人；
 - 支持 `orbi add` 派活、`status` 查看队列、`session` 跟随 Pi 会话，
-  `install-units` 幂等安装 systemd units，`doctor` 只读诊断。
+  `install-units` 幂等安装调度器 units（Linux 为 systemd，macOS 为 launchd），`doctor` 只读诊断。
 
 ## 文档入口
 
