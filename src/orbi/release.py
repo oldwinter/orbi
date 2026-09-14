@@ -142,6 +142,29 @@ RELEASE_VERSION_FILE_OPTIONS = (
     "composer.json", "pubspec.yaml", "none",
 )
 
+# Issue #831: the copy-paste guidance embedded in the declaration parse
+# errors. The example is valid parser input (locked by test) and the
+# `version_file` value range quoted in the errors is generated from
+# RELEASE_VERSION_FILE_OPTIONS, so the error copy cannot drift from the
+# parser's supported set.
+RELEASE_DECLARATION_EXAMPLE = (
+    f"{RELEASE_SECTION}\n"
+    "\n"
+    "- version: v1.2.0\n"
+    "- base_branch: main\n"
+    f"- version_file: {RELEASE_VERSION_FILE_OPTIONS[0]}\n"
+    "- scope:\n"
+    "  - #53\n"
+    "  - #54"
+)
+_RELEASE_FIELD_EXAMPLES = {
+    "version": "`- version: v1.2.0`",
+    "base_branch": "`- base_branch: main`",
+    "scope": "`- scope:` followed by `  - #53` item lines",
+    "scope_from_milestone": "`- scope_from_milestone: v1.2.0`",
+    "version_file": "`- version_file: pyproject.toml`",
+}
+
 
 def parse_release_declaration(body: str) -> dict:
     """Strictly parse the `## Release` section of a release Issue body.
@@ -182,7 +205,10 @@ def parse_release_declaration(body: str) -> dict:
     `derive_release_scope_from_milestone`. Every other deviation fails
     fast with the concrete field: missing section, missing or
     duplicated field, unknown key, empty value, empty scope or a
-    malformed scope item. No guessing.
+    malformed scope item. No guessing. Every failure message also
+    carries the expected form (a copy-pasteable example for a missing
+    section) so the user can repair the Issue body without reading the
+    parser (Issue #831).
     """
     if not isinstance(body, str):
         raise ValueError("release declaration body must be a string")
@@ -196,7 +222,17 @@ def parse_release_declaration(body: str) -> dict:
         raise ValueError(
             f"release Issue body is missing the `{RELEASE_SECTION}` "
             "section with version, base_branch and scope or "
-            "scope_from_milestone"
+            "scope_from_milestone. Add the section to the Issue body "
+            "(copy, then edit the values):\n\n"
+            f"{RELEASE_DECLARATION_EXAMPLE}\n\n"
+            "`version_file` is optional (default `pyproject.toml`; "
+            "supported values: "
+            f"{', '.join(RELEASE_VERSION_FILE_OPTIONS)}). Instead of "
+            "the hand-listed `scope`, declare "
+            f"{_RELEASE_FIELD_EXAMPLES['scope_from_milestone']} (the "
+            "Milestone TITLE — exactly one of `scope` / "
+            "`scope_from_milestone`). Field reference: "
+            "docs/workflow.mdx."
         ) from None
     section: list[str] = []
     for line in lines[start + 1:]:
@@ -217,14 +253,16 @@ def parse_release_declaration(body: str) -> dict:
                 if number < 1:
                     raise ValueError(
                         f"release declaration scope item {content!r} "
-                        "must be a positive Issue or PR number"
+                        "must be a positive Issue or PR number "
+                        "(expected form: `  - #53`)"
                     )
                 scope.append(number)
                 continue
             if scope_open and ":" not in content:
                 raise ValueError(
                     f"release declaration scope item {content!r} is "
-                    "malformed (expected `  - #N`)"
+                    "malformed (expected `  - #N` under the `- scope:` "
+                    "field, e.g. `  - #53`)"
                 )
             # A `- key: value` line closes the scope list (and a
             # duplicated or unknown key is caught below).
@@ -233,19 +271,23 @@ def parse_release_declaration(body: str) -> dict:
             if not sep:
                 raise ValueError(
                     f"release declaration field {key.strip()!r} is "
-                    "malformed (expected `- key: value`)"
+                    "malformed (expected form: `- key: value`, e.g. "
+                    "`- version: v1.2.0`)"
                 )
             key = key.strip()
             value = value.strip()
             if key in fields:
                 raise ValueError(
-                    f"release declaration field {key!r} is duplicated"
+                    f"release declaration field {key!r} is duplicated "
+                    "(keep exactly one; expected form: "
+                    f"{_RELEASE_FIELD_EXAMPLES[key]})"
                 )
             if key == "scope":
                 if value:
                     raise ValueError(
                         "release declaration `scope` must be a list of "
-                        "`  - #N` items, not an inline value"
+                        "`  - #N` items, not an inline value (expected "
+                        f"form: {_RELEASE_FIELD_EXAMPLES['scope']})"
                     )
                 scope_open = True
                 fields["scope"] = ""
@@ -256,63 +298,82 @@ def parse_release_declaration(body: str) -> dict:
                 raise ValueError(
                     f"release declaration has the unknown field {key!r} "
                     "(expected version, base_branch, scope, "
-                    "scope_from_milestone or version_file)"
+                    "scope_from_milestone or version_file; expected "
+                    "form: `- key: value`, e.g. `- version: v1.2.0`)"
                 )
         elif scope_open:
             raise ValueError(
                 f"release declaration scope item {stripped!r} is "
-                "malformed (expected `  - #N`)"
+                "malformed (expected `  - #N` under the `- scope:` "
+                "field, e.g. `  - #53`)"
             )
         else:
             raise ValueError(
                 f"release declaration line {stripped!r} is not a "
-                "`- key: value` field or a scope item"
+                "`- key: value` field or a scope item (expected form: "
+                "`- key: value`, e.g. `- version: v1.2.0`)"
             )
     for key in ("version", "base_branch"):
         if key not in fields:
             raise ValueError(
-                f"release declaration is missing the `{key}` field"
+                f"release declaration is missing the `{key}` field "
+                "(expected form: "
+                f"{_RELEASE_FIELD_EXAMPLES[key]})"
             )
         if not fields[key]:
             raise ValueError(
-                f"release declaration field `{key}` is empty"
+                f"release declaration field `{key}` is empty "
+                "(expected form: "
+                f"{_RELEASE_FIELD_EXAMPLES[key]})"
             )
     if "scope" in fields and "scope_from_milestone" in fields:
         raise ValueError(
             "release declaration must use exactly one of `scope` or "
-            "`scope_from_milestone`, not both"
+            "`scope_from_milestone`, not both (keep one; expected "
+            f"form: {_RELEASE_FIELD_EXAMPLES['scope']} OR "
+            f"{_RELEASE_FIELD_EXAMPLES['scope_from_milestone']})"
         )
     if "scope" not in fields and "scope_from_milestone" not in fields:
         raise ValueError(
             "release declaration is missing the `scope` field or the "
-            "`scope_from_milestone` field (exactly one of the two)"
+            "`scope_from_milestone` field (exactly one of the two; "
+            f"expected form: {_RELEASE_FIELD_EXAMPLES['scope']} OR "
+            f"{_RELEASE_FIELD_EXAMPLES['scope_from_milestone']})"
         )
     if "scope" in fields and not scope:
         raise ValueError(
             "release declaration `scope` must list at least one "
-            "`  - #N` Issue or PR number"
+            "`  - #N` Issue or PR number (expected form: "
+            f"{_RELEASE_FIELD_EXAMPLES['scope']})"
         )
     for key in ("version", "base_branch"):
         if any(ch.isspace() for ch in fields[key]):
             raise ValueError(
                 f"release declaration field `{key}` must not contain "
-                "spaces"
+                "spaces (one token; expected form: "
+                f"{_RELEASE_FIELD_EXAMPLES[key]})"
             )
     if "scope_from_milestone" in fields:
         if not fields["scope_from_milestone"]:
             raise ValueError(
                 "release declaration field `scope_from_milestone` is "
-                "empty"
+                "empty (expected form: "
+                f"{_RELEASE_FIELD_EXAMPLES['scope_from_milestone']})"
             )
         if any(ch.isspace() for ch in fields["scope_from_milestone"]):
             raise ValueError(
                 "release declaration field `scope_from_milestone` must "
-                "not contain spaces"
+                "not contain spaces (the Milestone TITLE is one token; "
+                "expected form: "
+                f"{_RELEASE_FIELD_EXAMPLES['scope_from_milestone']})"
             )
     version_file = fields.get("version_file", "pyproject.toml")
     if version_file not in RELEASE_VERSION_FILE_OPTIONS:
         raise ValueError(
-            "release declaration field `version_file` is not supported"
+            "release declaration field `version_file` is not supported "
+            "(supported values: "
+            f"{', '.join(RELEASE_VERSION_FILE_OPTIONS)}; expected "
+            f"form: {_RELEASE_FIELD_EXAMPLES['version_file']})"
         )
     return {
         "version": fields["version"],
