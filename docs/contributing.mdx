@@ -144,12 +144,18 @@ What happens to an external PR, in order:
 3. When the delivery loop claims that triage Issue, it **reviews the
    external PR first** — the same independent review loop the Runner
    applies to its own deliveries (review findings are fixed on your
-   branch, the merge gate and CI green apply unchanged). A PR that comes
-   through review is merged, and merging it closes the triage Issue.
+   branch, CI green applies unchanged). The review's outcome is the
+   engine's FINAL step: the conclusion (what changed, risks, test
+   coverage, CI status) is posted on the triage Issue and the Issue
+   waits at `ai-blocked` for a maintainer. The engine NEVER merges an
+   external PR and never picks its milestone — accepting the
+   contribution and choosing the version is the maintainer's decision
+   (Issue #842).
 4. Only an abandoned, stale or unfixable PR is superseded by an internal
    redo — and the PR thread then explains the supersession to the
    contributor. A withdrawn or rejected external PR returns the triage
-   Issue to the ready queue automatically.
+   Issue to the ready queue automatically. When a maintainer merges the
+   external PR, the triage Issue closes as delivered.
 
 Review and merge follow the maintainers' pace; no time promises are made
 beyond this one: an external PR is never silently redone while it is

@@ -2357,7 +2357,8 @@ def _remote_head(clone: Path) -> str:
 
 
 def _run_merge_round(monkeypatch, clone: Path, *, session=None,
-                     scene_review_round: int = 0, external: bool = False):
+                     scene_review_round: int = 0, external: bool = False,
+                     comments_out: list | None = None):
     """One review/merge call against the real git clone; returns the
     `Orbi merged PR:` comment body (None when the round does not
     merge). The review session ends at the `stream_pi` seam: `session`
@@ -2365,7 +2366,9 @@ def _run_merge_round(monkeypatch, clone: Path, *, session=None,
     (the fix push, exactly between the round-start freeze and the
     re-freeze) and returns the REVIEW_VERDICT text; the default reviews
     the current remote head as-is. `external` runs the round as an
-    external-takeover resume (the scene's `external` field)."""
+    external-takeover resume (the scene's `external` field).
+    `comments_out`, when given, receives every Issue comment body the
+    round posted (the D2 triage conclusion reads it)."""
     if session is None:
         session = lambda: _pass_verdict_text(head=_remote_head(clone))
     monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
@@ -2379,6 +2382,8 @@ def _run_merge_round(monkeypatch, clone: Path, *, session=None,
 
     def fake_comment(number, *, repo, body):
         comments.append(body)
+        if comments_out is not None:
+            comments_out.append(body)
 
     monkeypatch.setattr(seam, "comment_issue", fake_comment)
     prompt_file = clone.parent / "prompt_review.md"
@@ -2564,17 +2569,19 @@ def test_merge_commit_metrics_degrades_on_a_corrupt_or_foreign_record(
     ) == ("0", "1")
 
 
-def test_merge_record_takeover_counts_contributor_commits(
+def test_takeover_clean_verdict_never_merges_stops_at_triage(
         merge_clone, monkeypatch):
-    """An external takeover (Issue #608) starts the engine's push line
-    on the contributor's own head: the claim records that head as the
-    push-line base, so one engine fix push on top of it reports the
-    contributor's commit as external (Issue #833) — never a fabricated
-    merged-as-is 0."""
-    contributor = _delivery_commit(
-        merge_clone, "contrib.txt", "contributor work")
+    """Issue #842 (D2): an external takeover's clean verdict is the
+    engine's FINAL output — the merge gate never runs against the
+    contributor's PR (origin/main is untouched; the fake's real local
+    merge would have landed there), no `Orbi merged PR` record exists,
+    and the triage conclusion (verdict, CI, report) stays on the Issue
+    with the ticket at ai-blocked: a maintainer decides acceptance and
+    the version. The verdict still covers the session's pushed fix
+    head, so the conclusion is bound to the head it describes."""
+    _delivery_commit(merge_clone, "contrib.txt", "contributor work")
     _seed_run_state(merge_clone)
-    runner.record_pushed_base(merge_clone, contributor)
+    base_before = git(merge_clone, "rev-parse", "origin/main")
 
     # The takeover review session fixes on top of the contributor's
     # head and pushes; the verdict covers the pushed head.
@@ -2587,24 +2594,30 @@ def test_merge_record_takeover_counts_contributor_commits(
         git(merge_clone, "push", "origin", TASK_BRANCH)
         return _pass_verdict_text(head=_remote_head(merge_clone))
 
-    body = _run_merge_round(
+    comments: list = []
+    assert _run_merge_round(
         monkeypatch, merge_clone, session=takeover_fix, external=True,
-    )
-    assert body is not None
-    assert "external_commits=1" in body
-    assert "commits=2" in body
+        comments_out=comments,
+    ) is None
+    assert git(merge_clone, "rev-parse", "origin/main") == base_before
+    assert not [body for body in comments if "Orbi merged PR:" in body]
+    conclusion = [body for body in comments if "external PR review" in body]
+    assert len(conclusion) == 1
+    assert "verdict=pass" in conclusion[0]
+    assert "ai-blocked" in conclusion[0]
+    assert "REVIEW_VERDICT" in conclusion[0]
 
 
-def test_merge_record_takeover_fix_push_across_rounds_degrades_to_unknown(
+def test_takeover_findings_then_clean_still_stops_at_triage(
         merge_clone, monkeypatch):
-    """The round-start adoption is internal-only: an external takeover
-    whose fix-push round ends in findings loses that round's head (the
-    re-freeze record never runs), and the honest record is `unknown` —
-    never a fabricated count (Issue #833)."""
-    contributor = _delivery_commit(
-        merge_clone, "contrib.txt", "contributor work")
+    """Issue #842 (D2): the takeover fix loop is unchanged — round 1
+    pushes its fix and still emits findings (the ai-fix-needed round
+    comment is posted) — but the round-2 clean verdict does not flip
+    into a merge either: it stops at the triage state. The engine never
+    merges the contributor's PR."""
+    _delivery_commit(merge_clone, "contrib.txt", "contributor work")
     _seed_run_state(merge_clone)
-    runner.record_pushed_base(merge_clone, contributor)
+    base_before = git(merge_clone, "rev-parse", "origin/main")
 
     # Round 1: the takeover session pushes its fix and still emits
     # findings — the round ends before the re-freeze record.
@@ -2617,21 +2630,24 @@ def test_merge_record_takeover_fix_push_across_rounds_degrades_to_unknown(
         git(merge_clone, "push", "origin", TASK_BRANCH)
         return _findings_verdict_text(head=_remote_head(merge_clone))
 
+    comments: list = []
     assert _run_merge_round(
         monkeypatch, merge_clone, session=takeover_push_and_findings,
-        external=True,
+        external=True, comments_out=comments,
     ) is None
+    findings = [body for body in comments if "review round 1" in body]
+    assert len(findings) == 1
 
-    # Round 2 (next tick): clean pass over the same pushed head, no new
-    # push — the fix head is engine work, but with the round-1 record
-    # lost the honest value is `unknown` (never a fabricated 0: the
-    # contributor's commit is still not the engine's).
-    body = _run_merge_round(
+    # Round 2 (next tick): clean pass over the same pushed head — the
+    # D2 triage stop, never a merge.
+    assert _run_merge_round(
         monkeypatch, merge_clone, scene_review_round=1, external=True,
-    )
-    assert body is not None
-    assert "external_commits=unknown" in body
-    assert "commits=2" in body
+        comments_out=comments,
+    ) is None
+    assert git(merge_clone, "rev-parse", "origin/main") == base_before
+    conclusion = [body for body in comments if "external PR review" in body]
+    assert len(conclusion) == 1
+    assert "verdict=pass" in conclusion[0]
 
 
 def test_merge_record_engine_fix_push_across_rounds_stays_external_zero(

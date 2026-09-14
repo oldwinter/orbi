@@ -1140,6 +1140,212 @@ def test_release_fallback_scan_failure_fails_open(monkeypatch, caplog):
     assert "blocked_by_check_failed" in caplog.text
 
 
+# --- Issue #842 (D1): external takeover scan -------------------------------
+
+
+def test_external_takeover_search_query():
+    """Issue #842 (D1): the fifth scan is the repository's FIRST scan
+    WITHOUT the `milestone:"<title>"` qualifier — an external
+    contribution is not part of any version's delivery scope, and
+    writing it into the active milestone would let an external PR block
+    the release gate (`release_milestone_incomplete`). The query keeps
+    `label:ai-ready` (the human execution switch), the same five
+    delivery-state exclusions, and a body-text term for the triage
+    marker. The text term is a candidate PREFILTER only (verified
+    against the live search: GitHub tokenizes the marker loosely) —
+    the exact marker check is the code-layer guard in
+    `_pick_from_scan`."""
+    exclusions = (
+        "-label:ai-in-progress -label:ai-pr-opened -label:ai-fix-needed "
+        "-label:ai-merged -label:ai-blocked"
+    )
+    query = runner.external_takeover_search()
+    assert query == f'label:ai-ready "orbi:external-pr" in:body {exclusions}'
+    assert "milestone:" not in query
+    # The default (no argument) is the same query; a repository's
+    # custom dispatch label keys the scan the same way.
+    assert runner.external_takeover_search() \
+        == runner.external_takeover_search(None)
+    assert runner.external_takeover_search("go") == (
+        f'label:go "orbi:external-pr" in:body {exclusions}'
+    )
+
+
+def test_pick_issue_claims_milestone_less_external_ticket(
+    monkeypatch, caplog,
+):
+    """Issue #842 (D1), the root-cause scene: `active_milestone`
+    configured, the external triage ticket requeued to `ai-ready` with
+    NO milestone (an external contributor cannot set one — and the
+    runner must never write one). The three ordinary scans are
+    milestone-scoped and see nothing, the release fallback sees
+    nothing, and the FIFTH scan (no milestone qualifier) claims the
+    ticket so the claim's takeover probe can review the external PR."""
+    ticket = {
+        "number": 842, "title": "external contribution", "body": (
+            "please review\n\n<!-- orbi:external-pr:838 -->"
+        ),
+        "labels": [{"name": "ai-ready"}],
+        "blockedBy": {"nodes": [], "totalCount": 0},
+    }
+    searches = []
+
+    def fake_run(command, **kwargs):
+        search = command[command.index("--search") + 1]
+        searches.append(search)
+        if "orbi:external-pr" in search:
+            return json.dumps([ticket])
+        return json.dumps([])
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    with caplog.at_level("INFO"):
+        assert runner.pick_issue(
+            "xqliu/orbi", active_milestone="v0.5.4",
+        ) == ticket
+    # p0, bug, plain, release fallback — all scoped; the fifth scan is
+    # not.
+    assert len(searches) == 5
+    for scoped in searches[:4]:
+        assert 'milestone:"v0.5.4"' in scoped
+    assert "milestone:" not in searches[4]
+    assert "orbi:external-pr" in searches[4]
+    assert "picked issue=842" in caplog.text
+
+
+def test_pick_issue_external_scan_never_claims_a_plain_ticket(
+    monkeypatch, caplog,
+):
+    """Issue #842: the fifth scan is milestone-free, so the code layer
+    must keep the claim scope: a loose body-text prefilter match
+    WITHOUT the exact `<!-- orbi:external-pr:N -->` marker is skipped
+    with `claim_yield reason=no_external_marker` — never claimed. A
+    plain milestone-less Issue must never enter the queue of a runner
+    with a configured `active_milestone`."""
+    plain = {
+        "number": 10, "title": "task",
+        "body": "talking about an external PR review",
+        "labels": [{"name": "ai-ready"}],
+        "blockedBy": {"nodes": [], "totalCount": 0},
+    }
+
+    def fake_run(command, **kwargs):
+        search = command[command.index("--search") + 1]
+        if "orbi:external-pr" in search:
+            return json.dumps([plain])
+        return json.dumps([])
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    with caplog.at_level("INFO"):
+        assert runner.pick_issue(
+            "xqliu/orbi", active_milestone="v0.5.4",
+        ) is None
+    assert "claim_yield" in caplog.text
+    assert "no_external_marker" in caplog.text
+
+
+def test_pick_issue_external_scan_failure_fails_open(monkeypatch, caplog):
+    """Issue #842: a failed fifth-scan query fails open like any other
+    scan (Issue #54) — the tick claims nothing, the structured error is
+    logged, never raised, and the next tick retries."""
+    error = subprocess.CalledProcessError(1, ["gh"], output="boom")
+
+    def fake_run(command, **kwargs):
+        search = command[command.index("--search") + 1]
+        if "orbi:external-pr" in search:
+            raise error
+        return json.dumps([])
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    with caplog.at_level("INFO"):
+        assert runner.pick_issue(
+            "xqliu/orbi", active_milestone="v0.5.4",
+        ) is None
+    assert "blocked_by_check_failed" in caplog.text
+
+
+def test_pick_issue_without_milestone_claims_external_ticket_first(
+    monkeypatch,
+):
+    """Issue #842 regression: without a configured `active_milestone`
+    the plain ready scan is already milestone-free and claims the
+    external ticket like any other — the fifth scan is not even
+    reached, so repositories without `active_milestone` behave exactly
+    as before."""
+    ticket = {
+        "number": 842, "title": "external contribution", "body": (
+            "<!-- orbi:external-pr:838 -->"
+        ),
+        "labels": [{"name": "ai-ready"}],
+        "blockedBy": {"nodes": [], "totalCount": 0},
+    }
+    searches = []
+
+    def fake_run(command, **kwargs):
+        search = command[command.index("--search") + 1]
+        searches.append(search)
+        if "label:p0" in search or "label:bug" in search:
+            return json.dumps([])
+        return json.dumps([ticket])
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    assert runner.pick_issue("xqliu/orbi") == ticket
+    assert len(searches) == 3
+    assert all("orbi:external-pr" not in search for search in searches)
+
+
+def test_pick_issue_never_scopes_the_takeover_scan_to_a_milestone():
+    """Issue #842, the release-gate reverse assertion: the takeover scan
+    must not carry ANY `milestone:` qualifier (with or without a
+    configured active milestone) — an external ticket entering the
+    active milestone's queue would let an external contributor block
+    `release_milestone_incomplete` forever."""
+    for search in (
+        runner.external_takeover_search(None),
+        runner.external_takeover_search("go"),
+    ):
+        assert "milestone:" not in search
+
+
+def test_gather_claim_facts_routes_marker_ticket_to_takeover(
+    monkeypatch, tmp_path, caplog,
+):
+    """Issue #842, the user path's middle link: the milestone-less
+    external triage ticket the fifth scan picked walks the SAME claim
+    machinery — the takeover probe resolves the open external PR (the
+    structured `external_takeover` event) and the scene classifies
+    EXTERNAL_TAKEOVER, whose handler reviews the contributor's head
+    (no run_pi, and downstream never an auto-merge, decision D2)."""
+    issue = {
+        "number": 842, "title": "external contribution", "body": (
+            "please review\n\n<!-- orbi:external-pr:838 -->"
+        ),
+        "labels": [{"name": "ai-ready"}],
+        "blockedBy": {"nodes": [], "totalCount": 0},
+    }
+    monkeypatch.setattr(seam, "has_in_progress_label",
+                        lambda *a, **k: False)
+    monkeypatch.setattr(seam, "open_pr_for_branch", lambda *a, **k: None)
+    monkeypatch.setattr(seam, "stable_branch_exists",
+                        lambda *a, **k: False)
+    _fake_takeover_view(monkeypatch, {
+        "state": "OPEN",
+        "url": "https://github.com/xqliu/orbi/pull/838",
+        "baseRefName": "main",
+        "headRefName": "contributor-patch",
+        "headRefOid": "abc123def456abc123def456abc123def456abcd",
+    })
+    config = runner.RunnerConfig(repo_dir=tmp_path, base_branch="main")
+    with caplog.at_level("INFO"):
+        facts = runner._gather_claim_facts(
+            issue, config, "xqliu/orbi", None,
+        )
+    assert facts.external_takeover is True
+    assert facts.takeover_pr["headRefName"] == "contributor-patch"
+    assert facts.pr_state == "OPEN"
+    assert facts.classify_scene() is runner.DeliveryScene.EXTERNAL_TAKEOVER
+    assert "external_takeover" in caplog.text
+
+
 # --- Issue #663: release Milestone completeness gate ----------------------
 
 
@@ -20897,12 +21103,14 @@ def test_pick_resumable_closes_marker_ticket_when_pr_already_merged(
         fake_run(["gh", "release", "view"])
 
 
-def test_delivery_step_closes_triage_issue_after_auto_merge(
+def test_delivery_step_never_closes_triage_issue_after_review(
     monkeypatch, tmp_path,
 ):
-    """Issue #726 gap 2：外部接管走自动评审合并成功（merged=True 返回）
-    时，必须像 MERGED 轮询分支一样关掉 triage 票——旧码在这一路径直接
-    return，每个成功合并的外部贡献泄漏一张僵尸票。"""
+    """Issue #842 (D2)：外部接管的评审不再自动合并——clean verdict 在
+    `review_and_merge_if_clean` 内部停在分诊态（ai-blocked，评审结论
+    留在 Issue 上），`delivery_step` 因此永不因评审结束去关 triage 票
+    （旧的 auto-merge 关票分支已随自动合并一起移除）；关票只发生在
+    轮询发现人工已合并（MERGED）的分支。"""
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and command[2] == "view":
             return json.dumps({"state": "OPEN"})
@@ -20936,9 +21144,11 @@ def test_delivery_step_closes_triage_issue_after_auto_merge(
     closes: list = []
     monkeypatch.setattr(seam, "run_command", fake_run)
     monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    # False is the D2 triage stop's return (the round ends without a
+    # merge — the ticket is now the maintainer's).
     monkeypatch.setattr(
         runner, "review_and_merge_if_clean",
-        lambda *args, **kwargs: True,
+        lambda *args, **kwargs: False,
     )
     (tmp_path / ".worktrees"
      / "orbi-owner-repo-issue-39-a1b2c3d4").mkdir(parents=True)
@@ -20947,7 +21157,10 @@ def test_delivery_step_closes_triage_issue_after_auto_merge(
         PR_URL, issue, runner.RunnerConfig(repo_dir=tmp_path, base_branch="main"),
         "owner/repo", external_takeover=True,
     )
-    assert len(closes) == 1, "the triage Issue must be closed exactly once"
+    assert closes == [], (
+        "the triage Issue must NOT be closed by the review round — "
+        "the engine never merges an external PR (Issue #842 D2)"
+    )
     # The answered arms return their canned values; anything unmodeled
     # fails loud.
     assert fake_run(["gh", "issue", "edit", "1", "--repo", "o/r"]) == ""
@@ -20955,8 +21168,6 @@ def test_delivery_step_closes_triage_issue_after_auto_merge(
     assert fake_run(
         ["git", "branch", "--show-current"],
     ) == "orbi/owner-repo-issue-39"
-    with pytest.raises(AssertionError, match="unexpected command"):
-        fake_run(["gh", "release", "view"])
     with pytest.raises(AssertionError, match="unexpected command"):
         fake_run(["gh", "release", "view"])
 
