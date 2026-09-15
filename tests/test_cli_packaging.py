@@ -21,6 +21,7 @@ not a hand-written `python3 orbi.py`. These tests pin:
 """
 import importlib
 import re
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -417,6 +418,15 @@ def test_service_path_carries_the_uv_tool_bin_dir():
     assert "%h/.local/bin" in path_value
 
 
+# `systemd-analyze` is a Linux tool: a host with no systemd (the hosted
+# macOS runner) cannot run this check at all — there the skip IS the
+# honest boundary, and the Ubuntu CI keeps the check authoritative. On
+# a Linux host the check always runs: a missing executable is exactly
+# the failure it must catch, never skippable noise.
+@pytest.mark.skipif(
+    shutil.which("systemd-analyze") is None,
+    reason="systemd-analyze needs systemd (Linux); this host has none",
+)
 def test_service_template_passes_systemd_analyze_verify():
     """Issue #140 acceptance: the service template starts the Runner
     via the CLI entry — verified with the REAL `systemd-analyze
@@ -427,8 +437,7 @@ def test_service_template_passes_systemd_analyze_verify():
     `pip install --prefix $HOME/.local .` (both land the executable at
     `~/.local/bin/orbi`), so `systemd-analyze --user verify`
     resolves the unit's absolute ExecStart against a real executable
-    on both — no skip needed (a missing executable is exactly the
-    failure this check must catch, never skippable noise)."""
+    on both."""
     import subprocess
     import tempfile
 

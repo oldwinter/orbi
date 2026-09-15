@@ -66,7 +66,10 @@ require_command curl
 
 if ! command -v uv >/dev/null 2>&1; then
   printf 'orbi install: uv not found; installing it with the official installer\n' >&2
-  uv_installer=$(mktemp)
+  # BSD mktemp (macOS) requires a template; the bare GNU call aborts
+  # the whole install under set -e there (caught by the macOS
+  # compatibility workflow, Issue #894).
+  uv_installer=$(mktemp "${TMPDIR:-/tmp}/orbi-uv-installer.XXXXXXXX")
   trap 'rm -f "$uv_installer"' EXIT
   with_timeout 120 curl -LsSf https://astral.sh/uv/install.sh -o "$uv_installer"
   with_timeout 120 sh "$uv_installer"

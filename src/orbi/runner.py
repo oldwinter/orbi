@@ -2992,7 +2992,8 @@ def _pending_milestone_issue(
     )
     lines.extend([
         "",
-        "请人工将 `active_milestone` 改为目标版本（或恢复自动推进），然后关闭本 Issue。",
+        "请人工运行 `orbi milestone set <目标版本>` 推进 `active_milestone`"
+        "（或恢复自动推进），然后关闭本 Issue。",
     ])
     run_command([
         "gh", "issue", "create", "--repo", repo,

@@ -5,6 +5,10 @@ import pytest
 
 from orbi import pilot_setup, runner, scheduler, systemd_deploy
 
+# The systemd-shape deployment/setup contract, pinned to the systemd
+# impl on every host (the conftest fixture documents the seam).
+pytestmark = pytest.mark.usefixtures("systemd_scheduler")
+
 
 def test_named_units_are_distinct_and_install_without_touching_default(tmp_path):
     repo = tmp_path / "repo"

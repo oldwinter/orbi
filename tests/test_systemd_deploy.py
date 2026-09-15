@@ -19,6 +19,10 @@ import pytest
 
 from orbi import scheduler, systemd_deploy
 
+# The systemd deployment contract, pinned to the systemd impl on every
+# host (the conftest fixture documents the seam).
+pytestmark = pytest.mark.usefixtures("systemd_scheduler")
+
 
 def make_repo(tmp_path: Path) -> Path:
     """A deployment checkout carrying the two unit templates."""

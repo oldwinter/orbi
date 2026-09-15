@@ -30,12 +30,27 @@ import io
 import json
 import os
 import shutil
+import sys
 import subprocess
 import threading
 import time
 from pathlib import Path
 
 import pytest
+
+# The e2e runner SUBPROCESS executes the real pre-start checks against
+# this systemd-shaped fixture world; on macOS the launchd branch
+# (Issue #849) needs the launchd deployment surface it does not
+# provide. Linux CI keeps the scenes authoritative.
+_runner_e2e_linux_only = pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason=(
+        "the e2e runner subprocess runs the real pre-start checks over "
+        "a systemd-shaped fixture world; the macOS launchd branch "
+        "(Issue #849) needs the launchd deployment surface it does not "
+        "provide"
+    ),
+)
 
 from orbi import systemd_deploy
 from orbi.delivery_scene import RunContext
@@ -707,6 +722,7 @@ def test_wait_for_pid_exit_times_out_on_a_live_pid():
         wait_for_pid_exit(os.getpid(), timeout=0.1)
 
 
+@_runner_e2e_linux_only
 def test_cleanup_fixture_kills_a_leftover_runner(clone, tmp_path):
     """A test that leaves a live runner behind must not leak it (or its
     slot lock): the autouse fixture kills it after the test."""
@@ -751,6 +767,7 @@ def set_pr_state(state_path: Path, pr_state: str) -> None:
     atomic_write_json(state_path, state)
 
 
+@_runner_e2e_linux_only
 def test_capacity_one_slot_serves_the_review_tick(
     clone, tmp_path,
 ):
@@ -839,6 +856,7 @@ def test_capacity_one_slot_serves_the_review_tick(
     )
 
 
+@_runner_e2e_linux_only
 def test_capacity_one_closed_unmerged_pr_releases_slot_and_blocks_issue(
     clone, tmp_path,
 ):
@@ -897,6 +915,7 @@ def test_capacity_one_closed_unmerged_pr_releases_slot_and_blocks_issue(
     assert slots_held(clone) == [(1, None)]
 
 
+@_runner_e2e_linux_only
 def test_capacity_two_allows_two_runners_and_rejects_third(clone, tmp_path):
     """Two slots: two different Issues in parallel, third runner rejected.
     Issue #788: after the PRs open, both implement ticks END and release
@@ -1179,6 +1198,7 @@ def test_ref_hammer_collects_a_failing_operation(clone, tmp_path, monkeypatch):
     assert any("worktree" in error for error in errors), errors
 
 
+@_runner_e2e_linux_only
 def test_killed_runner_slot_is_released_by_the_kernel(clone, tmp_path):
     """SIGKILL cannot run any cleanup; the kernel releases the flock
     lock, so the next runner takes the slot back — no permanent lock."""
@@ -1219,6 +1239,7 @@ def test_killed_runner_slot_is_released_by_the_kernel(clone, tmp_path):
     assert slots_held(clone) == [(1, None)], "slot must be released on exit"
 
 
+@_runner_e2e_linux_only
 def test_killed_runner_is_resumed_by_the_next_claim_scan(clone, tmp_path):
     """Issue #18 acceptance (review round 3, PR #42): a SIGKILLed runner
     leaves the task worktree AND the `ai-in-progress` claim label behind
@@ -1336,6 +1357,7 @@ def test_killed_runner_is_resumed_by_the_next_claim_scan(clone, tmp_path):
     assert slots_held(clone) == [(1, None)], "slot must be released on exit"
 
 
+@_runner_e2e_linux_only
 def test_stranded_pr_opened_delivery_is_resumed_to_review_and_merge(
     clone, tmp_path,
 ):
@@ -1424,6 +1446,7 @@ def test_stranded_pr_opened_delivery_is_resumed_to_review_and_merge(
     )
 
 
+@_runner_e2e_linux_only
 def test_live_review_tick_is_not_resumed_by_second_runner(
     clone, tmp_path,
 ):
@@ -1515,6 +1538,7 @@ def test_live_review_tick_is_not_resumed_by_second_runner(
     assert slots_held(clone, 2) == [(1, None), (2, None)]
 
 
+@_runner_e2e_linux_only
 def test_review_of_free_pr_is_not_starved_by_an_in_flight_delivery(
     clone, tmp_path,
 ):
@@ -1660,6 +1684,7 @@ def test_review_of_free_pr_is_not_starved_by_an_in_flight_delivery(
     )
 
 
+@_runner_e2e_linux_only
 def test_unit_drift_auto_syncs_and_claims_without_human_intervention(
     clone, tmp_path,
 ):
@@ -1736,6 +1761,7 @@ def test_unit_drift_auto_syncs_and_claims_without_human_intervention(
     assert "ai-in-progress" in read_state(state)["issues"]["8"]["labels"]
 
 
+@_runner_e2e_linux_only
 def test_unit_drift_unresolvable_blocks_the_start_without_claiming(
     clone, tmp_path,
 ):

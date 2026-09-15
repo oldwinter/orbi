@@ -76,6 +76,47 @@ the official `mint` CLI's `mint validate` (strict build validation of the
 `docs/` site — config, pages, links — non-zero exit on any warning or
 error).
 
+### macOS compatibility workflow (hosted compatibility boundary)
+
+`.github/workflows/ci-macos.yml` adds a separate, serial macOS job on
+every `pull_request`, every push to `main`, and manual dispatch: one job
+on the pinned `macos-15` runner image (never the moving `macos-latest`
+label), Python 3.14 via `actions/setup-python`, the workflow's own test
+requirements, and a real runner probe (`sw_vers`, the Python version,
+`launchctl`, and `launchctl print gui/$(id -u)` — the user's launchd GUI
+domain is the runner-level prerequisite every launchctl operation
+depends on). The job runs the full pytest suite as one bounded command
+with the real exit code, builds the package and smoke-installs the wheel
+from a neutral directory (`orbi --version`, `orbi --help`, the
+site-packages import source), and exercises the installer's Darwin
+branch without a real installation: `bash -n install.sh`, `plutil -lint`
+on the launchd plist template, and a PATH-stubbed entry run in a temp
+`ORBI_HOME` where the real macOS `uname`/`launchctl` pass the scheduler
+gate and a stubbed `git` stops the script at the clone step. The hosted
+macOS image ships no GNU coreutils `timeout` (the same limitation
+`install.sh` handles, Issue #868), so the workflow provides a one-line
+`timeout` shim backed by perl's `alarm`, keeping every command in the
+documented `timeout <seconds> <cmd>` form. The job never mutates the
+runner's own launchd deployment (probe reads only, no
+enable/bootstrap).
+
+The boundary is deliberate and stays honest: hosted macOS CI verifies
+the macOS code paths (tests, packaging, installer logic) and the
+runner-level launchd prerequisite — it cannot prove a real user's
+logged-in GUI session, credentials, model provider, or the full GitHub
+Issue-to-merge journey, and it does not replace a real
+macOS launchd smoke run on real Mac hardware. The same honesty applies
+inside the suite: the deployment, setup, doctor and health-check
+contracts are pinned to the systemd implementation through the
+`systemd_scheduler` test fixture (the launchd implementation keeps its
+own fakes-based tests), and the real-subprocess idle-recovery scenes
+(`/proc`-based descendant discovery) plus the runner-subprocess e2e
+scenes skip on Darwin with named reasons — the Ubuntu workflow above
+keeps every one of them authoritative. The coverage and
+changed-code gates stay authoritative in the Ubuntu workflow above; the
+macOS job still fails on any test, package, or installer compatibility
+failure — nothing is swallowed or converted into a pass.
+
 A PR is not mergeable while CI is red — the Runner's merge gate also
 requires a mergeable PR.
 
