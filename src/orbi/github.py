@@ -458,15 +458,15 @@ def open_blocker_numbers(issue: dict) -> list[int]:
     """Return the numbers of the issue's OPEN native GitHub blockers.
 
     `gh issue list --json blockedBy` (gh 2.94+) carries the native
-    dependency relation as `{\"nodes\": [...], \"totalCount\": N}`. GitHub
+    dependency relation as `{"nodes": [...], "totalCount": N}`. GitHub
     keeps a relation listed after its blocker closes (the node then
-    carries `state: \"CLOSED\"` and is inert — verified against the live
+    carries `state: "CLOSED"` and is inert — verified against the live
     API), so only OPEN blockers actually block: a closed
     blocker clears the dependency without any runner-side bookkeeping,
     and the next tick claims the Issue. A node without an explicit
     `state` counts as open (claiming a possibly-blocked Issue costs a
     full run; waiting one tick does not). A missing or malformed field
-    means \"no known blockers\" (fail open): an API shape change must
+    means "no known blockers" (fail open): an API shape change must
     never deadlock the queue.
     """
     blocked_by = issue.get("blockedBy")
@@ -803,7 +803,7 @@ def _comment_is_trusted(comment: object) -> bool:
 
 
 def latest_run_marker(comments: list[dict]) -> str:
-    """The latest trusted comment's rendered run marker, or \"\".
+    """The latest trusted comment's rendered run marker, or "".
 
     Recovery reports name the run they failed for when any trusted
     comment of the Issue still carries the marker; an empty string when
