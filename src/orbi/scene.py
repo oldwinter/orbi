@@ -63,6 +63,7 @@ class Scene:
     pr_url: str
     external: str = ""
     review_round: int = 0
+    base_advance_round: int = 0
     schema: int = SCHEMA_VERSION
 
 
@@ -160,6 +161,14 @@ def _parse_block(payload: str) -> Scene:
             "orbi:scene:v1 field review_round must be a "
             "non-negative integer"
         )
+    if "base_advance_round" in data and (
+        type(data["base_advance_round"]) is not int
+        or data["base_advance_round"] < 0
+    ):
+        raise SceneError(
+            "orbi:scene:v1 field base_advance_round must be a "
+            "non-negative integer"
+        )
     if type(data["schema"]) is not int or data["schema"] != SCHEMA_VERSION:
         raise SceneError(
             f"orbi:scene:v1 block schema {data['schema']!r} != "
@@ -176,6 +185,7 @@ def _parse_block(payload: str) -> Scene:
         pr_url=data["pr_url"],
         external=data["external"],
         review_round=data["review_round"],
+        base_advance_round=data.get("base_advance_round", 0),
         schema=data["schema"],
     )
 
