@@ -15499,6 +15499,57 @@ def test_process_ticket_only_keeps_original_error_when_failure_reporting_fails(m
         runner.process_ticket_only(issue, runner.RunnerConfig(repo_dir=Path("/repo")), "o/r")
 
 
+def test_process_issue_keeps_pr_ready_label_when_scene_comment_5xx_exhausts(
+    monkeypatch, tmp_path, caplog,
+):
+    issue = {"number": 99, "title": "Normal", "body": "",
+             "labels": [{"name": "ai-ready"}]}
+    monkeypatch.setattr(seam, "is_release", lambda i: False)
+    monkeypatch.setattr(seam, "new_run_id", lambda: "a1b2c3d4")
+    monkeypatch.setattr(seam, "set_run_id", lambda rid: None)
+    monkeypatch.setattr(seam, "has_in_progress_label", lambda n, r: False)
+    monkeypatch.setattr(seam, "stable_branch_exists", lambda *a: False)
+    monkeypatch.setattr(seam, "freeze_base", lambda r, b: "abc123")
+    edits = []
+    monkeypatch.setattr(seam, "edit_issue",
+                        lambda *args, **kwargs: edits.append((args, kwargs)))
+    monkeypatch.setattr(seam, "set_active_run", lambda *args: None)
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    monkeypatch.setattr(seam, "create_worktree", lambda *a, **kwargs: worktree)
+    def comment(number, *, repo, body):
+        if "Orbi opened PR:" in body:
+            raise subprocess.CalledProcessError(
+                1, ["gh", "issue", "comment"],
+                stderr="GraphQL: Something went wrong while executing your query",
+            )
+    monkeypatch.setattr(seam, "comment_issue", comment)
+    monkeypatch.setattr(seam, "ProgressPublisher", Mock())
+    monkeypatch.setattr(seam, "run_pi", lambda *a, **k: "done")
+    monkeypatch.setattr(seam, "deliver_pr", lambda *a, **k: "https://github.com/o/r/pull/1")
+    def run(command, **kwargs):
+        if command[0:3] == ["gh", "pr", "list"]:
+            return "[]"
+        return "abc123"
+    monkeypatch.setattr(seam, "run_command", run)
+    monkeypatch.setattr(seam, "delivery_step", Mock())
+    monkeypatch.setattr(seam, "activity_snapshot", lambda p: None)
+    monkeypatch.setattr(seam, "_safe_publish", lambda **k: None)
+    monkeypatch.setattr(seam, "format_end_scene", lambda **k: "end")
+    monkeypatch.setattr(seam, "issue_context", lambda r, n: "#n")
+    monkeypatch.setattr(seam, "format_run_scene", lambda *a, **k: "scene")
+    monkeypatch.setattr(seam, "_finish_progress", Mock())
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+
+    with caplog.at_level("ERROR"):
+        result = runner.process_issue(
+            issue, runner.RunnerConfig(base_branch="main", repo_dir=tmp_path), "o/r",
+        )
+    assert result == runner.IssueResult("pr", "https://github.com/o/r/pull/1")
+    assert any(kwargs.get("add") == runner.PR_OPENED_LABEL for _, kwargs in edits)
+    assert "PR remains ai-pr-opened" in caplog.text
+
+
 def test_process_issue_keeps_normal_flow_without_release_label(
     monkeypatch, tmp_path,
 ):
