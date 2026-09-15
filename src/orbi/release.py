@@ -104,10 +104,11 @@ if TYPE_CHECKING:
 # --- release-domain constants, scene and gates (moved from
 # --- `orbi.runner`: the release contract lives here) --------
 
-# The machine-readable section a release Issue body must carry (Issue
-# #98): `- version:`, `- base_branch:` and `- scope:` (or
-# `- scope_from_milestone:`). Parsed strictly — a missing or malformed
-# declaration fails fast, never guessed. The declaration carries NO
+# The optional machine-readable override section on a release Issue (Issue
+# #905). When present, `- version:`, `- base_branch:` and `- scope:` (or
+# `- scope_from_milestone:`) are parsed strictly. Without the section,
+# GitHub's Milestone and repository configuration provide the contract. The
+# declaration carries NO
 # local test contract: test acceptance is the GitHub
 # Actions CI result on the release commit (the #268 CI-wait gate).
 # The Pi role of a release run: the delivery state
@@ -167,11 +168,12 @@ _RELEASE_FIELD_EXAMPLES = {
 
 
 def parse_release_declaration(body: str) -> dict:
-    """Strictly parse the `## Release` section of a release Issue body.
+    """Parse the optional `## Release` overrides of a release Issue body.
 
-    The declaration is the machine-readable contract of a Release task
-     — the only state a release run reads from the Issue
-    body (checkboxes are never parsed):
+    Without the section this returns an empty override mapping; the release
+    resolver obtains the contract from GitHub's Milestone and repository
+    configuration. A present section remains the machine-readable contract
+    (checkboxes are never parsed):
 
     ```markdown
     ## Release
@@ -219,21 +221,11 @@ def parse_release_declaration(body: str) -> dict:
             if line.strip() == RELEASE_SECTION
         )
     except StopIteration:
-        raise ValueError(
-            f"release Issue body is missing the `{RELEASE_SECTION}` "
-            "section with version, base_branch and scope or "
-            "scope_from_milestone. Add the section to the Issue body "
-            "(copy, then edit the values):\n\n"
-            f"{RELEASE_DECLARATION_EXAMPLE}\n\n"
-            "`version_file` is optional (default `pyproject.toml`; "
-            "supported values: "
-            f"{', '.join(RELEASE_VERSION_FILE_OPTIONS)}). Instead of "
-            "the hand-listed `scope`, declare "
-            f"{_RELEASE_FIELD_EXAMPLES['scope_from_milestone']} (the "
-            "Milestone TITLE — exactly one of `scope` / "
-            "`scope_from_milestone`). Field reference: "
-            "docs/workflow.mdx."
-        ) from None
+        # Issue #905: the GitHub Milestone is the default release contract.
+        # An empty mapping is resolved after the frozen tree and repository
+        # configuration are available; a present section remains strict for
+        # compatibility with existing release tickets.
+        return {}
     section: list[str] = []
     for line in lines[start + 1:]:
         if line.lstrip().startswith("## "):
@@ -380,6 +372,78 @@ def parse_release_declaration(body: str) -> dict:
         "base_branch": fields["base_branch"],
         "scope": scope,
         "scope_from_milestone": fields.get("scope_from_milestone"),
+        "version_file": version_file,
+    }
+
+
+def resolve_release_declaration(
+        issue: dict, overrides: dict, config: RunnerConfig,
+        source_repo: str, repo_dir: Path, release_commit: str) -> dict:
+    """Build the release contract from GitHub facts and optional overrides.
+
+    The Issue Milestone is the only derived source for the release version and
+    scope.  Repository configuration supplies the base branch and the frozen
+    tree supplies the version metadata file.  A legacy complete ``## Release``
+    declaration still wins field-by-field, but its version must agree with the
+    Milestone so a renamed Milestone can never be guessed around.
+    """
+    milestone = issue.get("milestone")
+    milestone_title = milestone.get("title") if isinstance(milestone, dict) else None
+    if not isinstance(milestone_title, str) or not milestone_title:
+        milestone_title = None
+    version = overrides.get("version", milestone_title)
+    if version is None:
+        raise ValueError(
+            "release Issue must have a Milestone; set the Milestone title "
+            "to the release version (for example `v0.5.8`)"
+        )
+    if milestone_title is not None and version != milestone_title:
+        raise ValueError(
+            f"release version {version!r} does not match the Issue Milestone "
+            f"title {milestone_title!r}; rename the Milestone or correct "
+            "the `- version:` override"
+        )
+
+    base_branch = next(
+        (repo.get("base_branch") for repo in getattr(config, "repositories", ())
+         if repo.get("github") == source_repo),
+        getattr(config, "base_branch", "main"),
+    )
+    version_file = overrides.get("version_file")
+    if version_file is None:
+        root_entries = set(run_command(
+            ["git", "ls-tree", "--name-only", release_commit], cwd=repo_dir,
+        ).splitlines())
+        version_file = next(
+            (candidate for candidate in RELEASE_VERSION_FILE_OPTIONS
+             if candidate != "none" and candidate in root_entries),
+            None,
+        )
+        if version_file is None:
+            raise ValueError(
+                "release version file could not be detected in the frozen "
+                "repository tree; add `- version_file: <supported file>` "
+                "or `- version_file: none` to the optional `## Release` "
+                "section"
+            )
+
+    scope_from_milestone = overrides.get(
+        "scope_from_milestone", milestone_title,
+    )
+    if overrides.get("scope"):
+        scope = overrides["scope"]
+        scope_from_milestone = None
+    else:
+        scope = []
+        if scope_from_milestone is None:
+            raise ValueError(
+                "release Issue must have a Milestone or an explicit `scope`"
+            )
+    return {
+        "version": version,
+        "base_branch": overrides.get("base_branch", base_branch),
+        "scope": scope,
+        "scope_from_milestone": scope_from_milestone,
         "version_file": version_file,
     }
 
@@ -1830,13 +1894,12 @@ def process_release(issue: dict, config: RunnerConfig,
     step by step, each step idempotent so a restart resumes the same
     run (same run id, same worktree) from the top:
 
-    1. Strictly parse the `## Release` declaration from the Issue
-       body (version, base_branch, scope or
-       scope_from_milestone — exactly one of the two;
-       the declaration carries no test contract — test acceptance
-       is the CI result).
-    2. Freeze the base — the release commit is exactly
+    1. Parse the optional `## Release` overrides from the Issue body.
+       Without that section, the Issue Milestone supplies version and scope,
+       while repository configuration supplies the base branch.
+    2. Freeze the configured base — the release commit is exactly
        `origin/<base_branch>` (fetched under the base-sync lock).
+       A declared version, when present, must match the Milestone title.
     2b. Prove the declared (or defaulted) `version_file` exists at the
        root of the frozen release tree (`verify_release_version_file`) — before any gate wait, so a declaration/repo
        mismatch fails fast at claim time with the supported files that
@@ -1946,7 +2009,11 @@ def process_release(issue: dict, config: RunnerConfig,
     open_milestone_evidence: list[str] = []
     try:
         declaration = parse_release_declaration(issue["body"])
-        base_branch = declaration["base_branch"]
+        base_branch = declaration.get("base_branch") or next(
+            (repo.get("base_branch") for repo in getattr(config, "repositories", ())
+             if repo.get("github") == source_repo),
+            getattr(config, "base_branch", "main"),
+        )
         # The started milestone below and the failure comment
         # read THIS value — base_branch known, base_sha not yet (the
         # post-gate reassignment further down adds base_sha). The journal
@@ -1970,6 +2037,12 @@ def process_release(issue: dict, config: RunnerConfig,
             ),
         )
         release_commit = freeze_base(config.repo_dir, base_branch)
+        declaration = resolve_release_declaration(
+            issue, declaration, config, source_repo, config.repo_dir,
+            release_commit,
+        )
+        base_branch = declaration["base_branch"]
+        run_info = f"base_branch={base_branch} base_sha={release_commit} run_id={run_id} priority={priority}"
         # The declared (or defaulted) version_file is proven
         # to exist in the frozen release tree BEFORE any gate wait — a
         # mismatch used to surface only at the version-write step, after

@@ -14871,9 +14871,68 @@ def test_parse_release_declaration_rejects_invalid_version_file():
         release.parse_release_declaration(body)
 
 
-def test_parse_release_declaration_requires_the_release_section():
-    with pytest.raises(ValueError, match="## Release"):
-        release.parse_release_declaration("no section here\n")
+def test_parse_release_declaration_allows_milestone_only_tickets():
+    assert release.parse_release_declaration("no section here\n") == {}
+
+
+def test_resolve_release_declaration_derives_milestone_contract(monkeypatch):
+    monkeypatch.setattr(
+        release, "run_command", lambda *args, **kwargs: "pyproject.toml\n",
+    )
+    config = Mock(base_branch="main", repositories=[])
+    declaration = release.resolve_release_declaration(
+        {"milestone": {"title": "v0.5.8"}}, {}, config, "o/r",
+        Path("/repo"), "abc123",
+    )
+    assert declaration == {
+        "version": "v0.5.8", "base_branch": "main", "scope": [],
+        "scope_from_milestone": "v0.5.8", "version_file": "pyproject.toml",
+    }
+
+
+def test_resolve_release_declaration_detects_node_version_file(monkeypatch):
+    monkeypatch.setattr(
+        release, "run_command", lambda *args, **kwargs: "package.json\n",
+    )
+    config = Mock(base_branch="main", repositories=[])
+    result = release.resolve_release_declaration(
+        {"milestone": {"title": "v0.5.8"}}, {}, config, "o/r",
+        Path("/repo"), "abc123",
+    )
+    assert result["version_file"] == "package.json"
+
+
+def test_resolve_release_declaration_requires_explicit_version_file(monkeypatch):
+    monkeypatch.setattr(release, "run_command", lambda *args, **kwargs: "README.md\n")
+    config = Mock(base_branch="main", repositories=[])
+    with pytest.raises(ValueError, match="version_file"):
+        release.resolve_release_declaration(
+            {"milestone": {"title": "v0.5.8"}}, {}, config, "o/r",
+            Path("/repo"), "abc123",
+        )
+
+
+def test_resolve_release_declaration_rejects_version_mismatch():
+    config = Mock(base_branch="main", repositories=[])
+    with pytest.raises(ValueError, match="does not match.*Milestone"):
+        release.resolve_release_declaration(
+            {"milestone": {"title": "v0.5.8"}},
+            {"version": "v0.5.7", "base_branch": "main",
+             "scope_from_milestone": "v0.5.7", "scope": [],
+             "version_file": "none"},
+            config, "o/r", Path("/repo"), "abc123",
+        )
+
+
+def test_resolve_release_declaration_requires_milestone_or_scope():
+    config = Mock(base_branch="main", repositories=[])
+    with pytest.raises(ValueError, match="Milestone or an explicit `scope`"):
+        release.resolve_release_declaration(
+            {"milestone": None},
+            {"version": "v0.5.8", "base_branch": "main",
+             "version_file": "none"},
+            config, "o/r", Path("/repo"), "abc123",
+        )
 
 
 def test_parse_release_declaration_requires_version():
@@ -14971,14 +15030,8 @@ def test_release_declaration_example_is_valid_parser_input():
     }
 
 
-def test_missing_section_error_carries_the_copyable_example():
-    with pytest.raises(ValueError) as excinfo:
-        release.parse_release_declaration("release 1.2.0\n")
-    message = str(excinfo.value)
-    assert release.RELEASE_DECLARATION_EXAMPLE in message
-    for option in release.RELEASE_VERSION_FILE_OPTIONS:
-        assert option in message
-    assert "docs/workflow.mdx" in message
+def test_missing_section_is_an_empty_override():
+    assert release.parse_release_declaration("release 1.2.0\n") == {}
 
 
 _SCOPE_ITEMS_DROPPED = [
@@ -14996,7 +15049,6 @@ _NEITHER_SCOPE_BODY = (
 @pytest.mark.parametrize(
     ("body", "expected_form"),
     [
-        ("release 1.2.0\n", release.RELEASE_DECLARATION_EXAMPLE),
         (
             RELEASE_DECLARATION_BODY.replace("- version: v0.3.0\n", ""),
             "- version: v1.2.0",
@@ -16420,10 +16472,12 @@ def test_process_release_parse_failure_publishes_final_comment(
     assert result == runner.IssueResult("release", "")
     # The handled failure is terminal: `ai-blocked` ALONE.
     edits = [c for c in gh_calls if c[:3] == ["gh", "issue", "edit"]]
-    assert edits == [[
-        "gh", "issue", "edit", "467", "--repo", "orbi-build/orbi",
-        "--add-label", "ai-blocked", "--remove-label", "ai-in-progress",
-    ]]
+    assert edits == [
+        ["gh", "issue", "edit", "467", "--repo", "orbi-build/orbi",
+         "--add-label", "ai-in-progress"],
+        ["gh", "issue", "edit", "467", "--repo", "orbi-build/orbi",
+         "--add-label", "ai-blocked", "--remove-label", "ai-in-progress"],
+    ]
     # The concrete failure scene is on the Issue.
     comments = [c for c in gh_calls if c[:3] == ["gh", "issue", "comment"]]
     assert any(
@@ -18271,7 +18325,7 @@ def test_process_release_fails_on_malformed_declaration(monkeypatch):
     assert not [c for c in commands if c[:3] == ["gh", "issue", "close"]]
     (comment_number, comment_kwargs), = state["comments"]
     assert "<!-- orbi:run=a1b2c3d4 -->" in comment_kwargs["body"]
-    assert "## Release" in comment_kwargs["body"]
+    assert "Milestone" in comment_kwargs["body"]
 
 
 def test_process_release_fails_on_tag_mismatch_without_moving_it(monkeypatch):
