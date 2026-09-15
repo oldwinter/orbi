@@ -33,16 +33,38 @@ from the example shipped inside the CLI package — without overwriting it.
 
 ## PyPI installation
 
-The CLI is **not published on PyPI yet** — the v0.5.5 publication failed
-on the PyPI-side trusted-publisher setup
-([Issue #852](https://github.com/orbi-build/orbi/issues/852)), so
-`pip install orbi-cli` and `uv tool install orbi-cli` currently fail with
-a registry "not found" error. The distribution name is `orbi-cli`
-(Issue #874); the installed command stays `orbi`. The supported
-installation paths are the ones this page already carries: the one-line
-installer above (it clones the source and installs the editable CLI for
-you) and the editable checkout install in step 2. This section returns
-with the real commands only after a release is actually published.
+The CLI is published on PyPI as
+[`orbi-cli`](https://pypi.org/project/orbi-cli/) — release 0.5.6,
+sdist + wheel, requiring Python ≥ 3.14. The distribution name is
+`orbi-cli`; the installed command stays `orbi`.
+
+`uv tool install orbi-cli` installs it into an isolated tool
+environment (uv supplies a compatible Python 3.14 interpreter when
+the system one is older); inside an activated Python ≥ 3.14
+environment, `pip install orbi-cli` is the plain pip path:
+
+```bash
+uv tool install orbi-cli
+orbi --version  # → orbi 0.5.6
+orbi --help
+```
+
+The ≥ 3.14 floor applies to the interpreter that runs the install:
+an explicit `--python 3.13` on the `uv tool install` call fails with
+the uv resolver message
+`orbi-cli==0.5.6 depends on Python>=3.14`; `pip install orbi-cli`
+inside an activated older environment reports
+`No matching distribution found for orbi-cli`. The repair in both
+cases is the same: select a compatible interpreter — point
+`uv tool install` at `--python 3.14` (uv provisions it) or run pip
+inside an environment built on Python ≥ 3.14.
+
+Uninstall the tool install with `uv tool uninstall orbi-cli` (the
+full removal story lives in
+[Operations](/operations)); these installs give you the `orbi`
+command only. To run Orbi itself, use the one-line installer above or
+the editable checkout install in step 2 — Orbi's deployment drives an
+editable install so the CLI follows the synced checkout.
 
 ## Prerequisites
 

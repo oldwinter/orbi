@@ -32,9 +32,18 @@ git clone https://github.com/orbi-build/orbi.git && cd orbi
 uv tool install --force --reinstall --editable --python python3 .  # 兼容的系统 Python（>= 3.14，如 Fedora 43、当前 Arch）；更老的系统 Python（如 Ubuntu 24.04 自带 3.12）改用 --python 3.14，让 uv 自动供应
 ```
 
-只想要 CLI 本体？PyPI 发布包名为 `orbi-cli`（Issue #874；安装后的命令仍是
-`orbi`），但它还没上 PyPI（[Issue #852](https://github.com/orbi-build/orbi/issues/852)）——
-[快速开始](docs/zh/getting-started.mdx)顶部的一键安装是最短的受支持安装路径。
+只想要 CLI 本体？它已发布到 PyPI：[`orbi-cli`](https://pypi.org/project/orbi-cli/)
+（当前版本 0.5.6，要求 Python ≥ 3.14；安装后的命令仍是 `orbi`）：
+
+```bash
+uv tool install orbi-cli  # 隔离的 tool 安装；系统 Python 过旧时（如 Ubuntu 24.04 的 3.12）加 --python 3.14，让 uv 自动供应兼容解释器
+pip install orbi-cli      # 或在已激活的 Python >= 3.14 环境里
+orbi --version            # → orbi 0.5.6
+```
+
+卸载用 `uv tool uninstall orbi-cli`。要运行 Orbi 本身（而不仅是 CLI），用
+[快速开始](docs/zh/getting-started.mdx)顶部的一键安装——它创建的是 Orbi
+部署所驱动的 editable 安装。
 
 ### 就绪检查（setup 之前）
 

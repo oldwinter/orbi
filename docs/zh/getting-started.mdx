@@ -29,13 +29,32 @@ bash install.sh
 
 ## PyPI 安装
 
-CLI **尚未发布到 PyPI**——v0.5.5 的发布在 PyPI 侧 trusted-publisher
-配置上失败（[Issue #852](https://github.com/orbi-build/orbi/issues/852)），
-所以 `pip install orbi-cli` 和 `uv tool install orbi-cli` 现在会报包仓库
-"not found" 错误。发布包名为 `orbi-cli`（Issue #874）；安装后的命令仍是
-`orbi`。当前受支持的安装路径就是本页已有的两条：上方的一键
-安装（自动 clone 源码并完成 editable 安装）和下面第 2 步的 editable
-checkout 安装。真正发布之后，这一节才会补上真实的 PyPI 命令。
+CLI 已发布到 PyPI：[`orbi-cli`](https://pypi.org/project/orbi-cli/)——
+版本 0.5.6，同时提供 sdist 和 wheel，要求 Python ≥ 3.14。发布包名为
+`orbi-cli`；安装后的命令仍是 `orbi`。
+
+`uv tool install orbi-cli` 把它装进隔离的 tool 环境（系统解释器过旧时，
+uv 会自动供应兼容的 Python 3.14）；在已激活的 Python ≥ 3.14 环境里，
+`pip install orbi-cli` 是普通 pip 路径：
+
+```bash
+uv tool install orbi-cli
+orbi --version  # → orbi 0.5.6
+orbi --help
+```
+
+≥ 3.14 的底线约束的是执行安装的解释器本身：给 `uv tool install` 显式加
+`--python 3.13`，会以 uv resolver 消息
+`orbi-cli==0.5.6 depends on Python>=3.14` 失败；在已激活的旧版本环境里
+运行 `pip install orbi-cli`，则报
+`No matching distribution found for orbi-cli`。两种情况的修复方式相同：
+选择兼容的解释器——给 `uv tool install` 指定 `--python 3.14`（uv 自动
+供应），或在 Python ≥ 3.14 构建的环境里运行 pip。
+
+卸载 tool 安装用 `uv tool uninstall orbi-cli`（完整卸载步骤见
+[Operations](/zh/operations)）；这些安装只给你 `orbi` 命令本身。要运行
+Orbi 本体，用上方的一键安装或下面第 2 步的 editable checkout
+安装——Orbi 部署驱动的是 editable 安装，CLI 跟随同步后的 checkout。
 
 ## 前提
 
