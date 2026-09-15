@@ -13,17 +13,429 @@
 ```mermaid
 flowchart LR
   epic["Epic（ai-epic）— 只协调，从不被领取"]
-  epic -.splits into.-> ready
+  epic -.拆分为.-> ready
   release["Release task（ai-ready + ai-release）<br/>— Runner release 状态机，从不进 run_pi"]
-  release -.claims like.-> ready
+  release -.像普通任务领取.-> ready
   ready["ai-ready<br/>（领取顺序：P0 标签最先，然后 bug 标签，最后普通）"]
-  ready -->|claim: label + worktree + Pi| progress["ai-in-progress"]
-  progress -->|PR verified: base fresh, run marker, Fixes #N| opened["ai-pr-opened"]
-  opened -->|independent review session, fixes in-session| verdict{REVIEW_VERDICT}
-  verdict -->|clean verdict + merge gate| merged["ai-merged （终态）"]
-  verdict -->|rounds exhausted (human decision)| blocked["ai-blocked （终态，人工决策）"]
-  opened -->|finding / base conflict / recoverable failure (Issue #50)| fixneeded["ai-fix-needed"]
-  fixneeded -->|next tick: next review session on the SAME run, branch, worktree, PR| opened
-  fixneeded -->|unrecoverable precondition (Issue #50)| blocked
-  progress -->|fail fast (no PR yet)| blocked
+  ready -->|领取：加标签 + 建 worktree + 启动 Pi| progress["ai-in-progress"]
+  progress -->|PR 验收：base 新鲜、run marker、Fixes #N| opened["ai-pr-opened"]
+  opened -->|独立审查会话（会话内修复）| verdict{"REVIEW_VERDICT"}
+  verdict -->|clean verdict + merge 门禁| merged["ai-merged（终态）"]
+  verdict -->|超轮（人工决策）| blocked["ai-blocked（终态，人工决策）"]
+  opened -->|finding / base 冲突 / 可恢复失败（Issue #50）| fixneeded["ai-fix-needed"]
+  fixneeded -->|下一 tick：同一 run、branch、worktree、PR 的下一个审查会话| opened
+  fixneeded -->|不可恢复前置条件（Issue #50）| blocked
+  progress -->|fail fast（PR 尚未存在）| blocked
 ```
+
+```text
+ai-ready                任务被派发（orbi add，或人工加标签）
+  -> ai-in-progress     Runner 领取：加标签，从冻结的 origin/<base> SHA
+                        创建 worktree，启动 Pi session（prompt 携带
+                        Issue body 加受信任评论时间线 {{ISSUE_COMMENTS}}，
+                        Issue #745：只收 OWNER/MAINTAINER/MEMBER/
+                        COLLABORATOR 评论，按 issue_comments_limit 截断
+                        并显式标明省略条数）
+  -> ai-pr-opened       PR 验收通过（base 新鲜度、run marker、Fixes #N）；
+                        该 tick 随即结束并释放槽位（Issue #788）——
+                        交付等待它的评审 tick
+  -> review             一个 tick 一步：可恢复扫描把 opened-PR 交付分类
+                        为 RESUME_REVIEW；PR head 的 CI 仍 pending 时记
+                        一行 journal 直接返回（不 sleep）；否则独立
+                        Pi session——唯一的阻塞阶段，槽位只被占用一段
+                        Pi 运行时长——审查精确的 base/head SHA，并在
+                        会话内修复 findings（代码、完整测试、分层
+                        覆盖率门禁（Issue #234）、只 push task
+                        branch），然后输出 REVIEW_VERDICT（其 prompt
+                        同样携带关联 Issue 的受信任评论时间线——决策
+                        演变历史，Issue #745）
+  -> ai-fix-needed      会话内未能修复 finding，PR 落后最新 base / 有
+                        merge conflict，或已有 run/PR 的**可恢复失败**
+                        （Issue #50：Pi 执行失败、验证失败、未推送本地
+                        commit）：失败 comment 写入 Issue
+                        和 PR，带完整现场（run_id、PR、branch、worktree、
+                        session、phase、last activity、具体错误）；下一
+                        个 tick 在同一 run_id、branch、worktree、PR 上
+                        启动下一个审查会话
+  -> merge              clean verdict（其 head 字段等于 PR head，
+                        Issue #591）+ merge 门禁（head 包含最新 base、
+                        CI 已有结论、PR mergeable、远端 head 未变——
+                        每项只读一次：CI pending 或 mergeable UNKNOWN
+                        把合并顺延到下一 tick，Issue #788）
+  -> ai-merged          成功终态；PR body 的 Fixes #N 原生关闭 Issue
+```
+
+已有 run/PR 的失败被分类（Issue #50）：**可恢复失败**（Pi 执行失败、
+验证失败、未推送本地 commit、会话内未能修复的 finding）
+留在自动修复循环——Issue 标记 `ai-fix-needed`，失败 comment 写入 Issue
+和 PR（带完整现场），下一个 tick 在同一 run、branch、worktree、PR 上
+继续（不重新创建 PR、不重复领取）。worktree 缺失根本不是失败：resume
+会从远端交付分支重建它并继续推进（Issue #807——worktree 只是远端状态
+的本地缓存，branch 和 PR 都在 GitHub 上）。只有 **AI 无法安全判断或修复的外部
+前置条件**（无可恢复现场、base 分支变更、审查超轮、PR 未合并被关闭、
+交付分支已从远端删除——没有任何东西可以用来重建 worktree）
+才 fail fast：Issue 被标记 `ai-blocked` 并写明为什么不能自动恢复，自动
+循环从此不再碰它——人工决定下一步。
+
+死循环守卫与评论去重（Issue #825）：恢复接续可能绑定**新的 run id**
+（一次可恢复失败就够了），而 PR body 只在创建时写入一次，所以 resume
+校验接受本交付线曾用过的**任一** run marker——marker 集合读自 Issue 的
+受信任评论（与恢复现场同一信任过滤，公开评论里复制的 marker 不计入；
+branch、base、head、精确 URL 校验全部保留，#45/#89 的防串 PR 语义不变）。
+同一 `(run_id, 失败指纹)` 的失败评论全程只发一次（隐藏的
+`<!-- orbi:fail=... -->` 标记为键），后续相同失败原位递增该评论的隐藏
+`:次数` 后缀（journal 记录重复）；同一 `(run_id, 失败指纹)` 连续失败
+达到 3 次（现场块——新开的 PR、完成的评审轮——代表交付线前进，会重置
+连击）即判定死循环而非抖动，升级为 `ai-blocked` 并在评论里写明连续
+次数与「前置条件未变化」。
+
+链路规则：
+
+- 一个任务 = 一个 run = 一个 feature branch = 一个 worktree = 一个 PR。
+  review/fix 循环期间 PR 编号永远不变；只有它的 head 可以前进。
+- 只有两个 opened-PR 状态会被自动拾取：`ai-pr-opened`（等待 review）
+  和 `ai-fix-needed`（等待下一个审查会话）。`ai-ready` 作为新工作被
+  领取；`ai-blocked` 从不自动恢复。携带回填的 `ai-in-progress` 标签的
+  交付仍会被拾取（Issue #178：review 中被杀的 Runner 会留下该标签——
+  正向的 opened-PR 限定已保证 implement 阶段的 Issue 不会匹配该扫描）。
+- review/fix 循环有界（5 轮）。已完成轮数存在受信任现场里
+  （`review_round` 字段，Issue #788）：每条轮次评论携带更新后的现场
+  块，下一 tick 从中读出推进后的计数（人工在 block 之后把 Issue 改回
+  ai-fix-needed 的恢复仍会重置预算，Issue #483）。超轮仍有 findings 时
+  Issue 标记 `ai-blocked`（超轮是人工决策）；可恢复失败（Issue #50）
+  保持 `ai-fix-needed`。无论哪种，PR、branch 和 worktree 原样保留。
+  评审会话自己也守卫预算（Issue #878）：开工前其 prompt 会读本交付
+  （同一 `run_id`）的轮次评论，当同一失败原因已连续出现在两轮及以上
+  时，直接发点名重复的 findings verdict，不再重复同一修复路径——
+  同一堵墙最多撞两轮。
+- tick 内零等待（Issue #788）：旧进程内等待循环（`wait_for_delivery`、
+  对 CI/mergeability 的轮询、`release_ci_wait_seconds` /
+  `mergeable_wait_seconds`）已移除。所有等待都走 waiting 原语——写状态、
+  返回、释放槽位，下一 tick 重读（`delivery_ci_pending`、
+  `merge_gate_ci_pending`、`merge_gate_mergeable_unknown`）。崩溃恢复
+  路径就是主路径。
+- base 前进由 task branch 上对最新 `origin/<base>` 的普通 `git merge`
+  吸收（冲突手工解决），然后重跑完整测试。不 force push、不自动解决
+  冲突、不 push 保护分支。
+- 吸收契约（Issue #877，Runner 机器校验）：一轮评审开始时 head 已落后
+  `origin/<base>` 或 PR 有冲突时，该轮结束必须满足二者之一——分支包含
+  `origin/<base>`（`git merge-base --is-ancestor` 为真），或 verdict 为
+  `findings` 且写明「本轮尝试吸收但放弃」及具体原因。head 仍不含 base
+  的 `pass` 会在轮次评论里被 Runner 点名为违反吸收契约（
+  `review_absorb_abandoned`）；既有 5 轮有界语义不变。
+- Git transport（Issue #114、#580）：git 数据操作走配置的传输方式
+  （`git_transport`：默认 `ssh`——git over SSH——，或 `https` 走
+  `gh` credential helper），GitHub API 操作留在
+  `gh` token 上——完整的双通道边界与启动前检查见[运维](/zh/operations)；
+  凭据见[安全](/zh/security)。
+
+## 合并账本：`external_commits` 与 `commits`
+
+Runner 合并交付 PR 时，`Orbi merged PR:` Issue 评论与 `Orbi: merged`
+milestone 行以与现有字段相同的 `key=value` 格式，带上「合并前人有没有
+改过一行」这一事实（Issue #833）：
+
+```
+Orbi merged PR: <url> (merge_commit=… review_rounds=N external_commits=K commits=M base_branch=… run_id=…)
+```
+
+- `commits` —— 合并时 PR 分支相对 base 的全部 commit 数（比例的分母）。
+- `external_commits` —— 不在引擎自己推送历史里的 commit 数（开 PR 时的
+  head 加上 Runner 自己推的每一轮 review/fix head；绝不检查 git 作者
+  身份）。`0` = merged as-is：合并前没有人改过交付分支的一行。计数在
+  合并后通过 merge commit 的父链读取（`M^1` 为 base 端、`M^2` 为 PR
+  head），减去引擎记录的推送线：最后一个引擎推送 head；外部接管
+  （Issue #608）时再排除接管的贡献者 head（推送线的起点），贡献者的
+  commit 保持为外部。
+- `external_commits=unknown` —— 推送历史无法证实（重建的 worktree 丢了
+  run-state 记录；某轮 fix 推送在记录之前回合已结束且历史不完整；或
+  记录的 head/base 不是合并 head 的祖先）。数不出来的历史绝不写成
+  `0`。
+
+引擎推送 head 在三个点记入 task worktree 的 run state（`pushed_head`，
+Issue #219 文件）——交付推送、verdict 覆盖的 review/fix 推送、以及
+回合开始时对上一 session 已推送但回合在 re-freeze 记录之前结束的
+head 的采纳——同一 worktree 的接续都能恢复这份历史；全新的 worktree
+从无记录开始，退化为 `unknown`。外部接管在 claim 时一次性记录接管的
+起点 head（`pushed_base`），且其回合开始的采纳永不运行：worktree 本来
+就始于贡献者的 head。记录本身是 bypass：state 文件缺失或损坏只记
+`pushed_head_unrecorded` 日志，交付继续。
+
+## 交付标签
+
+GitHub 标签是外部状态机。它们不是 commit 创建的——每个仓库要初始化
+（见[快速开始](/zh/getting-started)）：
+
+| 标签 | 含义 |
+|---|---|
+| `ai-ready` | 明确派发给 Orbi；可以被领取 |
+| `ai-in-progress` | 已领取、正在执行。resume opened-PR 交付时 Runner 先幂等回填该标签再继续（Issue #178）；被杀后的残留由下一 tick 接回 |
+| `ai-pr-opened` | PR 已创建并验收；等待独立审查 |
+| `ai-fix-needed` | PR head 尚不可合并，或已有 run/PR 的可恢复失败（Issue #50）；下一 tick 在同一 run、branch、worktree、PR 上继续 |
+| `ai-merged` | 成功终态；Runner 已合并 PR 并确认 merge commit 落在保护分支 |
+| `ai-blocked` | 只用于 AI 无法安全判断或修复的外部前置条件（Issue #50）；blocked comment 写明为什么不能自动恢复；人工必须决定下一步 |
+| `ai-human-review` | 人工验收门禁（Issue #763）：人已确认该交付的验收清单。只有人能打或摘——Runner 永不增删 |
+
+## 人工验收门禁（ai-human-review）
+
+产品主线是无人值守：默认流水线人在环外运行，且本门禁默认关闭——开关
+关闭时交付、评审、merge、release 的行为与 Issue #763 之前逐字节一致。
+
+host 配置打开门禁（`orbi.toml` 里 `human_review_gate = true`——这是部署
+方的信任决策，不是仓库可写策略）。打开后每个交付在 PR 打开时向 Issue
+发一条验收清单评论，分两栏：
+
+- **栏一 · 本次 run 已验证的**（证据，不是待办）：`.orbi/test.log` 的真实
+  测试结果、覆盖层（仓库测试套件）、改动文件数。
+- **栏二 · 机器验不了的最小集合**，按每个交付的改动路径与可用证据生成
+  （不是硬编码的"人类专属"模板）：业务意图（测试只证明实现与测试一致，
+  不证明测试与意图一致）、UI 视觉与文案、外部环境验证，以及测试日志或
+  diff 不可读时的证据缺失条目。
+
+栏二非空时它就是门禁：评审轮次在任何 Pi session 之前短路——票回
+`ai-ready`（opened-PR 标签保留作 resume 锚），槽位释放，此后每个 tick
+只花一次 label 读。等待**不消耗**评审轮次预算，也**不碰** `ai-fix-needed`。
+人确认清单后打 `ai-human-review`，下一 tick 照常评审与合并（verdict 绑定
+与 `--match-head-commit` 零改动）。
+
+栏二为空是目标状态：清单明确写「无需人工介入」，交付不要求该标签直接
+通过。模型能力提升时，栏二条目迁进栏一——清单评论带机器可解析的
+`<!-- orbi:human-review {...} -->` 块（schema 1），迁移可以做工具化，
+工件形态不变。清单不声称任何正确性保证：栏一是已验证内容的证据，栏二是
+人仍需确认的最小集合。
+
+## 票派发：content、dev、ops
+
+`ai-ready` 是所有任务类型的执行开关；第二个标签选择类型
+（Issue #537）。共三类——派发时每个 Issue 选定其一：
+
+| 票类型 | 标签 | Runner 做什么 |
+|---|---|
+| dev（默认） | `ai-ready` | 完整交付链：worktree、开发剧本、一个 PR、独立审查、合并 |
+| ops | `ai-ready` + `ai-ops-only` | 同一个完整执行会话（worktree、shell、网络——实现里不存在任何命令白名单），但用 ops 剧本替代开发剧本。交付物 = 回到票上的证据；会话若附带代码 commit，则照常走 PR 流程 |
+| content | `ai-ready` + `ai-content-only` | 内容代理：文本进、文本出，以 Issue 评论交付——无执行、无 git；交付后关闭 Issue |
+
+ops 语义（Issue #537）：
+
+- **信任边界是（凭据，票面）——不是命令白名单。** 会话原样获得 runner
+  的全部环境（gh 凭据、`CLOUDFLARE_API_TOKEN`、AWS keys 等，外加
+  deploy home 的 `.orbi/env` 文件）；凭据给多宽是用户的决定，runner
+  不做二次裁剪。
+- **票面即授权。** 会话只执行票面写明的 ops 动作（合并哪个 PR、部署
+  哪个环境）；票面之外的动作回帖说明并停。人工审批门（environment
+  approval、Release 批准）不由会话代行——这是提示词约定，不是执法代码。
+- **交付 = 证据**（Issue #526 的事实文化）：每一步把真实命令与真实
+  输出 / API 返回原文贴到票上；未执行的步骤如实标注未执行。纯 ops 运行
+  （无 commit）以 Runner 关闭 Issue 并摘除 `ai-in-progress` 收尾——
+  无 PR。附带代码 commit 则照常走 PR 路径（审查 + 合并）。
+
+调研型票（Issue #739）：票面要求只调研/设计——「先调研，不要直接写
+实现」——的票，派发时就是 ops 票：打 `ai-ready` + `ai-ops-only`。
+dev 票带不动这个指令：dev 的交付判据是 task branch 上有新提交，
+照办不提交的 agent 会以 `the agent delivered no commit` 失败，票被
+烧成 `ai-blocked`。ops 剧本的证据纪律（真实命令、原文输出、未验证项
+如实标注）就是调研交付物本身；无 commit 的 ops 运行正常收尾（关票、
+摘除 `ai-in-progress`），调研后继续落地的代码仍走正常 PR 流程。
+
+Issue #537 之前，`ai-ops-only` 标签派发的是内容代理（#530 只改了名，
+模式未变——名字承诺 ops，模式仍是纯内容）；现在 content 路径派发到
+`ai-content-only`，`ai-ops-only` 是完整执行的 ops 路径。
+
+## Run marker 与 run_id
+
+每个任务 attempt 生成一个 `run_id`（8 位 hex，例如 `e07383c2`），该
+attempt 的每一步复用同一个值；同一 Issue 的 retry 生成新的。同一个 id
+出现在：
+
+- 该 attempt 的每条 journal 行（前缀 `[e07383c2]`）；
+- Issue/PR 评论：可见字段 `run_id=e07383c2` + 隐藏机器可读 marker
+  `<!-- orbi:run=e07383c2 -->`；
+- 里程碑与场景评论还携带隐藏的 runner marker `<!-- runner=1a2b3c4d -->`：
+  写出评论的部署指纹——执行 checkout 的 HEAD；非 editable 安装为包版本；
+  探测失败为 `unknown`（live progress 评论与 PR 评论不带它）；
+- `Orbi opened PR` 场景评论携带隐藏的带版本 run 现场
+  `<!-- orbi:scene:v1 {json} -->`（`src/orbi/scene.py`）：这是 resume
+  扫描解析的机器可读恢复记录——现场损坏与现场缺失是两个不同的失败
+  分支（Issue #786）；
+- 稳定的按 Issue 命名的 feature branch（`orbi/<owner>-<repo>-issue-<N>`）；
+- worktree 名（`.worktrees/orbi-<owner>-<repo>-issue-<n>-e07383c2`），以及 Pi
+  session 目录和 run 产物；
+- PR body——稳定 marker `<!-- orbi:run=e07383c2 -->` 是 PR 契约
+  的一部分；Runner 拒绝没有它的 PR。
+
+一条 grep 还原完整时间线：
+
+```bash
+journalctl --user -u orbi@1.service -u orbi@2.service | grep e07383c2
+gh search issues "e07383c2" --repo OWNER/PILOT-REPO
+```
+
+## PR body 契约：`Fixes #N`
+
+PR 描述必须包含 `Fixes #<issue-number>`（可以放在首行）。GitHub 读的是
+body（不是 PR title），PR merge 到默认分支时原生关闭 Issue。Runner 在
+PR 验收时校验该关键词，缺失即 fail fast。
+
+## Epic、Release task 与 P0 优先级
+
+项目用普通 GitHub 原语组织多任务工作——没有 DAG、没有优先级数字、没有
+独立队列：
+
+- **Epic**：协调 Issue，把一组相关任务归在一起（例如 v0.1 release
+  checklist）。它带 `ai-epic` 标签。Epic 本身不是可直接执行的任务：
+  实际工作拆成独立的 `ai-ready` Issue，每个一个 runtime outcome、一个
+  PR、一次 review、一次 merge。Runner **从不领取** Epic（Issue #93）：
+  普通领取扫描跳过它并记录结构化日志
+  `epic_not_claimed issue=N repo=...`（不领取、不改标签、不建 worktree、
+  不启动 run、不占 slot），重启恢复扫描也排除它。Epic 的子票声明唯一
+  来源是 GitHub 原生 `sub-issues` 关系：所有子 Issue 必须 CLOSED（或其
+  PR 已 merged），且没有 open 的原生 `blockedBy`。正文中的引用（包括
+  `Children`/`Child Issues` 段落）不构成声明。没有 sub-issues 或子票、依赖
+  状态畸形时 fail-closed；Runner 每个 tick 重试并留下幂等审计评论。随后
+  同一个 tick reconcile open Milestone：title 精确匹配的已发布 Release
+  （draft 不算）且当前没有 open Issue 才关闭，其余情况保持 open。最后
+  同一个 tick 还会扫一遍 open PR（Issue #746）：head 为稳定交付命名
+  （`orbi/<repo>-issue-<N>`）且源票已被人工关闭的 PR，会在 PR 上收到
+  一条幂等的报告评论——所有 resumable 扫描都只查 `state=open` 的票，没有
+  这个扫描该 PR 会永久悬空。合并/关闭由人决定：Runner 绝不自动合，
+  也绝不越过人的关闭决定去自动关。
+- **Release task**：带 `ai-release` 标签的 `ai-ready` Issue（Issue
+  #98）。它**不是**开发任务：Runner 通过普通 ready 扫描领取，但
+  `process_issue` 把它路由到确定性的 release 状态机而不是 `run_pi`——
+  没有 Pi 会话、没有 PR。状态机幂等且可恢复（重启后恢复同一
+  run id/worktree），按顺序执行这些步骤：
+
+  1. 严格解析 Issue 正文的 `## Release` 声明：`version`、
+     `base_branch`、`scope`（`#N` 列表）或 `scope_from_milestone`，
+     以及可选的 `version_file`（默认 `pyproject.toml`，也可为
+     `package.json` 或 `none`）。声明不携带任何测试契约
+     （Issue #569）：测试验收就是 release commit 的 GitHub Actions
+     CI 结果（#268 CI-wait 门）。字段缺失、重复或未知
+     都 fail fast。
+  2. 冻结 base——release commit 就是 `origin/<base_branch>`（在
+     base-sync 锁下 fetch）。在任何门禁等待之前，校验声明（或默认）
+     的 `version_file` 确实存在于该冻结树的根目录（Issue #740）：
+     不匹配在认领瞬间 fail fast，错误信息列出根目录实际存在的受支持
+     文件和 `none` 选项，不会在烧完门禁和范围核验后才以
+     FileNotFoundError 失败。
+  3. 执行发布前门禁：**release 所属 Milestone 内**无遗留 open 的
+     `ai-in-progress` / `ai-pr-opened` / `ai-fix-needed` Issue
+     （Issue #671；release Issue 本身除外；无 Milestone 时仍按全仓
+     扫描）、
+     release commit 的 CI 全绿（no check runs passes 带明确证据；
+     pending check 是中间态——门禁等待最终结论，每次轮询一条
+     `release_waiting_ci` journal 行和一次进度评论更新，上限
+     `release_ci_wait_seconds`（默认 1800 秒）；等待超时以独立原因
+     失败，绝不报成 CI 失败）。open PR 刻意不是门禁（Issue #608，
+     维护者裁决）：open PR 是队列状态，不是发布前提——是否存在 open
+     PR、多少个、谁提的，与发版无关；滞留 PR 由交付循环自身的
+     接管/对账机制处理。因真实 `gh` 失败而查不了的门禁算失败门禁。
+  4. 逐项验证 scope：`gh pr view` 必须报告 `MERGED`，否则
+     `gh issue view` 必须报告 `CLOSED` 且 `stateReason` 为
+     `COMPLETED`——`NOT_PLANNED` 关闭（重复/不做）的票在 Scope 证据里
+     标注为排除、绝不进入 Changelog，Changelog 的 PR 链接只在 PR 已
+     合并时才写入（Issue #707）。禁止解析复选框——每个 scope
+     项都对照 live API 检查。
+  5. 测试验收就是 release commit 的 CI-wait 门：版本 bump 之后，门禁会对
+     该 commit 重跑（步骤 3 的 `release_ci_wait_seconds` 等待），CI 红或
+     等待超时走既有可恢复失败路径（`ai-blocked`）。没有本地测试执行
+     （Issue #569）——release 流程即 bump → push → CI-wait → tag。
+     如果 CI 红或等待超时，既有失败路径会阻止发布；版本 bump 可以保留在
+     `main`，这是可接受的终态。bump 是幂等的，修复 CI 后重试 release
+     会安全地再次准备所请求的版本。
+  6. 打 tag：远端 tag 不存在时，在 release commit 上创建 annotated
+     tag 并普通 push（绝不 `--force`）。已存在时必须精确指向 release
+     commit——不匹配 fail fast。已存在的 tag 绝不移动、覆盖或
+     force-push。
+  7. 发布 GitHub Release（幂等），notes 带完整验证证据：version、
+     tag、release commit、逐项 scope 证据、门禁证据、测试证据和 run
+     marker。
+  8. 同步文档站 Release notes（Issue #275）——在 GitHub Release 发布
+     之后、关闭 Milestone 之前：用已发布的 Release body 生成
+     `docs/release-<version>.mdx` 与 `docs/zh/release-<version>.mdx`
+     （不重复实现 changelog 生成——#204 已完成那部分），补上现有
+     release 页共有的元信息：tag/release commit 对应关系、发布时间、
+     release task 的 Issue 编号；在 `docs/docs.json` 的 `Releases`/
+     `发布` 导航分组首位插入新版本（中英文两处，最新在前）；把
+     `(latest)` 标题标记从上一版页面转移到新版本页面（只有最新页面
+     带该标记）。这些文件改动直接提交进 base 分支（release 路径无
+     PR）并普通 push。幂等：已有页面内容一致时不重复生成、不覆盖，
+     无改动时不提交；已有页面内容不一致则 fail fast。任何失败都让
+     整个 release 失败（`ai-blocked`），绝不静默跳过。
+  9. 给 release Issue 打上 `ai-merged` 并关闭它（交付终态转换）。
+  10. 关闭 title 与发布 version 精确一致的 Milestone（Issue #214），
+      然后写成功评论（release URL、tag、commit、证据、文档站 Release
+      notes 证据、Milestone 证据）。只按 title 精确匹配（不猜测、不
+      模糊匹配、绝不关别的 Milestone）：0 个 open Issue 时关闭；已关闭
+      是幂等成功（不重开）；Milestone 缺失或仍有 open Issue 则 fail
+      fast，带上 version、Milestone 编号/链接和 open issue 列表（绝不
+      静默跳过）。release 票自己永不算未完成工作（Issue #808）：它正被
+      本次发版关闭，issue 索引落后关票几秒（Issue #754）造成的
+      「只剩 release 票自己」的陈旧读既不阻止也不拖延关闭；其余任何
+      open Issue 仍然拒绝关闭。
+      任何失败：单独进入 `ai-blocked`（release 是人工决策
+      点——不自动重试），失败评论带 run marker 和具体原因，异常向上传
+      播让 tick fail fast。
+
+  `ai-release` 标签是类型标记，**不是**交付状态：它不属于交付状态机、
+  不是 ready 扫描的排除条件，Runner 从不增删它——只有人在派发时
+  （与 `ai-ready` 一起）添加。
+- **P0 优先级**：普通 `p0` GitHub 标签标记紧急 Issue（生产故障）。它
+  **不是**交付状态——只决定 ready 领取顺序，从不改变 Issue 粒度、任何
+  交付状态或终态语义，Runner 也从不增删它。ready 领取顺序固定：
+  `ai-ready`+`p0` → `ai-ready`+`bug` → 普通 `ai-ready`（三次
+  `gh issue list` 扫描，共享完全相同的排除条件和 blockedBy 语义）。
+  P0 遵守所有现有排除规则和单 slot 约束：被阻塞的 P0 被跳过（回退到
+  bug/普通扫描），在途的 P0 由重启扫描接回。P0 运行失败单独进入
+  `ai-blocked`（领取标签被移除；`ai-ready` 残留被所有 ready 扫描排除），
+  所以没有任何 tick 重新领取——没有无限重试。没有优先级数字或加权队列。
+
+Issue 之间的任务依赖用 GitHub 原生 `blockedBy` 关系（`gh issue edit N
+--add-blocked-by M`）；Runner 读该字段并跳过有未关闭 blocker 的 Issue。
+Issue body 里的 `Depends on #N` 行不被解析。
+
+## 仓库级交付策略（`.github/orbi.toml`）
+
+仓库可以把**交付策略**作为代码版本化。claim 时 Runner 通过 GitHub
+contents API 读取仓库**默认分支 tip** 上的 `.github/orbi.toml`——
+绝不读任务分支、绝不读本地 worktree——并按**按键分域**把白名单键应用
+到宿主 `orbi.toml` 之上。没有该文件的仓库行为与之前完全一致（零变化）。
+位置固定，只有文件名可用 `[[repositories]]` 条目的可选字段
+`config_path`（默认 `.github/orbi.toml`）覆盖。
+
+只允许交付策略键：
+
+| 键 | 类型 | 含义 |
+| --- | --- | --- |
+| `base_branch` | string | 该仓库的交付 base 分支；缺席时回退到匹配的 `[[repositories]].base_branch`，否则回退宿主 `base_branch`。 |
+| `active_milestone` | string | 该仓库 fresh claim 的 Milestone 范围。唯一例外是外部接管扫描（Issue #842 决策 D1）：第五条、排最后的 ready 扫描**不带** Milestone 限定——带正文标记 `<!-- orbi:external-pr:N -->` 的外部 triage 票始终可被认领，因为外部贡献不属于任何版本的范围，绝不能阻塞发版门禁。 |
+| `context_files` | string[] | 仓库内相对路径的上下文文件；注入前校验存在性与大小上限。 |
+| `dispatch_label` | string | 该仓库的认领标签（默认 `ai-ready`）；交付生命周期标签恒为宿主常量。 |
+
+```toml
+# .github/orbi.toml
+base_branch = "beta"
+active_milestone = "v0.5.0"
+context_files = ["AGENTS.md"]
+```
+
+其他键一律拒绝：未知键、host-only 身份/安全键（见
+[安全](/zh/security)）、坏 TOML 或类型错误都会让 claim fail-fast 并
+在错误里列出违规键，Issue 进入 `ai-blocked`——一个仓库的坏文件绝不
+影响其他池。host-only 集合同样包括宿主调度：`max_concurrency`
+永远不能下放到仓库文件——并发 slot 池属于部署宿主。
+`auto_next_milestone`（默认 `true`）与
+`auto_create_release_ticket`（默认 `false`）同属这类宿主键。发版关闭
+当前 Milestone 后，idle 要么改写宿主 `orbi.toml`，要么停在待确认。
+发版之前，若 Milestone 已做完却没有 `ai-release` 票，建票开关（默认
+关闭）会幂等开一张，武装仍走原有 idle 路径。两个键都不能写进仓库文件。
+`dispatch_label` 不得是交付生命周期标签
+（`ai-in-progress`、`ai-merged` 等）：那些恒为宿主常量。阻塞落在
+claim 选中的那个 Issue 上；`dispatch_label` 不是 `ai-ready` 的仓库在
+文件本身坏掉时没有 `ai-ready` 候选 Issue 可阻塞，此时 fail-fast 原因
+只在 journal 的 `repo_config_invalid` 行（不改标签、不发评论）。run 评论记录
+`repo_config: <sha>`；与上一 run 的 sha 不同时附 `repo_config_changed`
+标注，且当前一版内容可读时附有效键值 diff `repo_config_diff`，让变更
+始终在 run 上可见。传输原因（限流、网络）导致的读取失败只记一行
+`repo_config_read_failed` 并回退宿主配置——该降级在 run 评论上表现为
+缺少 `repo_config` 字段。
