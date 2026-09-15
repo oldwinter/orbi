@@ -9,8 +9,8 @@ Pi 在隔离 worktree 中完成开发、测试并创建 PR，再经过独立审�
 - 官网 <https://orbi.build> ｜ 文档 <https://docs.orbi.build/>（仓库内
   [`docs/`](docs/) 是唯一事实源，中文入口 [`docs/zh/`](docs/zh/)）｜ 进展
   [@xqliu](https://x.com/xqliu)
-- **[报名首批共建](https://orbi.build/apply)**：卡在环境、模型接入或工作流上的
-  话，我们帮你跑通第一个 Issue，你踩的坑会变成优先修的 Issue。
+- **卡在环境、模型接入或工作流上？** 到 [Discussions](https://github.com/orbi-build/orbi/discussions)
+  提问，你踩的坑会变成优先修的 Issue。
 
 ## 为什么用 Orbi
 
