@@ -95,12 +95,21 @@ FIXES_MARKERS = (
     "GitHub 读的是 body（不是 PR title），PR merge 到默认分支时原生关闭 Issue",  # ZH full contract
 )
 
+# F. The four coverage contract commands (Issue #910) — defined once in
+#    testing ("Local contract commands"), EN and ZH. contributing
+#    (step 4) and AGENTS.md must keep the one-line summary + link, and
+#    the exact commands are never copied elsewhere.
+COVERAGE_COMMANDS_MARKERS = (
+    "COVERAGE_FILE=.orbi/.coverage /usr/bin/python3 -m coverage run --branch -m pytest tests/ -q",
+)
+
 ALL_RULES = (
     ("editable-install", EDITABLE_INSTALL_MARKERS, {"getting-started"}),
     ("git-transport", TRANSPORT_MARKERS, {"operations", "security"}),
     ("timer-mechanics", TIMER_MARKERS, {"operations"}),
     ("model-wait-fields", MODEL_WAIT_MARKERS, {"operations"}),
     ("fixes-contract", FIXES_MARKERS, {"workflow"}),
+    ("coverage-commands", COVERAGE_COMMANDS_MARKERS, {"testing"}),
 )
 
 
@@ -120,6 +129,20 @@ def test_every_mechanism_is_defined_on_exactly_one_page_per_language():
                     f"defined on {sorted(allowed)} (one sentence + link "
                     f"everywhere else)"
                 )
+
+
+def test_coverage_commands_block_stays_out_of_the_contract_mirror():
+    """Issue #910: AGENTS.md is not under docs/, so the ALL_RULES scan
+    above cannot see it — the contract mirror must also carry only the
+    one-line summary + `docs/testing.mdx` link, never the copied
+    command block."""
+    agents = norm((REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8"))
+    for marker in COVERAGE_COMMANDS_MARKERS:
+        assert marker not in agents, (
+            "AGENTS.md restates the coverage contract commands — they "
+            "are defined once in docs/testing.mdx (Local contract "
+            "commands); keep a one-line summary + link here"
+        )
 
 
 def test_chinese_pages_carry_the_post_186_runner_closeout_contract():

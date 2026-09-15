@@ -6,29 +6,18 @@ These tests compare those sources instead of freezing a release snapshot.
 """
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from conftest import git
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
 DOCS_CONFIG = DOCS_DIR / "docs.json"
 RELEASE_SLUG_PATTERN = re.compile(r"^(release-v(\d+)\.(\d+)\.(\d+))$")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-
-
-def git(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 def docs_files() -> list[Path]:
@@ -86,11 +75,6 @@ def release_group_pages(language_code: str) -> list[str]:
             )
             return list(pages)
     raise AssertionError(f"{language_code} navigation has no release group")
-
-
-def test_git_helper_fails_fast_on_nonzero_exit():
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git("rev-parse", "no-such-ref")
 
 
 def test_release_group_lookup_fails_fast_when_the_release_group_is_missing(
@@ -163,12 +147,12 @@ def test_release_pages_exist_in_both_languages():
 def test_release_pages_pin_resolvable_tag_objects_and_commits():
     for slug in release_page_slugs("en"):
         version = slug.removeprefix("release-")
-        tag_object = git("rev-parse", f"refs/tags/{version}")
-        commit = git("rev-parse", f"refs/tags/{version}^{{commit}}")
-        assert git("cat-file", "-t", tag_object) == "tag", (
+        tag_object = git(REPO_ROOT, "rev-parse", f"refs/tags/{version}")
+        commit = git(REPO_ROOT, "rev-parse", f"refs/tags/{version}^{{commit}}")
+        assert git(REPO_ROOT, "cat-file", "-t", tag_object) == "tag", (
             f"{version} must be an annotated tag"
         )
-        assert git("rev-parse", f"{commit}^{{commit}}") == commit
+        assert git(REPO_ROOT, "rev-parse", f"{commit}^{{commit}}") == commit
         for path in (DOCS_DIR / f"{slug}.mdx", DOCS_DIR / "zh" / f"{slug}.mdx"):
             text = path.read_text(encoding="utf-8")
             hashes = SHA_PATTERN.findall(text)
@@ -187,16 +171,58 @@ def test_only_the_highest_version_pages_carry_latest_markers():
         assert ("（最新）" in zh_title) is is_latest
 
 
-def test_corrected_release_keeps_the_previous_release_record_link():
-    versions = sorted(release_page_slugs("en"), key=release_version)
-    assert len(versions) >= 2, "the corrected release needs a prior release"
-    corrected = versions[1]
-    previous = versions[0].removeprefix("release-")
-    for path in (DOCS_DIR / f"{corrected}.mdx", DOCS_DIR / "zh" / f"{corrected}.mdx"):
-        text = path.read_text(encoding="utf-8")
-        assert previous in text
-        assert ("correct" in text.lower()) or ("修正" in text)
-        assert f"/{versions[0]}" in text
+# Issue #910: the two pre-generator releases moved their records into
+# the GitHub Release bodies and their docs pages are gone. The tags
+# stay (a tag is never moved or deleted), so these two are the pinned
+# exception to tag/page completeness — and one-way: no page for them
+# may come back (the orphan check below still applies to them).
+PRE_GENERATOR_TAGS = frozenset({"v0.1.0", "v0.1.1"})
+
+
+def test_every_released_tag_has_its_release_page():
+    """Tag/page completeness (Issue #910): every released tag must have
+    a corresponding docs page and vice versa — the file/nav parity tests
+    above cannot see a release whose docs sync never ran, which is how
+    a version-sequence gap like the skipped v0.5.1 becomes visible in
+    the navigation without any test failing. Requires the tag refs in
+    the checkout (CI provides them with `fetch-tags: true`)."""
+    tags = {
+        tag for tag in git(REPO_ROOT, "tag", "--list", "v*").splitlines() if tag.strip()
+    }
+    assert tags, (
+        "no tags found in the checkout — the release pages cannot be "
+        "checked for completeness (CI fetches tags with fetch-tags: true)"
+    )
+    expected_slugs = {
+        f"release-{tag}" for tag in tags - PRE_GENERATOR_TAGS
+    }
+    for language_code in ("en", "zh"):
+        slugs = release_page_slugs(language_code)
+        missing_pages = expected_slugs - slugs
+        assert not missing_pages, (
+            f"released tags without a {language_code} docs page: "
+            f"{sorted(missing_pages)}"
+        )
+        orphan_pages = slugs - expected_slugs
+        assert not orphan_pages, (
+            f"{language_code} release pages without a released tag "
+            f"(the pre-generator records live on the GitHub Releases, "
+            f"not in docs/): {sorted(orphan_pages)}"
+        )
+
+
+def test_release_pages_carry_no_release_machine_audit_blocks():
+    """The docs page is for readers, not the release machine's audit
+    trail (Issue #910): no release page carries the `## Scope (verified
+    item by item)` or `## Pre-release gates` sections or a `run_id=`
+    line — those stay on the GitHub Release. Pins both the generator
+    change and the one-time trim of the existing pages."""
+    for directory in (DOCS_DIR, DOCS_DIR / "zh"):
+        for path in sorted(directory.glob("release-v*.mdx")):
+            text = path.read_text(encoding="utf-8")
+            assert "Scope (verified item by item)" not in text, path
+            assert "Pre-release gates" not in text, path
+            assert not re.search(r"^run_id=", text, re.MULTILINE), path
 
 
 def test_release_pages_have_matching_version_titles():

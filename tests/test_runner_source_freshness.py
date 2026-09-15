@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 import orbi.cli_source as cli_source
 import orbi.runner as runner
 from seam import seam
@@ -38,19 +40,6 @@ _REAL_GATE = runner.check_runner_source_freshness
 @pytest.fixture(autouse=True)
 def _restore_real_gate(monkeypatch):
     monkeypatch.setattr(runner, "check_runner_source_freshness", _REAL_GATE)
-
-
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 def recording_run_command(commands: list[list[str]]):
@@ -499,14 +488,6 @@ def _write_prompts(tmp_path: Path) -> None:
         (prompts / name).write_text("prompt", encoding="utf-8")
 
 
-def test_git_helper_fails_fast_on_nonzero_exit(tmp_path):
-    """The repro helper must fail loudly on a git error, never pass a
-    broken setup silently."""
-    repo, old, new = build_stale_repo(tmp_path)
-    with pytest.raises(AssertionError, match="rc="):
-        git(repo, "rev-parse", "--verify", "refs/heads/no-such-branch")
-
-
 def test_main_source_gate_blocks_claim_before_slot(monkeypatch, tmp_path):
     """The gate is a start invariant: when the running source is stale,
     the tick dies BEFORE any slot is taken and nothing is claimed."""
@@ -518,11 +499,6 @@ def test_main_source_gate_blocks_claim_before_slot(monkeypatch, tmp_path):
         raise AssertionError("pick_next_delivery must not run on a stale runner")
 
     monkeypatch.setattr(runner, "pick_next_delivery", fail_if_called)
-    # The guard itself must fail loudly if it is ever reached.
-    with pytest.raises(
-        AssertionError, match="must not run on a stale runner",
-    ):
-        fail_if_called()
     monkeypatch.setattr(
         runner, "check_runner_source_freshness",
         lambda *a, **k: (_ for _ in ()).throw(

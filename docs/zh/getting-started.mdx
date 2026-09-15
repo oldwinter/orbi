@@ -429,8 +429,8 @@ pi_model = "groq/compound"
 `groq/compound` 是 **70K TPM、无日 token 上限**，`qwen/qwen3.8-27b`
 是 **8K TPM / 200K TPD**。
 
-在本仓库的交付量级下，这是性质之别，不是程度之别：本仓库自身约 47
-次真实交付的中位数约为每次交付 220 万 token（implement 与 review
+在本仓库的交付量级下，这是性质之别，不是程度之别：本仓库自身交付的
+中位数约为每次交付 220 万 token（implement 与 review
 合计；来源是一个带 CI、有 Issue 规范的 Python 仓库——对其他仓库
 未验证），所以 200K TPD 连一天一次的中位交付都覆盖不了，8K TPM
 本身就意味着数小时的限流等待。token 墙先于请求墙到来，这正是更高

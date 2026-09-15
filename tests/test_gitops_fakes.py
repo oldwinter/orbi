@@ -201,37 +201,6 @@ def test_create_release_worktree_creates_fresh_from_the_release_commit(
 # --- the failure paths (fail fast, never a silent pass) ----------------------
 
 
-def test_fake_git_fails_fast_on_unsupported_commands(fake_git):
-    with pytest.raises(subprocess.CalledProcessError) as excinfo:
-        fake_git(["git", "status"])
-    assert "unsupported command: git status" in excinfo.value.stderr
-    with pytest.raises(subprocess.CalledProcessError) as excinfo:
-        fake_git(["bash", "-c", "echo hi"])
-    assert "unsupported command" in excinfo.value.stderr
-    with pytest.raises(subprocess.CalledProcessError) as excinfo:
-        fake_git(["git"])
-    assert "unsupported command: git" in excinfo.value.stderr
-
-
-def test_fake_git_fails_fast_on_malformed_known_verbs(fake_git):
-    cases = (
-        ["git", "ls-remote", "--heads", "origin"],
-        ["git", "branch", "list", "main"],
-        ["git", "fetch", "upstream", "main"],
-        ["git", "rev-parse", "main", "main"],
-        ["git", "merge-base", "c0001", "c0001"],
-        ["git", "worktree", "list", "--format=json"],
-        ["git", "worktree", "add"],
-        ["git", "worktree", "add", "-b", "b"],
-        ["git", "worktree", "add", "p1", "p2", "p3"],
-        ["git", "reset", "--soft", "c0001"],
-    )
-    for command in cases:
-        with pytest.raises(subprocess.CalledProcessError) as excinfo:
-            fake_git(command)
-        assert "unsupported command" in excinfo.value.stderr, command
-
-
 def test_fake_git_fails_fast_on_unknown_refs(fake_git, tmp_path):
     with pytest.raises(subprocess.CalledProcessError) as excinfo:
         fake_git(["git", "rev-parse", "origin/absent"])

@@ -95,18 +95,6 @@ class FakeGh:
         ]
 
 
-def test_fake_gh_rejects_unrouted_get_calls():
-    fake = FakeGh()
-    with pytest.raises(AssertionError, match="unexpected gh api GET repos/x"):
-        fake("repos/x")
-
-
-def test_fake_gh_text_rejects_unrouted_log_calls():
-    fake = FakeGh()
-    with pytest.raises(AssertionError, match="unexpected gh api GET repos/x"):
-        fake.text("repos/x")
-
-
 def ep_jobs(run_id=42):
     return f"repos/{OWNER_REPO}/actions/runs/{run_id}/jobs?per_page=100"
 

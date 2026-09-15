@@ -1416,6 +1416,34 @@ def close_release_milestone(repo: str, version: str, *, run_id: str | None = Non
 RELEASE_DOCS_LATEST_MARKER_EN = " (latest)"
 RELEASE_DOCS_LATEST_MARKER_ZH = "（最新）"
 
+# The release-machine audit blocks the GitHub Release body carries for
+# the release state machine's own evidence trail (#204). They stay on
+# the GitHub Release; the docs site is for readers, so the docs page
+# drops them (#910) — the changelog and the rest of the body stay.
+RELEASE_BODY_DROP_SECTION_HEADINGS = (
+    "## Scope (verified item by item)",
+    "## Pre-release gates",
+)
+
+
+def strip_release_audit_sections(notes: str) -> str:
+    """Drop the release-machine audit blocks from a release body: the
+    `## Scope (verified item by item)` and `## Pre-release gates`
+    sections and the standalone `run_id=` lines. Everything else — the
+    changelog, the meta bullets, the `## Tests` section — stays."""
+    dropping = False
+    kept: list[str] = []
+    for line in notes.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            dropping = stripped in RELEASE_BODY_DROP_SECTION_HEADINGS
+            if dropping:
+                continue
+        if dropping or stripped.startswith("run_id="):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
 
 def release_docs_page(*, version: str, tag_object: str,
                       release_commit: str, published_at: str,
@@ -1426,12 +1454,16 @@ def release_docs_page(*, version: str, tag_object: str,
      The page content is the published GitHub Release body
     (no changelog re-implementation — #204 owns that) plus the meta the
     existing release pages share: the tag/release-commit mapping, the
-    publish time and the release task Issue number. Two mechanical
+    publish time and the release task Issue number. Mechanical
     adaptations only: the body's own leading `# <version>` heading is
     dropped because the page carries its own title with the `(latest)`
-    marker, and HTML comment lines (`<!-- ... -->`, the run markers) are
-    dropped because the Mintlify MDX parser rejects them — the visible
-    `run_id=` line stays, so the correlation is kept.
+    marker; HTML comment lines (`<!-- ... -->`, the run markers) are
+    dropped because the Mintlify MDX parser rejects them; and the
+    release-machine audit blocks (`## Scope (verified item by item)`,
+    `## Pre-release gates`, the `run_id=` lines) are dropped because
+    they are the release state machine's evidence trail, which belongs
+    on the GitHub Release, not on the docs site (#910) — the changelog
+    and the rest of the body stay.
     """
     notes = body.strip()
     lines = notes.splitlines()
@@ -1441,7 +1473,7 @@ def release_docs_page(*, version: str, tag_object: str,
         line for line in lines
         if not line.strip().startswith("<!--")
     ]
-    notes = "\n".join(lines).strip()
+    notes = strip_release_audit_sections("\n".join(lines))
     if language == "en":
         title = f"# {version} release (latest)"
         intro = (

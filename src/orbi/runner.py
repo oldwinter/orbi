@@ -342,6 +342,17 @@ class PreExistingCIFailure(UnrecoverableDeliveryError):
     """
 
 
+class GateCIFailure(RuntimeError):
+    """A failed CI check on the reviewed PR head itself.
+
+    Unlike `PreExistingCIFailure` this is recoverable: the review/fix
+    loop repairs the head until the check passes or the round budget
+    exhausts. Routing to that recoverable path is by THIS type, never by
+    matching text inside the message — rewording the message must not
+    change control flow (the rule at `RecoverableMergeGateError`).
+    """
+
+
 class ReviewRoundsExhausted(UnrecoverableDeliveryError):
     """Expected terminal stop after the bounded review/fix budget.
 
@@ -5196,30 +5207,45 @@ def _raise_if_preexisting_ci_failure(
         )
 
 
-def _classify_rollup(rollup: list) -> tuple[list[str], list[str]]:
+def _render_check(entry: dict) -> str:
+    """Render one classified check entry for humans, from the data.
+
+    The rendered string is presentation only — never parsed back
+    (Issue #906): callers that need the name/status read the entry.
+    """
+    if entry["status"] == "COMPLETED":
+        return (f"check '{entry['name']}' is "
+                f"{entry['status']}/{entry['conclusion']}")
+    return f"check '{entry['name']}' is {entry['status'] or 'UNKNOWN'}"
+
+
+def _classify_rollup(rollup: list) -> tuple[list[dict], list[dict]]:
     """Split one PR status check rollup into (pending, failed) evidence.
 
-    A check is pending while its status is anything but a final one
-    (GitHub recomputes mergeability and registers new CheckRuns
-    asynchronously); a completed check with a non-passing conclusion —
-    or a legacy status-context FAILURE/ERROR — is failed. Pure: the
-    pre-review CI gate and the merge gate classify the same rollup the
-    same way.
+    Returns STRUCTURED entries carrying `name`, `status` and `conclusion`
+    (Issue #906) — callers read the fields; `_render_check` derives the
+    human wording from them. A check is pending while its status is
+    anything but a final one (GitHub recomputes mergeability and
+    registers new CheckRuns asynchronously); a completed check with a
+    non-passing conclusion — or a legacy status-context FAILURE/ERROR —
+    is failed. Pure: the pre-review CI gate and the merge gate classify
+    the same rollup the same way.
     """
-    pending: list[str] = []
-    failed: list[str] = []
+    pending: list[dict] = []
+    failed: list[dict] = []
     for check in rollup:
-        status = str(check.get("status", check.get("state", ""))).upper()
-        conclusion = str(check.get("conclusion", "")).upper()
+        status = str(check.get("status", check.get("state", "")) or "").upper()
+        conclusion = str(check.get("conclusion") or "").upper()
         name = check.get("name", check.get("context", "check"))
+        entry = {"name": name, "status": status, "conclusion": conclusion}
         if status not in ("COMPLETED", "SUCCESS", "FAILURE", "ERROR"):
-            pending.append(f"check '{name}' is {status or 'UNKNOWN'}")
+            pending.append(entry)
         elif status == "COMPLETED" and conclusion not in (
             "SUCCESS", "NEUTRAL", "SKIPPED",
         ):
-            failed.append(f"check '{name}' is {status}/{conclusion}")
+            failed.append(entry)
         elif status in ("FAILURE", "ERROR"):
-            failed.append(f"check '{name}' is {status}")
+            failed.append(entry)
     return pending, failed
 
 
@@ -5271,17 +5297,18 @@ def merge_gate(worktree: Path, pr: dict, base_branch: str,
                     cwd=worktree)
     pending, failed = _classify_rollup(state.get("statusCheckRollup") or [])
     if failed:
-        failed_names = [item.split(chr(39))[1] for item in failed]
+        failed_names = [entry["name"] for entry in failed]
         _raise_if_preexisting_ci_failure(
             pr.get("_source_repo", source_repo or ""), failed_names,
             pr.get("base_oid"),
         )
-        raise RuntimeError(
+        raise GateCIFailure(
             f"delivery gate: CI check '{failed_names[0]}' "
-            f"failed on PR #{pr['number']}: " + ", ".join(failed)
+            f"failed on PR #{pr['number']}: "
+            + ", ".join(_render_check(entry) for entry in failed)
         )
     if pending:
-        detail = ", ".join(pending)
+        detail = ", ".join(_render_check(entry) for entry in pending)
         event(
             "merge_gate_ci_pending", pr=pr["number"], pending=detail,
         )
@@ -6253,13 +6280,14 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         handle_gate_failure(str(exc), ci_failure=False,
                             absorb_abandoned=absorb_abandoned)
         return False
-    except RuntimeError as exc:
-        # CI failures retain their existing recoverable path. All other
-        # unclassified gate failures (including a moved head) fail fast.
-        message = str(exc)
-        if "delivery gate: CI" not in message:
-            raise
-        handle_gate_failure(message, ci_failure=True)
+    except GateCIFailure as exc:
+        # Issue #906: the recoverable CI failure is identified by TYPE,
+        # never by matching text inside the message — rewording a gate
+        # message cannot change which recovery path runs. `GateCIFailure`
+        # is a sibling of `PreExistingCIFailure` and
+        # `RecoverableMergeGateError`, so an already-red main and a
+        # behind-base/conflict head propagate untouched and fail fast.
+        handle_gate_failure(str(exc), ci_failure=True)
         return False
     confirmed = confirm_merged(
         worktree, merged, base_branch, repo_dir=config.repo_dir,
@@ -8511,7 +8539,7 @@ def delivery_step(pr_url: str, issue: dict, config: RunnerConfig,
     if pending:
         event(
             "delivery_ci_pending", issue=number, pr=pr_url,
-            pending="; ".join(pending),
+            pending="; ".join(_render_check(entry) for entry in pending),
         )
         return
     # One OPEN round — the label read/repair, the
