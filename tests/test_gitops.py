@@ -207,6 +207,20 @@ def test_freeze_base_fetches_under_the_lock_then_reads_the_sha(
     assert (tmp_path / ".orbi" / "base-sync.lock").is_file()
 
 
+def test_fetch_origin_branch_uses_an_explicit_refspec(monkeypatch, tmp_path):
+    """Issue #898: the destination refspec is required so a
+    single-branch clone records origin/<delivery>."""
+    commands = []
+    monkeypatch.setattr(seam, "run_command", lambda c, **k: (
+        commands.append(c), "")[1])
+    gitops.fetch_origin_branch(tmp_path, "orbi/issue-898", cwd=tmp_path)
+    assert commands == [[
+        "git", "fetch", "origin",
+        "+refs/heads/orbi/issue-898:refs/remotes/origin/orbi/issue-898",
+    ]]
+    assert not (tmp_path / ".orbi" / "base-sync.lock").exists()
+
+
 def test_base_sync_lock_is_released_after_the_fetch(monkeypatch, tmp_path):
     monkeypatch.setattr(seam, "run_command", lambda c, **k: "")
     gitops.fetch_base_ref(tmp_path, "main", lock_timeout_seconds=1.0)
