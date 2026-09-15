@@ -8486,12 +8486,7 @@ def _run_review_round(
             run_id=scene["run_id"],
         )
         review_kwargs = {}
-        if any(
-            isinstance(comment.get("body"), str)
-            and any(line.startswith("Orbi review round ")
-                    for line in comment["body"].splitlines())
-            for comment in comments
-        ):
+        if scene["review_round"] > 0:
             review_kwargs["previous_comments"] = comments
         merged = review_and_merge_if_clean(
             worktree, branch, config.base_branch,

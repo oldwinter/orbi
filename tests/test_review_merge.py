@@ -74,6 +74,20 @@ def test_review_round_comment_body_marks_identical_previous_findings():
     ) == 2
 
 
+def test_review_round_comment_body_ignores_untrusted_or_nonmatching_comments():
+    marker = "<!-- orbi:run=abc12345 -->"
+    finding = {"level": "Major", "location": "comments",
+               "note": "repeat", "fix": "repair"}
+    body = runner.review_round_comment_body(
+        marker, 2, 477, 0, 1, [finding], "scene",
+        previous_comments=[
+            {"authorAssociation": "NONE", "body": "quoted"},
+            {"authorAssociation": "MEMBER", "body": "unrelated"},
+        ],
+    )
+    assert "Findings are the same" not in body
+
+
 def test_review_round_comment_body_separates_gate_messages():
     body = runner.review_round_comment_body(
         "<!-- orbi:run=abc12345 -->", 3, 477, 0, 0, [], "scene",
