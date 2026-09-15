@@ -1,0 +1,77 @@
+# v0.5.6 release (latest)
+
+`v0.5.6` was published 2026-09-15T00:39:41Z as the GitHub Release [v0.5.6](https://github.com/orbi-build/orbi/releases/tag/v0.5.6) (release task: Issue #866).
+
+## Tag state (verified against origin)
+
+| Ref | Object | Points at |
+|---|---|---|
+| `v0.5.6` | annotated tag `377f505ff3586b5a0d3d124503cee295185da3ec` | commit `b8a82aaff06053aa169fd9b2086dc9154dfa0797` |
+
+## Release notes
+
+## Changelog
+
+### Reliability and recovery
+
+- pi_recovery.boot_time 直接读 /proc/stat：macOS 上空转恢复抛 FileNotFoundError 而非恢复（#851 遗留） ([Issue #870](https://github.com/orbi-build/orbi/issues/870); [PR #882](https://github.com/orbi-build/orbi/pull/882))
+
+### Deployment and operations
+
+- install.sh 在原版 macOS 上过了 launchctl 检查后仍必然退出：timeout 与 GNU sed -i（#851 遗留） ([Issue #868](https://github.com/orbi-build/orbi/issues/868); [PR #884](https://github.com/orbi-build/orbi/pull/884))
+
+### Documentation
+
+- Docs QA: fresh Ubuntu/Fedora/Arch installation commands are inaccurate ([Issue #859](https://github.com/orbi-build/orbi/issues/859); [PR #890](https://github.com/orbi-build/orbi/pull/890))
+- Docs: PyPI installation commands advertise an unavailable orbi package ([Issue #860](https://github.com/orbi-build/orbi/issues/860); [PR #889](https://github.com/orbi-build/orbi/pull/889))
+- Ubuntu 24.04 editable install fails on the documented /usr/bin/python3 pin ([Issue #861](https://github.com/orbi-build/orbi/issues/861); [PR #875](https://github.com/orbi-build/orbi/pull/875))
+- Docs: GitHub CLI minimum version and installation source are unspecified ([Issue #862](https://github.com/orbi-build/orbi/issues/862); [PR #873](https://github.com/orbi-build/orbi/pull/873))
+- 全仓注释审计：32 处注释/docstring 与代码实际行为不符（cleanup 清单） ([Issue #864](https://github.com/orbi-build/orbi/issues/864); [PR #865](https://github.com/orbi-build/orbi/pull/865))
+- getting-started 与 README 仍写 systemd 是唯一调度器：macOS 前置条件与就绪检查缺失（#851 遗留） ([Issue #872](https://github.com/orbi-build/orbi/issues/872); [PR #876](https://github.com/orbi-build/orbi/pull/876))
+- PyPI distribution rename to orbi-cli: align package, publish workflow, docs, and v0.5.6 verification ([Issue #874](https://github.com/orbi-build/orbi/issues/874); [PR #888](https://github.com/orbi-build/orbi/pull/888))
+
+### Bug fixes
+
+- launchd 包装用 . 加载 .orbi/env 但不 export：macOS 每次 tick 都缺提供商密钥（#851 遗留） ([Issue #867](https://github.com/orbi-build/orbi/issues/867); [PR #885](https://github.com/orbi-build/orbi/pull/885))
+- launchd plist 的 PATH 缺 /opt/homebrew/bin：Apple Silicon 上 tick 找不到 gh/uv/pi（#851 遗留） ([Issue #869](https://github.com/orbi-build/orbi/issues/869); [PR #887](https://github.com/orbi-build/orbi/pull/887))
+- macOS tick 从不跑 sync-engine-source：engine_source_track 在 launchd 部署上是死配置（#851 遗留） ([Issue #871](https://github.com/orbi-build/orbi/issues/871); [PR #886](https://github.com/orbi-build/orbi/pull/886))
+- 评审会话撞上 add/add 冲突后静默放弃 absorb：转去补测试文案，闸门看不出它没尝试合并 ([Issue #877](https://github.com/orbi-build/orbi/issues/877); [PR #883](https://github.com/orbi-build/orbi/pull/883))
+- 评审会话不读本 PR 的历史失败评论：同一失败连续五轮重复，每轮都当第一次处理 ([Issue #878](https://github.com/orbi-build/orbi/issues/878); [PR #881](https://github.com/orbi-build/orbi/pull/881))
+- 闸门失败文案把 behind-base 和 merge conflict 印成同一句：base 静止一个半小时仍报 behind the latest base ([Issue #879](https://github.com/orbi-build/orbi/issues/879); [PR #880](https://github.com/orbi-build/orbi/pull/880))
+
+## Contributors
+
+<a href="https://github.com/xqliu"><img src="https://avatars.githubusercontent.com/u/22554?v=4&s=48" width="32" height="32" alt="xqliu" /></a> <a href="https://github.com/zzuu080603"><img src="https://avatars.githubusercontent.com/u/225036550?u=e6906b0eff64377c19cd3a6831ae44fbd87afc77&v=4&s=48" width="32" height="32" alt="zzuu080603" /></a>
+
+- tag: `v0.5.6`
+- release commit: `b8a82aaff06053aa169fd9b2086dc9154dfa0797`
+- release task: Issue #866
+
+## Scope (verified item by item)
+
+- Issue #859 closed
+- Issue #860 closed
+- Issue #861 closed
+- Issue #862 closed
+- Issue #864 closed
+- Issue #867 closed
+- Issue #868 closed
+- Issue #869 closed
+- Issue #870 closed
+- Issue #871 closed
+- Issue #872 closed
+- Issue #874 closed
+- Issue #877 closed
+- Issue #878 closed
+- Issue #879 closed
+
+## Pre-release gates
+
+- no open Issue in milestone 'v0.5.6' carries ai-in-progress / ai-pr-opened / ai-fix-needed
+- CI on the release commit: 1 check(s) all success/neutral/skipped
+
+## Tests
+
+- release tests gated by GitHub Actions CI on the release commit b8a82aaff06053aa169fd9b2086dc9154dfa0797 (the #268 CI-wait gate; no local test execution)
+
+run_id=9ac39ce3
