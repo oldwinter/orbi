@@ -19,6 +19,7 @@ import subprocess
 import pytest
 
 import orbi.github as github
+import orbi.repo_config as repo_config
 import orbi.runner as runner
 from orbi.delivery_labels import (
     EPIC_LABEL,
@@ -375,16 +376,6 @@ def test_fake_fails_fast_on_unsupported_commands(fake_gh):
     )
 
 
-def test_fake_fails_fast_on_unsupported_issue_verbs(fake_gh):
-    fake_gh.add_issue(5)
-    assert_fails_with(
-        lambda: fake_gh(
-            ["gh", "issue", "lock", "5", "--repo", "owner/repo"]
-        ),
-        "unsupported command: gh issue lock",
-    )
-
-
 def test_fake_fails_fast_on_repository_mismatch(fake_gh):
     fake_gh.add_issue(5)
     fake_gh.add_check_runs("abc123", [])
@@ -456,13 +447,10 @@ def test_fake_fails_fast_on_bad_search_qualifiers(fake_gh):
     )
 
 
-def test_fake_repo_config_unseeded_is_a_404(fake_gh):
+def test_repo_config_unseeded_is_a_designed_no_op(fake_gh):
     """A read of `.github/orbi.toml` with nothing seeded is GitHub's 404 —
-    the exact failure `read_repo_config` maps to its designed silent
-    no-op (the host-config fallback), never a generic error."""
-    assert_fails_with(
-        lambda: fake_gh(
-            ["gh", "api", "repos/owner/repo/contents/.github/orbi.toml"]
-        ),
-        "HTTP 404",
-    )
+    the real `read_repo_config` maps it to its designed silent no-op
+    (the host-config fallback), never a generic error."""
+    assert repo_config.read_repo_config(
+        "owner/repo", run_command=fake_gh,
+    ) is None

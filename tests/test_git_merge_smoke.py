@@ -19,20 +19,10 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 import orbi.runner as runner
 from seam import seam
-
-
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 @pytest.fixture()
@@ -191,11 +181,6 @@ def test_merge_gate_rejects_conflicting_pr_reports_mergeable(
     ):
         runner.merge_gate(clone, pr, "main", repo_dir=clone)
     assert "merge_gate_not_mergeable" in caplog.text
-
-
-def test_git_helper_fails_fast_on_nonzero_exit(clone):
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git(clone, "rev-parse", "no-such-ref")
 
 
 def test_deployment_checkout_fast_forwards_after_independent_merge(

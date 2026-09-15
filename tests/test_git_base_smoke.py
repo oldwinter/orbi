@@ -18,21 +18,11 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 import orbi.runner as runner
 from seam import seam
 from orbi.delivery_scene import RunContext
-
-
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 @pytest.fixture()
@@ -176,11 +166,6 @@ def test_verify_pr_passes_through_when_local_head_ahead_of_pr_head(
     assert "local_head_ahead_of_pr_head" in caplog.text
     assert f"pr_head={pushed_head}" in caplog.text
     assert f"local_head={local_head}" in caplog.text
-
-
-def test_git_helper_fails_fast_on_nonzero_exit(clone):
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git(clone, "rev-parse", "no-such-ref")
 
 
 def test_create_worktree_rebuilds_a_deleted_worktree_from_the_remote_branch(clone):

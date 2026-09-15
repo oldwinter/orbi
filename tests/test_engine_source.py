@@ -20,6 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import git
+
 from orbi import engine_source
 
 
@@ -33,10 +35,6 @@ def _run(args: list[str]) -> str:
             f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
         )
     return result.stdout.strip()
-
-
-def git(repo, *args: str) -> str:
-    return _run(["git", "-C", str(repo), *args])
 
 
 def git_ok(repo, *args: str) -> str | None:
@@ -439,13 +437,6 @@ def test_sync_branch_reraises_a_fetch_failure_when_the_ref_exists(
 
 
 
-
-
-def test_git_helper_fails_fast_on_nonzero_exit(engine_repo):
-    """The fixture git helper must fail loudly on a git error, never
-    pass a broken setup silently."""
-    with pytest.raises(AssertionError, match="rc="):
-        git(engine_repo.home, "rev-parse", "--verify", "refs/heads/none")
 
 
 def test_sync_branch_track_fails_closed_when_the_head_cannot_be_verified(

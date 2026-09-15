@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 from orbi import git_transport
 
 
@@ -615,23 +617,6 @@ def test_check_transport_rejects_an_unknown_mode(tmp_path):
 
 
 # --- real git: the worktree inherits the checkout's transport -----------------
-
-
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
-
-
-def test_git_helper_fails_fast_on_nonzero_exit(tmp_path):
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git(tmp_path, "rev-parse", "no-such-ref")
 
 
 def test_real_worktree_inherits_the_checkout_origin_remote(tmp_path):

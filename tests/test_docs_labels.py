@@ -157,9 +157,7 @@ def test_operations_documents_the_session_record():
     assert "orbi session" in text
     assert "JSONL" in text
     # The real session directory the code passes to Pi.
-    assert ".pi-session" in text or ".pi-session" in (
-        (REPO_ROOT / "src" / "orbi" / "runner.py").read_text(encoding="utf-8")
-    )
+    assert ".pi-session" in text
 
 
 def test_workflow_documents_review_verdict_on_github():
