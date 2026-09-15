@@ -2735,10 +2735,10 @@ def test_human_recovery_after_the_scene_resets_the_budget(
 def test_base_advance_budget_exhausts_separately(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
-    monkeypatch.setattr(runner, "freeze_pr", lambda *a, **k: _pr())
-    monkeypatch.setattr(runner, "run_review", lambda *a, **k: _pass_verdict_text())
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: _pr())
+    monkeypatch.setattr(seam, "run_review", lambda *a, **k: _pass_verdict_text())
     monkeypatch.setattr(
-        runner, "merge_gate",
+        seam, "merge_gate",
         lambda *a, **k: (_ for _ in ()).throw(
             runner.RecoverableMergeGateError(
                 "PR #4 head h1 is behind latest remote base origin/main (b2)"
@@ -2747,7 +2747,7 @@ def test_base_advance_budget_exhausts_separately(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(seam, "comment_issue",
                         lambda *a, **k: calls.append(k.get("body")))
-    monkeypatch.setattr(runner, "comment_pr", lambda *a, **k: None)
+    monkeypatch.setattr(seam, "comment_pr", lambda *a, **k: None)
     monkeypatch.setattr(seam, "edit_issue", lambda *a, **k: None)
     make_fake_gh(monkeypatch)
     with pytest.raises(runner.UnrecoverableDeliveryError, match="base-advance retry loop exhausted"):

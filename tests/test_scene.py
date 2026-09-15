@@ -149,6 +149,22 @@ def test_parse_legacy_scene_defaults_base_advance_round():
     assert scene.parse(body).base_advance_round == 0
 
 
+def test_parse_old_v1_scene_defaults_base_advance_round():
+    record = dataclasses.asdict(scene_for())
+    record.pop("base_advance_round")
+    assert scene.parse(
+        "<!-- orbi:scene:v1 " + json.dumps(record) + " -->"
+    ).base_advance_round == 0
+
+
+@pytest.mark.parametrize("value", ["bad", -1])
+def test_parse_rejects_invalid_base_advance_round(value):
+    record = dataclasses.asdict(scene_for())
+    record["base_advance_round"] = value
+    with pytest.raises(scene.SceneError, match="base_advance_round"):
+        scene.parse("<!-- orbi:scene:v1 " + json.dumps(record) + " -->")
+
+
 # ------------------------------------------- corrupted v1 block (SceneError)
 
 

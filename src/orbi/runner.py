@@ -2633,7 +2633,11 @@ def parse_pr_comment(body: str) -> dict | None:
         # the round comments carry the updated scene block, so the next
         # resume reads the advanced count instead of re-counting text.
         "review_round": found.review_round,
-        "base_advance_round": found.base_advance_round,
+        # Keep the projection shape of pre-#902 scenes stable when the
+        # counter is still zero. A non-zero value is the persisted state
+        # needed by the next review session.
+        **({"base_advance_round": found.base_advance_round}
+           if found.base_advance_round else {}),
     }
 
 
