@@ -837,6 +837,82 @@ def test_merge_gate_reads_the_state_once(monkeypatch, tmp_path):
     assert len(views) == 1
 
 
+def _absorb_merge_command_fake(states, remote_head="h2"):
+    """Provide command results for the post-review base-absorb branches."""
+    views = iter(states)
+
+    def fake_run(command, **kwargs):
+        if command[0:3] == ["gh", "pr", "view"]:
+            return json.dumps(next(views))
+        if command[0:3] == ["git", "merge-base", "--is-ancestor"]:
+            raise subprocess.CalledProcessError(1, command, stderr="behind")
+        if command[0:3] == ["git", "rev-parse", "origin/main"]:
+            return "base-2"
+        if command[0:3] == ["git", "merge", "origin/main"]:
+            return ""
+        if command[0:3] == ["git", "rev-parse", "HEAD"]:
+            return "h2"
+        if command[0:2] == ["git", "push"]:
+            return ""
+        if command[0:3] == ["git", "rev-parse", "origin/h"]:
+            return remote_head
+        return ""
+    return fake_run
+
+
+def _absorb_pr_state(head, mergeable="MERGEABLE"):
+    return {"state": "OPEN", "mergeable": mergeable, "headRefOid": head,
+            "statusCheckRollup": []}
+
+
+def test_merge_gate_absorb_remote_head_mismatch_is_fail_fast(monkeypatch, tmp_path):
+    monkeypatch.setattr("orbi.runner.fetch_base_ref", lambda *args, **kwargs: None)
+    monkeypatch.setattr("orbi.runner.assess_base_freshness",
+                        lambda _w, _b, *, head, **_k:
+                        runner.BaseFreshness.ABSORBABLE if head == "h1"
+                        else runner.BaseFreshness.FRESH)
+    monkeypatch.setattr(seam, "run_command",
+                        _absorb_merge_command_fake([_absorb_pr_state("h1")],
+                                                    remote_head="other"))
+    with pytest.raises(RuntimeError, match="does not match absorbed head"):
+        runner.merge_gate(tmp_path, {"number": 4, "head_oid": "h1",
+                                     "head_ref": "h", "base_oid": "b1"},
+                          "main", repo_dir=tmp_path)
+
+
+def test_merge_gate_absorb_detects_head_moved_after_push(monkeypatch, tmp_path):
+    monkeypatch.setattr("orbi.runner.fetch_base_ref", lambda *args, **kwargs: None)
+    monkeypatch.setattr("orbi.runner.assess_base_freshness",
+                        lambda _w, _b, *, head, **_k:
+                        runner.BaseFreshness.ABSORBABLE if head == "h1"
+                        else runner.BaseFreshness.FRESH)
+    monkeypatch.setattr(seam, "run_command",
+                        _absorb_merge_command_fake([
+                            _absorb_pr_state("h1"), _absorb_pr_state("other"),
+                        ]))
+    with pytest.raises(RuntimeError, match="head moved after base absorb"):
+        runner.merge_gate(tmp_path, {"number": 4, "head_oid": "h1",
+                                     "head_ref": "h", "base_oid": "b1"},
+                          "main", repo_dir=tmp_path)
+
+
+def test_merge_gate_absorb_rejects_newly_dirty_pr(monkeypatch, tmp_path):
+    monkeypatch.setattr("orbi.runner.fetch_base_ref", lambda *args, **kwargs: None)
+    monkeypatch.setattr("orbi.runner.assess_base_freshness",
+                        lambda _w, _b, *, head, **_k:
+                        runner.BaseFreshness.ABSORBABLE if head == "h1"
+                        else runner.BaseFreshness.FRESH)
+    monkeypatch.setattr(seam, "run_command",
+                        _absorb_merge_command_fake([
+                            _absorb_pr_state("h1"),
+                            _absorb_pr_state("h2", mergeable="DIRTY"),
+                        ]))
+    with pytest.raises(runner.RecoverableMergeGateError, match="not mergeable"):
+        runner.merge_gate(tmp_path, {"number": 4, "head_oid": "h1",
+                                     "head_ref": "h", "base_oid": "b1"},
+                          "main", repo_dir=tmp_path)
+
+
 def test_merge_gate_without_ci_proceeds_to_mergeable_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(seam, "run_command",
         _merge_gate_fake(check_runs=[]),
