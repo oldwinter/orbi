@@ -53,7 +53,7 @@ def test_the_walker_reports_a_shadowed_duplicate():
         "def dup():\n    return 1\n\n\ndef dup():\n    return 2\n",
         "<synthetic>",
     )
-    assert _duplicate_module_level_defs(tree) == [("dup", 4)]
+    assert _duplicate_module_level_defs(tree) == [("dup", 5)]
 
 
 def test_git_helper_fails_fast_on_nonzero_exit(tmp_path):
