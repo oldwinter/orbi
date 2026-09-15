@@ -22,7 +22,7 @@ git clone https://github.com/orbi-build/orbi.git && cd orbi
 uv tool install --force --reinstall --editable --python python3 .  # compatible system Python (>= 3.14, e.g. Fedora 43 / current Arch); older system Python (e.g. Ubuntu 24.04 ships 3.12): --python 3.14 so uv provisions it
 ```
 
-Want just the CLI? The PyPI distribution is `orbi-cli` (Issue #874; the installed command stays `orbi`), but it is not on PyPI yet ([Issue #852](https://github.com/orbi-build/orbi/issues/852)) — the one-line installer at the top of [Getting started](docs/getting-started.mdx) is the shortest supported install.
+Want just the CLI? Published on PyPI as [`orbi-cli`](https://pypi.org/project/orbi-cli/) (release 0.5.6, requires Python ≥ 3.14; the installed command stays `orbi`): `uv tool install orbi-cli` (on an older system Python, e.g. Ubuntu 24.04's 3.12, add `--python 3.14` so uv provisions a compatible interpreter) or `pip install orbi-cli` inside an activated Python ≥ 3.14 environment; verify with `orbi --version` → `orbi 0.5.6`, uninstall with `uv tool uninstall orbi-cli`. To run Orbi itself, use the one-line installer at the top of [Getting started](docs/getting-started.mdx) — it creates the editable install Orbi's deployment drives.
 
 ### Ready check (before setup)
 

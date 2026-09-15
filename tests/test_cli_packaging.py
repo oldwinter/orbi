@@ -622,6 +622,120 @@ def test_docs_install_commands_use_the_orbi_cli_distribution():
         )
 
 
+# Issue #892: orbi-cli 0.5.6 IS published on PyPI (verified live on the
+# package page and by installing the exact release in isolated
+# environments). The authoritative CURRENT docs — the two READMEs
+# (README.md is also the PyPI project description, `readme =
+# "README.md"` in pyproject.toml) and the two getting-started pages —
+# must state that truth and the real commands; the historical release
+# notes (release-v0.5.5.mdx keeps the #852 failure record) are
+# deliberately NOT scanned: they may keep historically accurate claims.
+PYPI_AVAILABILITY_PAGES = (
+    "README.md",
+    "README.zh-CN.md",
+    "docs/getting-started.mdx",
+    "docs/zh/getting-started.mdx",
+)
+
+STALE_AVAILABILITY_RES = (
+    # EN availability claims (the pre-0.5.6 state).
+    re.compile(r"not on PyPI", re.IGNORECASE),
+    re.compile(r"not published", re.IGNORECASE),
+    re.compile(r"currently fail", re.IGNORECASE),
+    # EN "real commands only after publication" promise.
+    re.compile(r"only after a release is actually published", re.IGNORECASE),
+    # ZH availability claims (还没上 PyPI / 尚未发布到 PyPI).
+    re.compile(r"还没上\s*PyPI"),
+    re.compile(r"尚未发布到\s*PyPI"),
+    # ZH "commands are only added after the real publication" promise.
+    re.compile(r"真正发布之后[，,]?这一节才会补上"),
+)
+
+PYPI_SECTION_RE = re.compile(
+    r"^## PyPI (?:installation|安装)\s*?\n(.*?)(?=^## )",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def test_current_docs_do_not_carry_stale_pypi_availability_claims():
+    """Issue #892: no authoritative current page (including the
+    README the PyPI project page renders as its description) may say
+    orbi-cli is unavailable — the live package page and the isolated
+    install of the exact release are the acceptance evidence."""
+    for slug in PYPI_AVAILABILITY_PAGES:
+        text = (REPO_ROOT / slug).read_text(encoding="utf-8")
+        for pattern in STALE_AVAILABILITY_RES:
+            match = pattern.search(text)
+            assert not match, (
+                f"{slug} carries the stale availability claim "
+                f"{match.group(0)!r} — orbi-cli IS published on PyPI "
+                "(https://pypi.org/project/orbi-cli/); update the "
+                "current docs, never re-ship a false PyPI description"
+            )
+
+
+def test_pypi_installation_sections_carry_the_real_commands():
+    """Issue #892: the getting-started PyPI section documents the
+    verified reality — the released version on the live package page,
+    both install commands (`pip install orbi-cli` inside a Python
+    >= 3.14 environment, `uv tool install orbi-cli` for the isolated
+    tool install), the `orbi --version` check, the `uv tool uninstall
+    orbi-cli` removal, and the >= 3.14 floor with its repair."""
+    for slug in ("docs/getting-started.mdx", "docs/zh/getting-started.mdx"):
+        text = (REPO_ROOT / slug).read_text(encoding="utf-8")
+        section = PYPI_SECTION_RE.search(text)
+        assert section is not None, f"docs/{slug} lost its PyPI section"
+        body = section.group(1)
+        for needle in (
+            "https://pypi.org/project/orbi-cli/",
+            "pip install orbi-cli",
+            "uv tool install orbi-cli",
+            "orbi --version",
+            "uv tool uninstall orbi-cli",
+            "3.14",
+        ):
+            assert needle in body, (
+                f"docs/{slug} PyPI section must document {needle!r} "
+                "(Issue #892: the verified real commands and floor)"
+            )
+
+
+def test_docs_pypi_version_claims_match_the_released_version():
+    """Issue #892: the released-version claims in the current docs are
+    pinned to the packaging version — the next release must move them
+    together (the docs check fails with an actionable assertion when
+    the claim goes stale, never shipping another outdated PyPI
+    description)."""
+    import orbi
+
+    released = load_pyproject()["project"]["version"]
+    claim_re = re.compile(
+        r"(?:release|当前版本|版本)\s+(\d+\.\d+\.\d+)"
+    )
+    for slug in PYPI_AVAILABILITY_PAGES:
+        text = (REPO_ROOT / slug).read_text(encoding="utf-8")
+        claims = claim_re.findall(text)
+        assert claims, (
+            f"{slug} must state the released version (expected "
+            f"{released}, matching pyproject.toml / PyPI)"
+        )
+        wrong = [v for v in claims if v != released]
+        assert not wrong, (
+            f"{slug} claims released version(s) {wrong} but the "
+            f"released version is {released} (pyproject.toml, "
+            f"installed `orbi --version` prints orbi {orbi.__version__})"
+        )
+
+
+def test_readme_is_the_packaged_pypi_description():
+    """Issue #892: the PyPI project description is the README (the
+    published page renders it), so the description source must be
+    pinned and truthful — a stale availability claim in README.md is
+    a stale claim ON PyPI."""
+    data = load_pyproject()
+    assert data["project"]["readme"] == "README.md"
+
+
 def test_install_docs_state_the_conditional_interpreter_rule():
     """Issue #861: `requires-python >= 3.14` is a compatibility floor,
     not a demand to replace every distro Python. No live page may
