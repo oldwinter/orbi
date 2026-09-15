@@ -271,7 +271,6 @@ def test_open_pr_for_branch_and_delivery_status(fake_gh, tmp_path):
     )
     pr = github.open_pr_for_branch(tmp_path, branch)
     assert pr["number"] == 11
-    assert github.pr_state(pr["url"], "owner/repo") == "OPEN"
     state, summaries = github.pr_delivery_status(pr["url"], "owner/repo")
     assert (state, summaries) == ("OPEN", ["CI=COMPLETED/SUCCESS"])
     fake_gh.add_pr(12, head=branch)
@@ -393,12 +392,6 @@ def test_fake_fails_fast_on_an_unknown_issue(fake_gh):
     assert_fails_with(
         lambda: github.issue_labels(999, "owner/repo"),
         "Could not resolve to an Issue",
-    )
-    assert_fails_with(
-        lambda: github.pr_state(
-            "https://github.com/owner/repo/pull/999", "owner/repo"
-        ),
-        "Could not resolve to a pull request",
     )
 
 

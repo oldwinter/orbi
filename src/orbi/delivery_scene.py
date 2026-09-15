@@ -88,8 +88,7 @@ def body_markers(body: object) -> frozenset[str]:
 
 
 def classify(
-    labels, scene, pr_state, worktree_present, branch_present,
-    body_markers, *, ready_label: str = READY_LABEL,
+    labels, scene, pr_state, body_markers, *, ready_label: str = READY_LABEL,
     human_review_hold: bool = False,
 ) -> DeliveryScene:
     """Classify one delivery scene from the gathered facts (pure).
@@ -105,11 +104,6 @@ def classify(
     - `pr_state`: the probed PR state for the delivery branch
       (`"OPEN"` / `"MERGED"` / `"CLOSED"`), None when no PR was probed
       or none is open;
-    - `worktree_present` / `branch_present`: the local facts; no scene
-      today re-routes on them (a missing worktree is the handler's
-      fail-fast, an existing branch its resume point — `claim_route`'s
-      "implement" for a branch without an open PR is the pinned
-      counterpart);
     - `body_markers`: the `body_markers` set of the Issue body;
     - `ready_label`: the repository's claim label — the
       queue entry a fresh claim keys on;
@@ -205,8 +199,6 @@ class DeliveryFacts:
     labels: frozenset[str]
     scene: object = None
     pr_state: str | None = None
-    worktree_present: bool = False
-    branch_present: bool = False
     body_markers: frozenset[str] = frozenset()
     ready_label: str = READY_LABEL
     # Handler facts.
@@ -231,8 +223,6 @@ class DeliveryFacts:
             labels=self.labels,
             scene=self.scene,
             pr_state=self.pr_state,
-            worktree_present=self.worktree_present,
-            branch_present=self.branch_present,
             body_markers=self.body_markers,
             ready_label=self.ready_label,
         )

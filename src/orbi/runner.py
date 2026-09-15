@@ -201,7 +201,6 @@ from orbi.github import (
     pr_delivery_status,
     pr_delivery_rollup,
     _check_summaries,
-    pr_state,
     pr_view,
     trusted_issue_comments_block,
 )
@@ -2208,7 +2207,6 @@ def _pick_from_scan(
         if current_labels:
             scene_value = classify(
                 labels=current_labels, scene=None, pr_state=None,
-                worktree_present=False, branch_present=False,
                 body_markers=body_markers(issue.get("body")),
                 ready_label=ready_label,
             )
@@ -2401,7 +2399,6 @@ def pick_in_progress_issue(
         if current_labels:
             scene_value = classify(
                 labels=current_labels, scene=None, pr_state=None,
-                worktree_present=False, branch_present=False,
                 body_markers=body_markers(candidate.get("body")),
             )
             if scene_value not in _SCAN_CLAIMABLE_SCENES:
@@ -2819,7 +2816,6 @@ def pick_resumable_delivery(
         if current_labels:
             found_scene = classify(
                 labels=current_labels, scene=found, pr_state=None,
-                worktree_present=False, branch_present=False,
                 body_markers=body_markers(issue.get("body")),
             )
             if found_scene is not DeliveryScene.RESUME_REVIEW:
@@ -6940,8 +6936,6 @@ def _gather_claim_facts(issue: dict, config: RunnerConfig,
         labels=claim_labels
         | ({IN_PROGRESS_LABEL} if in_progress else frozenset()),
         pr_state="OPEN" if takeover_pr is not None else None,
-        worktree_present=resume_scene is not None,
-        branch_present=stable_branch_present,
         body_markers=body_markers(issue.get("body")),
         ready_label=dispatch_label,
         config=config,
@@ -7604,7 +7598,6 @@ def process_issue(issue: dict, config: RunnerConfig, source_repo: str,
     title = issue["title"]
     ticket_scene = classify(
         labels=_issue_label_set(issue), scene=None, pr_state=None,
-        worktree_present=False, branch_present=False,
         body_markers=body_markers(issue.get("body")),
     )
     task_handler = _TASK_TYPE_DISPATCH.get(ticket_scene)

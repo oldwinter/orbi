@@ -143,8 +143,7 @@ VOLATILE_TOKEN_RE = re.compile(
 # `active_milestone`; a crash loop whose journal carries one
 # of them is a deployment-config problem, not an orbi bug.
 CONFIG_CAUSE_RE = re.compile(
-    r"missing environment variable"
-    r"|API key for provider"
+    r"API key for provider"
     r"|must be a non-empty"
     r"|must be a boolean"
     r"|must be a positive integer"

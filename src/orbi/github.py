@@ -858,8 +858,3 @@ def pr_delivery_status(pr_url: str, source_repo: str) -> tuple[str, list[str]]:
     """Return PR state and CI summaries for delivery-wait evidence."""
     state, rollup = pr_delivery_rollup(pr_url, source_repo)
     return state, _check_summaries(rollup)
-
-
-def pr_state(pr_url: str, source_repo: str) -> str:
-    """Return a PR's state from the configured source repository."""
-    return pr_delivery_status(pr_url, source_repo)[0]

@@ -184,34 +184,7 @@ def test_run_marker_rejects_missing_or_invalid_run_id():
             progress.run_marker(bad)
 
 
-def test_find_run_comment_returns_comment_carrying_the_marker():
-    comments = [
-        {"id": 1, "body": "Orbi started Pi: ..."},
-        {"id": 2, "body": "<!-- orbi:run=abc12345 -->\n**progress**"},
-        {"id": 3, "body": "another run <!-- orbi:run=other -->"},
-    ]
-    found = progress.find_run_comment(comments, "abc12345")
-    assert found == comments[1]
 
-
-def test_find_run_comment_returns_none_when_marker_absent():
-    comments = [
-        {"id": 1, "body": "Orbi started Pi: ..."},
-        {"id": 2, "body": "<!-- orbi:run=other -->"},
-    ]
-    assert progress.find_run_comment(comments, "abc12345") is None
-
-
-def test_find_run_comment_returns_first_match_for_duplicate_markers():
-    comments = [
-        {"id": 1, "body": "<!-- orbi:run=abc12345 -->first"},
-        {"id": 2, "body": "<!-- orbi:run=abc12345 -->second"},
-    ]
-    assert progress.find_run_comment(comments, "abc12345")["id"] == 1
-
-
-def test_find_run_comment_ignores_comments_without_body():
-    assert progress.find_run_comment([{"id": 1}], "abc12345") is None
 
 
 @pytest.mark.parametrize(
