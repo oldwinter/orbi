@@ -210,7 +210,7 @@ host 配置打开门禁（`orbi.toml` 里 `human_review_gate = true`——这是
 （Issue #537）。共三类——派发时每个 Issue 选定其一：
 
 | 票类型 | 标签 | Runner 做什么 |
-|---|---|
+|---|---|---|
 | dev（默认） | `ai-ready` | 完整交付链：worktree、开发剧本、一个 PR、独立审查、合并 |
 | ops | `ai-ready` + `ai-ops-only` | 同一个完整执行会话（worktree、shell、网络——实现里不存在任何命令白名单），但用 ops 剧本替代开发剧本。交付物 = 回到票上的证据；会话若附带代码 commit，则照常走 PR 流程 |
 | content | `ai-ready` + `ai-content-only` | 内容代理：文本进、文本出，以 Issue 评论交付——无执行、无 git；交付后关闭 Issue |
