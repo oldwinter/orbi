@@ -5383,6 +5383,21 @@ def merge_gate(worktree: Path, pr: dict, base_branch: str,
         worktree, base_branch, head=pr["head_oid"],
         reviewed_head=state.get("headRefOid"), mergeable=mergeable,
     )
+    if freshness is BaseFreshness.ABSORBABLE:
+        base_sha = run_command(
+            ["git", "rev-parse", f"origin/{base_branch}"], cwd=worktree,
+        )
+        event(
+            "merge_gate_behind_base", level=logging.ERROR,
+            base_branch=base_branch, base_sha=base_sha,
+            pr=pr["number"], head=pr["head_oid"],
+            freshness=freshness.value,
+        )
+        raise RecoverableMergeGateError(
+            f"PR #{pr['number']} head {pr['head_oid']} is behind latest "
+            f"remote base origin/{base_branch} ({base_sha}); absorb the "
+            "latest base, rerun tests and review, then retry"
+        )
     if freshness is BaseFreshness.CONFLICTED:
         event(
             "merge_gate_head_moved", level=logging.ERROR,

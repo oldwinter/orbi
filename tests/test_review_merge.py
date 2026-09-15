@@ -913,6 +913,30 @@ def test_merge_gate_rejects_head_behind_latest_base(monkeypatch, tmp_path, caplo
     assert "base_branch=main" in caplog.text
 
 
+def test_merge_gate_rechecks_base_after_pr_read(monkeypatch, tmp_path):
+    """A base update between the initial probe and PR read must not merge."""
+    answers = iter([True, False])
+
+    def fake_run(command, **kwargs):
+        if (command[0] == "git" and command[1] == "merge-base"
+                and command[2] == "--is-ancestor"):
+            if next(answers):
+                return ""
+            raise subprocess.CalledProcessError(1, command, stderr="behind")
+        if (command[0] == "git" and command[1] == "rev-parse"
+                and command[2] == "origin/main"):
+            return "base-2"
+        return _merge_gate_fake()(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    with pytest.raises(runner.RecoverableMergeGateError, match="behind latest remote base"):
+        runner.merge_gate(
+            tmp_path, {"number": 4, "url": "u", "base_ref": "main",
+                       "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
+            "main", repo_dir=tmp_path,
+        )
+
+
 def test_merge_gate_defers_when_ci_pending(monkeypatch, tmp_path, caplog):
     """Issue #788: pending checks on the reviewed head are an intermediate
     state, never a failure — the gate raises `DeliveryDeferred`, merges
