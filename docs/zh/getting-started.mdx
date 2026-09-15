@@ -39,13 +39,13 @@ uv 会自动供应兼容的 Python 3.14）；在已激活的 Python ≥ 3.14 环
 
 ```bash
 uv tool install orbi-cli
-orbi --version  # → orbi \u003cversion\u003e
+orbi --version  # → orbi <version>
 orbi --help
 ```
 
 ≥ 3.14 的底线约束的是执行安装的解释器本身：给 `uv tool install` 显式加
 `--python 3.13`，会以 uv resolver 消息
-`orbi-cli==\u003cversion\u003e depends on Python\u003e=3.14` 失败；在已激活的旧版本环境里
+`orbi-cli==<version> depends on Python>=3.14` 失败；在已激活的旧版本环境里
 运行 `pip install orbi-cli`，则报
 `No matching distribution found for orbi-cli`。两种情况的修复方式相同：
 选择兼容的解释器——给 `uv tool install` 指定 `--python 3.14`（uv 自动
@@ -94,14 +94,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 （[官方 Linux 安装说明](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)）：
 
 ```bash
-(type -p wget \u003e/dev/null || (sudo apt update && sudo apt install wget -y)) \\
-  && sudo mkdir -p -m 755 /etc/apt/keyrings \\
-  && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \\
-  && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg \u003e /dev/null \\
-  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \\
-  && sudo mkdir -p -m 755 /etc/apt/sources.list.d \\
-  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list \u003e /dev/null \\
-  && sudo apt update \\
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+  && sudo mkdir -p -m 755 /etc/apt/keyrings \
+  && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+  && sudo apt update \
   && sudo apt install gh -y
 ```
 
@@ -117,10 +117,10 @@ pi --print "reply with the single word: ok"
 
 如果失败，先修模型 endpoint；否则 Runner 会在每个任务上 fail fast。
 
-\u003cNote\u003e
+<Note>
 `local-llm-kv-cache` proxy 是**可选**增强（本地 llama.cpp 模型更快的
 prefix 复用），不是核心前提——见[可选组件](/zh/optional-kv-cache)。
-\u003c/Note\u003e
+</Note>
 
 ## 1. Clone 仓库
 
@@ -142,7 +142,7 @@ Python 3.12，用精确路径把安装钉死到该系统解释器会因依赖解
 解释器（在这类宿主机上即托管安装的 CPython 3.14）：
 
 ```bash
-# 系统 Python \u003e= 3.14（Fedora 43、当前 Arch）：
+# 系统 Python >= 3.14（Fedora 43、当前 Arch）：
 uv tool install --force --reinstall --editable --python python3 .
 # 更老的系统 Python（如 Ubuntu 24.04 自带 3.12）——uv 自动供应 3.14：
 uv tool install --force --reinstall --editable --python 3.14 .
@@ -201,19 +201,19 @@ checkout 根目录**没有** `orbi.py`（与 package 同名的 flat 文件
 | 字段 | 必填 | 默认 | 含义 |
 |---|---|---|---|
 | `source_repos` | 是 | — | 每个 tick 扫描的一个 `owner/repo` 任务池。多个条目会因当前执行层只有一个 checkout 而 fail fast；多仓库 workspace 尚未提供（Issue #133） |
-| `repo_dir` | 否 | `.` | 交付 checkout：Runner 交付 Issue 的仓库。任务 worktree 从它冻结的 `origin/\u003cbase_branch\u003e` SHA 创建，PR 对它打开，slot 锁在 `\u003crepo_dir\u003e/.orbi/slots/`。自举模式下它就是 orbi checkout 自身；外部单仓库模式（Issue #330）下是外部用户仓库 X |
+| `repo_dir` | 否 | `.` | 交付 checkout：Runner 交付 Issue 的仓库。任务 worktree 从它冻结的 `origin/<base_branch>` SHA 创建，PR 对它打开，slot 锁在 `<repo_dir>/.orbi/slots/`。自举模式下它就是 orbi checkout 自身；外部单仓库模式（Issue #330）下是外部用户仓库 X |
 | `deploy_home` | 否 | `repo_dir` | orbi **源码** checkout（Issue #330）：editable CLI 安装来源（自更新）、`systemd/` unit 模板、`labels.toml`、prompt 默认（`prompts/prompt.md`、`prompts/prompt_review.md` 未设置时）。缺省 = `repo_dir`（自举模式，行为不变）。`repo_dir` 是外部仓库 X 时把它设为 orbi checkout。必须是非空字符串；目录不存在会启动 fail fast |
 | `worktree_retain_hours` | 否 | `72` | tick 开头任务 worktree 回收的保留窗口（Issue #760，仅宿主/部署侧——仓库的 `.github/orbi.toml` 不可携带）：已关闭超过该小时数的任务 worktree 会被自动移除（OPEN 的票和有活跃 run 的现场绝不触碰）。机制与 `worktree_reclaimed` journal 行：[运维](/zh/operations)。必须是有限正数小时，否则启动 fail fast |
 | `workspace_root` | 否 | `..` | 包含任务 worktree 和 agent 可修改仓库的目录 |
 | `prompt` | 否 | `prompts/prompt.md` | 实现者 prompt 模板（`{{SOURCE_REPO}}` 等占位符由 Runner 渲染） |
 | `prompt_review` | 否 | `prompts/prompt_review.md` | PR 后独立审查 session 的 review prompt 模板 |
 | `issue_comments_limit` | 否 | `20` | 受信任评论注入上限（Issue #745，仅宿主/部署侧——仓库的 `.github/orbi.toml` 不可携带）：`{{ISSUE_COMMENTS}}` 占位符注入多少条受信任评论（OWNER/MAINTAINER/MEMBER/COLLABORATOR 或 runner 自己的 App——与恢复现场同一套 `authorAssociation` 信任判据），按时间正序、保留最新。超出上限时丢弃更早的，并在注入内容里标明省略条数——绝不静默截断。模板不含该占位符时不发起任何评论读取（#745 之前的行为）。必须是正整数，否则启动 fail fast |
-| `base_branch` | 否 | `main` | 交付 base 分支；每个任务 worktree 都从冻结的 `origin/\u003cbase_branch\u003e` SHA 创建 |
-| `git_transport` | 否 | `ssh` | 交付 checkout 的传输方式（Issue #580）。`ssh`（默认）：git 数据操作走 `git@github.com:owner/repo.git`，用机器的 SSH key；setup 会把 HTTPS origin 迁移过去。`https`：origin 保持 `https://github.com/\u003crepo\u003e.git`，`git ls-remote`/fetch/push 的凭据走 `gh` credential helper（`gh auth login --with-token`）——无 SSH 私钥的纯 token sandbox 路线。其他值直接让配置加载失败 |
-| `engine_source_track` | 否 | `main`（`install.sh` 新安装为 `release`） | engine source 更新通道（Issue #535，host/deploy-only——仓库的 `.github/orbi.toml` 永远不允许携带）：每次 service 启动时 deploy home checkout 跟随的源。缺省/`main`：fast-forward `origin/main`（#535 之前 dogfood 的行为）——开发主线，每次提交都变。`branch:\u003cname\u003e`：fast-forward `origin/\u003cname\u003e`。`release`（别名 `stable`）：最新正式 semver tag（排除 pre-release），detached——跟随最新已发布版本，只在发版时变化。`tag:\u003cname\u003e`/`sha:\u003c40-hex\u003e`：精确锁定，detached——不改值就永不移动，版本变更永远是一次有意操作（要求可复现的部署用它锁定）；回滚就是把值改回去。checkout 脏、tag/SHA 缺失或任何不可验证状态都会以结构化行让启动失败（见[运维](/zh/operations)） |
-| `active_milestone` | 否 | 未设置 | 新领取扫描的领取范围（Issue #139）：当前活跃的 GitHub Milestone 标题（如 `v0.2.0`）。设置后 p0/bug/普通三个 ready 扫描只领取该 Milestone 的 Issue（`milestone:"\u003ctitle\u003e"` 限定词直接进 gh 搜索查询——其他 Milestone 或无 Milestone 的 Issue 永远进不了队列）；`ai-ready` 仍是执行开关，领取顺序（p0 → bug → 普通）不变，P0 不跨 Milestone，恢复态（已开 PR、在途重启）不受 Milestone 限制。唯一例外是外部接管扫描（Issue #842 决策 D1）：第五条、排最后的 ready 扫描不带 Milestone 限定，带正文标记 `\u003c!-- orbi:external-pr:N --\u003e` 的外部 triage 票始终可被认领——外部贡献不属于任何版本的范围，绝不能阻塞发版门禁。未设置 = 所有 `ai-ready` Issue 都可领取（#139 之前的行为）。用 `orbi milestone set \u003ctitle\u003e` 推进（见[运维](/zh/operations)；Runner 下一 tick 发布 `ORBI_ACTIVE_MILESTONE` variable） |
+| `base_branch` | 否 | `main` | 交付 base 分支；每个任务 worktree 都从冻结的 `origin/<base_branch>` SHA 创建 |
+| `git_transport` | 否 | `ssh` | 交付 checkout 的传输方式（Issue #580）。`ssh`（默认）：git 数据操作走 `git@github.com:owner/repo.git`，用机器的 SSH key；setup 会把 HTTPS origin 迁移过去。`https`：origin 保持 `https://github.com/<repo>.git`，`git ls-remote`/fetch/push 的凭据走 `gh` credential helper（`gh auth login --with-token`）——无 SSH 私钥的纯 token sandbox 路线。其他值直接让配置加载失败 |
+| `engine_source_track` | 否 | `main`（`install.sh` 新安装为 `release`） | engine source 更新通道（Issue #535，host/deploy-only——仓库的 `.github/orbi.toml` 永远不允许携带）：每次 service 启动时 deploy home checkout 跟随的源。缺省/`main`：fast-forward `origin/main`（#535 之前 dogfood 的行为）——开发主线，每次提交都变。`branch:<name>`：fast-forward `origin/<name>`。`release`（别名 `stable`）：最新正式 semver tag（排除 pre-release），detached——跟随最新已发布版本，只在发版时变化。`tag:<name>`/`sha:<40-hex>`：精确锁定，detached——不改值就永不移动，版本变更永远是一次有意操作（要求可复现的部署用它锁定）；回滚就是把值改回去。checkout 脏、tag/SHA 缺失或任何不可验证状态都会以结构化行让启动失败（见[运维](/zh/operations)） |
+| `active_milestone` | 否 | 未设置 | 新领取扫描的领取范围（Issue #139）：当前活跃的 GitHub Milestone 标题（如 `v0.2.0`）。设置后 p0/bug/普通三个 ready 扫描只领取该 Milestone 的 Issue（`milestone:"<title>"` 限定词直接进 gh 搜索查询——其他 Milestone 或无 Milestone 的 Issue 永远进不了队列）；`ai-ready` 仍是执行开关，领取顺序（p0 → bug → 普通）不变，P0 不跨 Milestone，恢复态（已开 PR、在途重启）不受 Milestone 限制。唯一例外是外部接管扫描（Issue #842 决策 D1）：第五条、排最后的 ready 扫描不带 Milestone 限定，带正文标记 `<!-- orbi:external-pr:N -->` 的外部 triage 票始终可被认领——外部贡献不属于任何版本的范围，绝不能阻塞发版门禁。未设置 = 所有 `ai-ready` Issue 都可领取（#139 之前的行为）。用 `orbi milestone set <title>` 推进（见[运维](/zh/operations)；Runner 下一 tick 发布 `ORBI_ACTIVE_MILESTONE` variable） |
 | `auto_next_milestone` | 否 | `true` | 当前 Milestone 关闭且队列为空时是否自动推进。`false` 保持 `active_milestone` 不变，记录待确认告警并创建一个不带 `ai-ready` 或 `p0`、不会被领取的确认 Issue；人工推进后旧通知会自动关闭。非法值立即失败 |
-| `warn_on_dangling_milestone` | 否 | `false` | 仅宿主的 idle 告警（Issue #855）：当 `active_milestone` 指向**已关闭或不存在**的 Milestone、且本次 fresh-claim 扫描无可认领票时，显式 `true` 发出结构化 `active_milestone_dangling active=\u003ctitle\u003e state=closed\\|missing` journal 事件，让发版后的空队列可被检索。未设置 / `false` 与今天的 journal 完全一致（不多一行）。不改变 `auto_next_milestone`、不改写 `active_milestone`、不改三条 ready 扫描。非法值让配置加载 fail fast |
+| `warn_on_dangling_milestone` | 否 | `false` | 仅宿主的 idle 告警（Issue #855）：当 `active_milestone` 指向**已关闭或不存在**的 Milestone、且本次 fresh-claim 扫描无可认领票时，显式 `true` 发出结构化 `active_milestone_dangling active=<title> state=closed\|missing` journal 事件，让发版后的空队列可被检索。未设置 / `false` 与今天的 journal 完全一致（不多一行）。不改变 `auto_next_milestone`、不改写 `active_milestone`、不改三条 ready 扫描。非法值让配置加载 fail fast |
 | `max_concurrency` | 否 | `1` | 本机并发 Orbi 任务数和启用的 Runner timer 数（`1`..`5`，即 `MAX_RUNNER_INSTANCES` 声明上限——Issue #827；实际能稳定跑几条取决于 CPU/内存峰值，调高前先实测） |
 | `allow_stale_runner` | 否 | `false` | Runner 执行代码新鲜度门禁的离线逃生口（Issue #525）：领取任何 Issue 之前，Runner 必须证明自己执行的代码与配置的 engine source 通道一致——即 `engine_source_track`（Issue #535），缺省 `origin/main`，绝不是交付 `base_branch`（editable 安装看 import 所在 checkout 的 `HEAD`；非 editable 看安装版本与最新 release tag——全部是本地 git 读操作）。落后或无法证明时输出结构化 `runner_source_stale` 行（事实 + 修复命令）并 fail fast。`true` 把同一行降级为告警放行，供离线/受限网络机器继续运行——绝不跳过检查。非法值立即失败 |
 | `human_review_gate` | 否 | `false` | 人工验收门禁（Issue #763，仅宿主/部署侧——仓库的 `.github/orbi.toml` 不可携带）：`true` 时每个交付在 PR 打开时向 Issue 发一条验收清单（栏一：本次 run 已验证的证据——真实测试结果与覆盖层；栏二：按改动路径生成的机器验不了的最小集合——业务意图、UI 视觉与文案、外部环境、证据缺失）。栏二非空时评审轮次在任何 Pi session 之前短路：票回 `ai-ready`（opened-PR 标签保留作 resume 锚）、槽位释放，此后每个 tick 只花一次 label 读——等待绝不消耗评审轮次预算。人用只有人能打的 `ai-human-review` 标签确认清单，下一 tick 照常评审/合并（`--match-head-commit` 零改动）。栏二为空是目标状态：清单明写无需人工介入，交付不要求标签直接通过。默认关闭：关闭时交付/评审/merge/release 与之前逐字节一致。必须是布尔值，否则配置加载立即失败 |
@@ -268,16 +268,16 @@ Issue #330（PR #334）把 orbi 的部署 home 与交付 checkout 解耦：orbi
     模板（`{{ORBI_REPO_DIR}}` 占位符渲染的是**这个**路径）、
     `labels.toml`、prompt 默认；
   - `repo_dir`（用户仓库 X）——交付 checkout：Issue 从 X 领取，任务
-    worktree 从 X 冻结的 `origin/\u003cbase_branch\u003e` 创建，PR 对 X 打开，
-    slot 锁在 `\u003crepo_dir\u003e/.orbi/slots/`。
+    worktree 从 X 冻结的 `origin/<base_branch>` 创建，PR 对 X 打开，
+    slot 锁在 `<repo_dir>/.orbi/slots/`。
 
 先安装一次（上面第 2 步，从 orbi clone），然后把配置文件放进部署 home
-——已安装 systemd unit 从 `\u003cdeploy_home\u003e/orbi.toml` 读配置
+——已安装 systemd unit 从 `<deploy_home>/orbi.toml` 读配置
 （`{{ORBI_REPO_DIR}}` 占位符渲染的是 deploy home 路径），所以
 `orbi.toml` 和可选的 `.orbi/env` 放在 orbi checkout，而不是 X：
 
 ```toml
-# \u003cdeploy_home\u003e/orbi.toml — orbi checkout，不是用户仓库 X
+# <deploy_home>/orbi.toml — orbi checkout，不是用户仓库 X
 source_repos = [
   "OWNER/USER-REPO-X",
 ]
@@ -292,7 +292,7 @@ skills = []
 context_files = []
 ```
 
-（任务 worktree 落在交付 checkout 的 `\u003crepo_dir\u003e/.worktrees/`；
+（任务 worktree 落在交付 checkout 的 `<repo_dir>/.worktrees/`；
 `workspace_root` 是告诉实现者 agent「可修改仓库所在目录」的路径
 （`{{WORKSPACE_ROOT}}` prompt 占位符）；未设置的 `prompt` /
 `prompt_review` 相对 `deploy_home` 解析。）
@@ -309,7 +309,7 @@ setup](/zh/setup)）。
 `unit_name`：
 
 ```toml
-# \u003ccheckout\u003e/orbi.toml —— 名为 "core" 的部署
+# <checkout>/orbi.toml —— 名为 "core" 的部署
 unit_name = "core"
 ```
 
@@ -347,7 +347,7 @@ Pi 用自己的 agent 目录和你在那里配置的 provider。派活之前先�
 自己的检查确认 provider 就绪：
 
 ```bash
-pi auth check --provider \u003cprovider-id\u003e
+pi auth check --provider <provider-id>
 pi --print "reply with the single word: ok"
 ```
 
@@ -355,7 +355,7 @@ pi --print "reply with the single word: ok"
 
 把 `pi_providers` 指向一个 Pi 自己的 `models.json` 形状的 JSON 文件。
 每个 run 开始时 Runner 会物化一个 per-run agent 目录
-（`\u003cworktree\u003e/.orbi/pi-agent/`，gitignored），其 `models.json`
+（`<worktree>/.orbi/pi-agent/`，gitignored），其 `models.json`
 把你的用户 provider 与文件的 provider 合并（id 冲突时文件胜）——你
 已有的 provider 继续可用，文件只做添加或覆盖——并为该 run 选中配置
 的 provider/model。物化出的副本会把 `apiKey` 中的 `$VAR` /
@@ -415,7 +415,7 @@ provider）保持原样，解析出的值只存在于 gitignored 的 per-run 目
 
 然后在 `orbi.toml` 里选择 provider 和 model（Runner 会以
 `--provider groq --model groq/compound` 传给 Pi；设置
-`pi_thinking` 时再传 `--thinking \u003clevel\u003e`）：
+`pi_thinking` 时再传 `--thinking <level>`）：
 
 ```toml
 pi_providers = ".orbi/pi-providers.json"
@@ -453,8 +453,8 @@ gitignored 状态目录的 env 文件里，由 systemd unit 在 service 启动�
 
 ```bash
 mkdir -p .orbi
-cat \u003e .orbi/env \u003c\u003c'EOF'
-GROQ_API_KEY=\u003cyour key value\u003e
+cat > .orbi/env <<'EOF'
+GROQ_API_KEY=<your key value>
 EOF
 chmod 600 .orbi/env
 ```
@@ -526,8 +526,8 @@ Milestone 的 Issue——Issue #139），然后退出。ready 队列为空时干
 ```bash
 # a. 向第一个配置的 source repo 派一个极小任务。
 #    `add` 一步完成创建 Issue 并加 ai-ready 标签。
-orbi add "Docs: verify smoke walkthrough" \\
-  --body "Read README.md and confirm the smoke walkthrough commands exist." \\
+orbi add "Docs: verify smoke walkthrough" \
+  --body "Read README.md and confirm the smoke walkthrough commands exist." \
   --config orbi.toml
 
 # b. 看队列：新 Issue 已 ready。
@@ -555,20 +555,20 @@ tick（手工或 timer）里继续走独立审查和 merge。每个阶段都有�
 
 | 阶段 | 成功标准 | 在哪里检查 |
 |---|---|---|
-| 被领取 | Issue 标签 `ai-ready → ai-in-progress`；任务 worktree 和分支存在（都带 run id） | `gh issue view \u003cn\u003e --json labels`；journal `run_start run=\u003crun_id\u003e ...` |
+| 被领取 | Issue 标签 `ai-ready → ai-in-progress`；任务 worktree 和分支存在（都带 run id） | `gh issue view <n> --json labels`；journal `run_start run=<run_id> ...` |
 | 实现并测试 | Pi 在 worktree 里跑 TDD 循环；Issue 上唯一的 progress comment 报告 tests milestone | `orbi session --follow`；Issue 上的 progress comment |
-| PR 打开 | journal `run_end ... result=pr_opened pr=\u003curl\u003e commit=\u003csha\u003e`；Issue 标签 `ai-pr-opened`；PR body 含 `Fixes #\u003cn\u003e` 和 run marker | `gh pr view \u003cn\u003e --json url,body` |
-| 独立审查 | 下一个 tick 恢复同一个 run；journal `review pr=\u003cn\u003e round=1 verdict=pass blockers=0 majors=0` | journal；PR |
-| 合并 | journal `merged pr=\u003cn\u003e head=\u003csha\u003e`；PR 为 `MERGED` 且有 merge commit；Issue 标签 `ai-merged`，Issue 上有 `Orbi merged PR: ...` 评论 | `gh pr view \u003cn\u003e --json state,mergedAt,mergeCommit`；`gh issue view \u003cn\u003e --json state,labels` |
+| PR 打开 | journal `run_end ... result=pr_opened pr=<url> commit=<sha>`；Issue 标签 `ai-pr-opened`；PR body 含 `Fixes #<n>` 和 run marker | `gh pr view <n> --json url,body` |
+| 独立审查 | 下一个 tick 恢复同一个 run；journal `review pr=<n> round=1 verdict=pass blockers=0 majors=0` | journal；PR |
+| 合并 | journal `merged pr=<n> head=<sha>`；PR 为 `MERGED` 且有 merge commit；Issue 标签 `ai-merged`，Issue 上有 `Orbi merged PR: ...` 评论 | `gh pr view <n> --json state,mergedAt,mergeCommit`；`gh issue view <n> --json state,labels` |
 
 ```bash
 # 终态的两个只读检查：
-gh pr view \u003cn\u003e --json state,mergedAt,mergeCommit
-gh issue view \u003cn\u003e --json state,labels
+gh pr view <n> --json state,mergedAt,mergeCommit
+gh issue view <n> --json state,labels
 ```
 
 完成标志：Issue 走完 `ai-ready → ai-in-progress → ai-pr-opened →
-ai-merged`，PR 已合并且 body 带 `Fixes #\u003cn\u003e`（GitHub 在 merge 时原生
+ai-merged`，PR 已合并且 body 带 `Fixes #<n>`（GitHub 在 merge 时原生
 关闭 Issue），journal 显示 `run_end ... result=pr_opened`、
 `review ... verdict=pass` 和 `merged pr=...`。任何一步失败，Issue 会
 被**单独**标记 `ai-blocked` 并留下现场（run id、分支、worktree、
@@ -586,10 +586,10 @@ session、phase、last activity、具体错误），journal 显示
 | Pi 起来了但模型一直不响应 | session JSONL 停在 `model_wait`；死寂窗口（`model_wait_dead_seconds`，默认 1800 秒）后 journal 出现 `model_wait_dead` 行和 `run_failed ... reason=model_wait_dead_stale_...`（字段语义：[运维](/zh/operations)） | 模型请求挂死——模型 server/proxy 挂了、连接断了，或进程还活着但请求被挂住——用一次真实 `pi --print` 调用检查 endpoint，重启后重新派活（Issue 带现场 `ai-blocked`）；仍在生成的慢本地模型会存活过窗口（只有模型确实需要超过 30 分钟完整事件静默时才调大 `model_wait_dead_seconds`） |
 | Pi 在首个模型请求前挂死（在线 provider） | Run 卡在 `session_pending`；15 分钟后 journal 出现 `idle_recovery_stale_15m`、Issue `ai-blocked`；session JSONL 从未创建；pi 进程活着但 ~0% CPU，唯一 socket 在 D-Bus（`/run/user/1000/bus`） | 用户级插件 `pi-mcp-adapter` 在 systemd 上下文挂死在 Secret Service D-Bus 调用上——从 `~/.pi/agent/settings.json` `packages` 移除它；完整取证与永久修复（Issue #249）：[运维](/zh/operations) |
 | PR 打开了但一直不 merge | Issue 标签 `ai-fix-needed`；审查 findings 在 Issue 和 PR 上 | 审查发现会话内修不掉的 Blocker/Major findings——下一个审查 session 重试**同一个** PR（上限 5 轮）；读 Issue 和 PR 上的 findings |
-| 审查循环耗尽轮数 | journal `review_rounds_exhausted issue=\u003cn\u003e rounds=5`；Issue **单独** `ai-blocked` | 有界循环是人工决策——读 findings，手工修 PR 或关闭；见[运维](/zh/operations) |
-| PR 落后于最新 base | Issue `ai-fix-needed`，review 评论写明具体闸门失败原因：落后 base 时带 `origin/\u003cbase\u003e` 的 SHA，merge 冲突时带 `mergeable` 的实际值（Issue #879） | 自动：下一个审查 session 在会话内把最新 `origin/\u003cbase\u003e` merge 进分支、解冲突、重跑全量测试 |
+| 审查循环耗尽轮数 | journal `review_rounds_exhausted issue=<n> rounds=5`；Issue **单独** `ai-blocked` | 有界循环是人工决策——读 findings，手工修 PR 或关闭；见[运维](/zh/operations) |
+| PR 落后于最新 base | Issue `ai-fix-needed`，review 评论写明具体闸门失败原因：落后 base 时带 `origin/<base>` 的 SHA，merge 冲突时带 `mergeable` 的实际值（Issue #879） | 自动：下一个审查 session 在会话内把最新 `origin/<base>` merge 进分支、解冲突、重跑全量测试 |
 | 重启后 service 起不来 | `systemctl --user status orbi@1.service`；journal `unit_drift` / `cli_install_failed` / `transport_check_failed` 行 | 按结构化行处理：重跑 `orbi install-units`（unit 漂移）、它打印的精确重装命令（editable 安装过期）、或修 SSH transport（见[运维](/zh/operations)） |
-| journal 出现 `Your local changes ... would be overwritten by merge` | service preflight 的 `deploy_home_dirty files=...` | 用 `git -C \u003cdeploy_home\u003e stash && systemctl --user start orbi@1.service` 保留补丁，适时再 `git -C \u003cdeploy_home\u003e stash pop`；或用 `git -C \u003cdeploy_home\u003e checkout -- .` 丢弃后重试。本地 tracked 编辑按设计会阻塞 self-update；`orbi doctor` 会报告 `deploy_home: DRIFT` |
+| journal 出现 `Your local changes ... would be overwritten by merge` | service preflight 的 `deploy_home_dirty files=...` | 用 `git -C <deploy_home> stash && systemctl --user start orbi@1.service` 保留补丁，适时时再 `git -C <deploy_home> stash pop`；或用 `git -C <deploy_home> checkout -- .` 丢弃后重试。本地 tracked 编辑按设计会阻塞 self-update；`orbi doctor` 会报告 `deploy_home: DRIFT` |
 | `orbi doctor` 报告 `cli_source: DRIFT` | 结构化 `cli_source_drift` 行带精确重装命令 | 跑它打印的 `uv tool install --force --reinstall --editable ...` 命令（或 `orbi setup`） |
 
 标签生命周期、journal 字段和恢复规则见[运维](/zh/operations)；
@@ -611,7 +611,7 @@ fast-forward 和每实例启动语义定义在[运维](/zh/operations)（Timers�
 容量为 `N` 时 N 个实例可以同时运行；容量和启用的 timer 数都由
 `max_concurrency` 决定，flock slot 仍是最终安全边界。
 
-\u003cNote\u003e
+<Note>
 提交的 unit 模板与机器无关：它们携带 `{{ORBI_REPO_DIR}}` 占位符
 而不是硬编码的 checkout 路径（Issue #262）。`orbi install-units`
 （以及 `orbi setup`）在安装时用**部署 home**（`deploy_home`，缺省
@@ -622,4 +622,4 @@ fast-forward、`base-sync.lock` 和 CLI 自愈**全部**作用于 orbi 源码
 checkout，绝不作用于交付 checkout X。`ExecStart` 是已安装的 `orbi`
 CLI，保持 home 相对（`%h/.local/bin/orbi`）。仓库模板仍是其余一切的
 唯一事实源——漂移检测见[运维](/zh/operations)。
-\u003c/Note\u003e
+</Note>
