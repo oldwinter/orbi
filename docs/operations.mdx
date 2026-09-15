@@ -774,6 +774,11 @@ orbi check --config orbi.toml
 # connectivity is probed (fail fast, no fallback)
 orbi setup --config orbi.toml
 
+# Advance the active milestone to an exact GitHub Milestone title
+# (the manual command behind the auto_next_milestone=false
+# confirmation flow; only the active_milestone line changes)
+orbi milestone set v0.6.0 --config orbi.toml
+
 # Print the live Pi session JSONL path (fail fast when no session exists)
 orbi session --config orbi.toml
 orbi session --follow --config orbi.toml   # tail -f
@@ -785,6 +790,47 @@ All commands accept the config via `--config` or the
 `orbi.toml`). `status` and `session` are debug attachments — the
 journal and GitHub remain the normal observability path.
 
+### Advance the active milestone manually
+
+`orbi milestone set <title>` (Issue #895) is the human command in the
+milestone lifecycle: when `auto_next_milestone = false` leaves the
+advance pending (the confirmation Issue names this command), or
+whenever a version switch should be a deliberate operator step, it
+moves `active_milestone` in the local `orbi.toml` to the given GitHub
+Milestone title — no hand-editing the file. The title must exist as
+exactly ONE Milestone on the single configured source repo (GitHub
+Milestone titles are not unique; a duplicate exact title is a hard
+error). Only the `active_milestone` line is rewritten: comments, blank
+lines and every other field stay byte-identical.
+
+```bash
+orbi milestone set v0.6.0 --config orbi.toml
+# active_milestone: v0.5.6 -> v0.6.0
+# repo: orbi-build/orbi
+# config: /path/to/orbi.toml
+# next: the Runner's next tick claims Issues from Milestone "v0.6.0" and
+# syncs the ORBI_ACTIVE_MILESTONE variable (verify: gh api
+# repos/orbi-build/orbi/actions/variables/ORBI_ACTIVE_MILESTONE --jq .value)
+```
+
+The command itself never writes to GitHub — the Milestone list read is
+its only network call. The `ORBI_ACTIVE_MILESTONE` Actions variable is
+published by the Runner's next-tick preflight (the bypass contract), so
+the command's success is NOT the variable's success: verify with the
+printed `gh api` probe. Every failure exits non-zero with one
+structured `milestone_set_failed reason=... fix=...` line on stderr and
+leaves the config untouched — a missing or duplicated title, a GitHub
+API or permission failure, a config without the `active_milestone`
+line (the field is never created implicitly), or an unwritable file
+all fail fast with the actual reason:
+
+```bash
+orbi milestone set v0.9.9 --config orbi.toml
+# milestone_set_failed reason=milestone_not_found title='v0.9.9'
+#   repo=orbi-build/orbi open milestones: v0.6.0(3); fix=use one exact
+#   title from `gh api repos/orbi-build/orbi/milestones?state=open --jq '.[].title'`
+```
+
 ## Public surface
 
 The following interfaces and persisted names are public surfaces. Changes to
@@ -792,8 +838,8 @@ any of them must be called out in the release notes so downstream automation
 can migrate deliberately:
 
 - **CLI:** the bare `orbi` tick and the `add`, `status`, `doctor`, `setup`,
-  `install-units`, and `session` subcommands, including `--config` and the
-  `ORBI_CONFIG` environment variable.
+  `install-units`, `session`, and `milestone set` subcommands, including
+  `--config` and the `ORBI_CONFIG` environment variable.
 - **Configuration:** `orbi.toml` fields (`source_repos`, `repo_dir`,
   `deploy_home`, `workspace_root`, `prompt`, `prompt_review`, `base_branch`,
   `git_transport`, `active_milestone`, `max_concurrency`, `allow_stale_runner`,

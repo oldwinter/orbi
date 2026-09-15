@@ -102,12 +102,14 @@ class FakeGh:
         }
 
     def add_milestone(self, number: int, *, title: str,
-                      open_issues: int = 0) -> None:
+                      open_issues: int = 0, state: str = "open") -> None:
         """Seed one Milestone; `open_issues` is GitHub's OWN counter —
         the authority the release completeness gate reads (Issue #663),
-        stored verbatim, never derived from the issue list."""
+        stored verbatim, never derived from the issue list. `state` is
+        the milestone's lifecycle ("open"/"closed") — the idle advance
+        sweep and the CLI set command read it."""
         self.milestones[number] = {
-            "number": number, "title": title, "state": "open",
+            "number": number, "title": title, "state": state,
             "open_issues": open_issues,
         }
 
@@ -371,6 +373,19 @@ class FakeGh:
     def _api(self, args: list[str]) -> str:
         path = args[0]
         flags = self._flags(args[1:])
+        match = re.fullmatch(
+            r"repos/([^/]+/[^/]+)/milestones\?"
+            r"state=all&per_page=100",
+            path,
+        )
+        if match:
+            # The milestone LIST read (`list_milestones`):
+            # `--paginate --slurp` wraps one page as an array of arrays,
+            # insertion order (GitHub returns creation order).
+            self._repo_or_fail(match.group(1))
+            self._known_flags(flags, ("--paginate", "--slurp"),
+                              ["gh", "api", path])
+            return json.dumps([list(self.milestones.values())])
         match = re.fullmatch(r"repos/([^/]+/[^/]+)/milestones", path)
         if match:
             self._repo_or_fail(match.group(1))
