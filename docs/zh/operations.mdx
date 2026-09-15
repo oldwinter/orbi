@@ -615,6 +615,7 @@ journalctl --user -u orbi@1.service -u orbi@2.service | grep e07383c2
 | `command_spawn_failed` | 外部命令无法启动 |
 | `git_network_retry` | git fetch/push 瞬时网络失败，退避重试 |
 | `gh_read_retry` | `gh` 只读命令瞬时失败，退避重试 |
+| `gh_write_retry` | `gh` 写命令瞬时失败，退避重试 |
 
 idle 告警和模型请求挂死 kill 是日志/健康阈值——它们不是每 5 分钟
 调度，也不是业务任务 timeout。

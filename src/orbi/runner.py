@@ -168,6 +168,7 @@ from orbi.cli_source import CliInstallError, refresh_cli_install
 from orbi.github import (
     RESUME_PR_STATE_TIMEOUT_SECONDS,
     run_gh_read_command,
+    run_gh_write_command,
     _comment_is_trusted,
     _pr_number,
     _epic_audit,
@@ -2990,10 +2991,10 @@ def arm_release_ticket(
     number = issues[0].get("number")
     if not isinstance(number, int):
         raise RuntimeError(f"release ticket has invalid issue number: {number!r}")
-    run_command([
+    run_gh_write_command([
         "gh", "issue", "edit", str(number), "--repo", repo,
         "--add-label", dispatch_label,
-    ], timeout=30)
+    ], timeout=30, command_runner=run_command)
     event(
         "release_ticket_armed", issue=f"#{number}",
         milestone=active_milestone,
@@ -6413,10 +6414,16 @@ def comment_pr(number: int, *, repo: str, body: str) -> None:
     PR-side copy of a round / finding / blocked comment carries the run
     marker and the runner fingerprint like its Issue twin.
     """
-    run_command([
-        "gh", "pr", "comment", str(number), "--repo", repo,
-        "--body", format_status_comment(body),
-    ])
+    rendered = format_status_comment(body)
+    run_gh_write_command(
+        ["gh", "pr", "comment", str(number), "--repo", repo,
+         "--body", rendered],
+        command_runner=run_command,
+        already_applied=lambda: any(
+            comment.get("body") == rendered
+            for comment in pr_comments(number, repo=repo)
+        ),
+    )
 
 
 def _pr_head_repo(pr: dict) -> str:
@@ -7146,13 +7153,10 @@ def _dispatch_implementation(issue: dict, source_repo: str,
     )
     worktree: Path | None = None
     started = time.monotonic()
-    # The `Orbi opened PR:` scene comment is the first
-    # delivery step AFTER the opened-PR label transition that can still
-    # fail; when it does, the failure path below must leave the Issue in
-    # the terminal state `ai-blocked` ALONE (docs/workflow.mdx label
-    # lifecycle: `ai-pr-opened` is removed on terminal failure) — the same
-    # convention as every other terminal failure path (verify_resumed_pr,
-    # delivery_step).
+    # The PR label is authoritative once the PR exists. A scene-comment
+    # notification is recoverable reporting: if GitHub still rejects it
+    # after bounded retries, never replace the real PR-ready state with
+    # ai-blocked.
     pr_opened = False
     try:
         worktree = create_worktree(
@@ -7372,22 +7376,26 @@ def _dispatch_implementation(issue: dict, source_repo: str,
             number, repo=source_repo, event=EVENT_PR_OPENED,
             current_labels={IN_PROGRESS_LABEL},
         )
+        # The label transition has landed and must remain the state
+        # reported if the following notification write exhausts.
         pr_opened = True
-        # The scene comment is NOT a bypass: the next
-        # tick's resume parses it to recover run_id,
-        # base and PR, so a failure here is a real delivery failure —
-        # it propagates into the failure path below (ai-blocked, the
-        # `Orbi failed` comment, re-raise). The `ProgressPublisher`
-        # steps around it stay bypass: a failure there (it must never
-        # skip the review of a valid PR) is logged as
-        # `progress_publish_failed` and the run continues into the
-        # review/merge wait loop.
-        comment_issue(
-            number, repo=source_repo,
-            body=opened_pr_comment_body(
-                run_id, run_info, pr_url, external=external_takeover,
-            ),
-        )
+        try:
+            comment_issue(
+                number, repo=source_repo,
+                body=opened_pr_comment_body(
+                    run_id, run_info, pr_url, external=external_takeover,
+                ),
+            )
+        except Exception as exc:
+            # Permission/validation errors retain today's fail-fast
+            # behavior. Only an exhausted server-side retry is recoverable.
+            if not isinstance(exc, subprocess.CalledProcessError) \
+                    or not github._is_transient_gh_write_error(exc):
+                raise
+            LOGGER.exception(
+                "issue=%s opened_pr_scene_comment_failed; "
+                "PR remains ai-pr-opened", number,
+            )
         if config.human_review_gate:
             # The human acceptance checklist — the readable
             # face of the gate — posts ONCE per delivery, at the moment
