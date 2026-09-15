@@ -63,6 +63,38 @@ CI 里还运行 Mintlify 文档构建 smoke（Issue #116）：官方 `mint` CLI
 的 `mint validate`（严格构建校验，任何 warning 或 error 都退出非零）
 ——文档配置、页面和链接在远端同样被门禁。
 
+### macOS 兼容性 workflow（hosted 兼容性边界）
+
+`.github/workflows/ci-macos.yml` 增加一个独立的、串行的 macOS job，在
+每次 `pull_request`、每次 push 到 `main` 以及手动触发时运行：单个 job，
+固定在 `macos-15` runner 镜像上（绝不使用漂移的 `macos-latest` 标签），
+`actions/setup-python` 固定 Python 3.14，安装 workflow 自己的测试
+依赖，并做真实 runner 探测（`sw_vers`、Python 版本、`launchctl` 和
+`launchctl print gui/$(id -u)`——用户的 launchd GUI domain 是一切
+launchctl 操作依赖的 runner 级前提）。该 job 以单条有界命令运行完整
+pytest 套件并保留真实退出码，从目录中性位置构建软件包并做 clean-venv
+wheel smoke（`orbi --version`、`orbi --help`、site-packages 导入源），
+且在不真实安装的前提下演练安装器的 Darwin 分支：`bash -n install.sh`、
+对 launchd plist 模板 `plutil -lint`、在临时 `ORBI_HOME` 里以 PATH 桩
+运行安装器入口——真实的 macOS `uname`/`launchctl` 通过调度器门禁，
+桩 `git` 在 clone 步骤前停下。hosted macOS 镜像没有 GNU coreutils 的
+`timeout`（与 `install.sh` 处理的限制相同，Issue #868），workflow 用
+perl `alarm` 提供一行 `timeout` 垫片，让每条命令保持文档规定的
+`timeout <秒> <命令>` 形式。该 job 绝不改动 runner 自身的 launchd
+部署（探测只读，不 enable/bootstrap）。
+
+边界是刻意且诚实的：hosted macOS CI 校验 macOS 代码路径（测试、打包、
+安装器逻辑）和 runner 级 launchd 前提——它无法证明真实用户的登录 GUI
+会话、凭据、模型 provider 或完整的 GitHub Issue 到 merge 旅程，也不能
+替代真实 Mac 硬件上的真实 macOS launchd smoke。同样的诚实也适用于套件
+内部：部署、setup、doctor 与健康检查契约通过 `systemd_scheduler` 测试
+fixture 钉在 systemd 实现上（launchd 实现保有自己基于 fakes 的测试），
+基于 `/proc` 的真实子进程 idle-recovery 场景与 runner 子进程 e2e 场景
+在 Darwin 上以明确理由跳过——上方的 Ubuntu workflow 仍是它们唯一的
+权威。覆盖率与变更代码门禁仍
+以上面的 Ubuntu workflow 为准；macOS job 对任何测试、打包或安装器兼容
+性失败仍然变红——没有任何失败被吞掉或洗成通过。
+
 CI 红的时候 PR 不可合并——Runner 的 merge 门禁也要求 PR mergeable。
 
 ## 测试覆盖什么

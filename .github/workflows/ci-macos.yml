@@ -1,0 +1,157 @@
+# macOS compatibility gate (Issue #894): a SEPARATE serial workflow that
+# detects macOS regressions in packaging, installer, Python runtime,
+# launchd adapter and the public CLI test path. The single Ubuntu job in
+# ci.yml stays untouched and remains the repository's coverage/release
+# contract (the tiered gates run THERE, never here); this job must still
+# fail on any test/package/installer compatibility failure.
+#
+# KISS: one job, one pinned runner, no matrix, no containers, no cache.
+#
+# Boundary (documented in docs/testing.mdx): hosted CI verifies the macOS
+# code paths and the runner-level launchd prerequisite — it CANNOT prove
+# a real user's logged-in GUI session, credentials, model provider, or
+# the full GitHub Issue-to-merge journey, and it does not replace a real
+# macOS launchd smoke on real hardware.
+#
+# Runner: `macos-15` is an explicit pinned image (macOS 15 arm64 per the
+# official actions/runner-images README, stable and not deprecated), never
+# a moving `latest` label. Python: the production minor version
+# 3.14 via actions/setup-python, matching ci.yml/publish.yml.
+#
+# `timeout`: the hosted macOS image ships no GNU coreutils `timeout`
+# (verified against the runner-images toolset-15.json — the same
+# limitation install.sh handles on vanilla macOS, Issue #868). The first
+# step writes a one-line shim (`perl alarm + exec`, perl ships with the
+# image) into $RUNNER_TEMP/orbi-timeout-bin and publishes it through $GITHUB_PATH,
+# so every later command keeps the documented `timeout <seconds> <cmd>`
+# contract form: the alarm survives exec and kills the command at N
+# seconds (exit 142); otherwise the command's real exit code propagates.
+name: CI (macOS)
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-compatibility:
+    runs-on: macos-15
+    steps:
+      # Full history + all tags: the release reconciliation tests verify
+      # the real annotated tag object (v0.1.0) against the checkout; the
+      # default shallow checkout omits the tag object (Issue #126).
+      - name: Check out the repository (full history + all tags)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.14 (production minor version)
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Provide the timeout shim (the macOS image ships no coreutils timeout, Issue #868)
+        run: |
+          mkdir -p "$RUNNER_TEMP/orbi-timeout-bin"
+          cat > "$RUNNER_TEMP/orbi-timeout-bin/timeout" <<'SH'
+          #!/bin/sh
+          # Bound: alarm(N) then exec — the pending alarm survives exec
+          # and kills the command at N seconds (exit 142); without the
+          # bound the real exit code propagates through exec.
+          exec perl -e 'alarm shift; exec @ARGV' "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/orbi-timeout-bin/timeout"
+          echo "$RUNNER_TEMP/orbi-timeout-bin" >> "$GITHUB_PATH"
+
+      # The real runner probe: macOS version, the Python version, and the
+      # USER's launchd GUI domain. `launchctl print gui/$(id -u)` exits 0
+      # whenever the logged-in domain exists — the runner-level
+      # prerequisite every launchctl command below and on a real
+      # deployment depends on. A missing domain fails the step (no
+      # fallback): that is the honest boundary, not a suppressed one.
+      - name: Probe the macOS runner and the user's launchd GUI domain
+        run: |
+          sw_vers
+          timeout 30 python3 --version
+          timeout 30 launchctl print "gui/$(id -u)" > /dev/null
+          echo "launchd gui domain ok: gui/$(id -u)"
+
+      # Issue #569: the workflow declares its own environment — it
+      # installs its own toolchain; the repository carries no locally
+      # maintained test chain. No coverage gate here: the tiered gates
+      # stay authoritative in ci.yml (Linux).
+      - name: Install requirements and the test toolchain
+        run: |
+          timeout 300 python3 -m pip install --upgrade pip
+          timeout 300 python3 -m pip install -r requirements.txt
+          timeout 300 python3 -m pip install pytest coverage pyyaml
+
+      # The full suite, one bounded command, the real exit code: no pipe
+      # sits between pytest and the step (Issue #180).
+      - name: Run the full test suite (bounded timeout, real exit code)
+        run: timeout 3600 python3 -m pytest tests/ -q
+
+      # Issue #163 contract on macOS: build sdist+wheel, install the
+      # wheel into a clean venv and verify the entry (`orbi --version`,
+      # `orbi --help`) and the import source (site-packages) from a
+      # NEUTRAL cwd — `python -c` puts the cwd first on sys.path, so the
+      # checkout must not be the cwd during the probe.
+      - name: Build the package and smoke the wheel in a clean venv (neutral cwd)
+        run: |
+          timeout 600 python3 -m pip install --quiet build
+          timeout 900 python3 -m build
+          # $RUNNER_TEMP, not /tmp: on macOS /tmp is a symlink to
+          # /private/tmp and the interpreter reports the RESOLVED path,
+          # so a literal /tmp case glob below would never match.
+          wheel_venv="$RUNNER_TEMP/orbi-wheel-macos"
+          timeout 300 python3 -m venv "$wheel_venv"
+          timeout 300 $wheel_venv/bin/pip install --quiet dist/*.whl
+          $wheel_venv/bin/orbi --version
+          $wheel_venv/bin/orbi --help > /dev/null
+          source_path=$(cd / && $wheel_venv/bin/python -c "import orbi; print(orbi.__file__)")
+          case "$source_path" in
+            $wheel_venv/lib/python*/site-packages/orbi/*)
+              echo "wheel import ok: $source_path"
+              ;;
+            *)
+              echo "clean venv imports outside site-packages: $source_path" >&2
+              exit 1
+              ;;
+          esac
+
+      # Installer checks that exercise the Darwin branch WITHOUT running
+      # a real installation and WITHOUT touching the runner's own
+      # deployment (no launchctl enable/bootstrap/bootout anywhere):
+      #   1. `bash -n install.sh` — shell syntax;
+      #   2. `plutil -lint` — the launchd plist template is a valid plist
+      #      (the {{ORBI_*}} placeholders live inside <string> elements);
+      #   3. a PATH-stubbed entry run in a temp ORBI_HOME: the REAL macOS
+      #      `uname` and `launchctl` must pass the scheduler gate (the
+      #      Darwin branch for real), a stubbed `git` writes a marker and
+      #      stops the script at the clone step — proof the entry walks
+      #      the whole gate path without cloning, installing uv for real,
+      #      or configuring anything.
+      - name: Installer checks (syntax + Darwin entry, no real installation)
+        run: |
+          bash -n install.sh
+          plutil -lint launchd/org.orbi.runner.plist
+          probe=$(mktemp -d)
+          stubs=$(mktemp -d)
+          printf '#!/bin/sh\necho reached > %s/git-reached\nexit 1\n' "$probe" > "$stubs/git"
+          for tool in gh curl uv; do
+            printf '#!/bin/sh\nexit 0\n' > "$stubs/$tool"
+          done
+          chmod +x "$stubs"/*
+          set +e
+          PATH="$stubs:$PATH" ORBI_HOME="$probe/home" timeout 120 bash install.sh > "$probe/install.out" 2>&1
+          install_rc=$?
+          set -e
+          cat "$probe/install.out"
+          test "$install_rc" -ne 0 || { echo "the stubbed clone must stop the sandbox run" >&2; exit 1; }
+          test -f "$probe/git-reached" || { echo "the installer never reached the clone step" >&2; exit 1; }
+          echo "installer Darwin entry ok (stopped at the stubbed clone)"

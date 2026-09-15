@@ -9,6 +9,7 @@ script with a stubbed PATH (no network, no real clone), so the gate
 logic is exercised exactly as a user's shell would.
 """
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -20,18 +21,26 @@ INSTALL_SH = REPO_ROOT / "install.sh"
 ISSUE_URL = "https://github.com/orbi-build/orbi/issues/849"
 
 # The coreutils the script needs beyond the stubs, symlinked into the
-# stub PATH so no real systemctl/launchctl can leak in through /usr/bin.
-# chmod is for the #868 stub uv-installer, not the script itself.
+# stub PATH so no real systemctl/launchctl can leak in through the
+# host PATH. Each tool is resolved on the HOST (`shutil.which`): macOS
+# keeps mkdir/rm/cp/cat/chmod in /bin while Linux's merged /usr puts
+# them in /usr/bin — the old hardcoded /usr/bin link dangled on a Mac
+# and install.sh died with an opaque 127 at the first direct call
+# (evidenced on the hosted runner, Issue #894). `timeout` is never
+# symlinked: a vanilla macOS (and the hosted runner, Issue #868) has
+# none, and the stub dir always carries the bounded-exec stub below
+# instead, on every host.
 CORE_TOOLS = (
-    "mkdir", "sed", "grep", "mktemp", "timeout", "rm", "cp", "cat", "uname",
+    "mkdir", "sed", "grep", "mktemp", "rm", "cp", "cat", "uname",
     "chmod",
 )
+TIMEOUT_STUB = "#!/bin/sh\nshift\nexec \"$@\"\n"
 
 
 def make_stub_dir(
     tmp_path: Path, stubs: dict[str, str], without: tuple[str, ...] = ()
 ) -> Path:
-    """One PATH entry: stub scripts win, core tools are real symlinks."""
+    """One PATH entry: stub scripts win, core tools are host symlinks."""
     bin_dir = tmp_path / "stubbin"
     bin_dir.mkdir()
     for name, body in stubs.items():
@@ -41,7 +50,17 @@ def make_stub_dir(
     for tool in CORE_TOOLS:
         if tool in stubs or tool in without:
             continue  # a stub with this name wins (e.g. the uname shim)
-        (bin_dir / tool).symlink_to(f"/usr/bin/{tool}")
+        host = shutil.which(tool)
+        if host is None:
+            pytest.fail(
+                f"core tool {tool!r} not found on the host PATH: the "
+                "stub dir would carry a dangling symlink"
+            )
+        (bin_dir / tool).symlink_to(host)
+    if "timeout" not in stubs and "timeout" not in without:
+        stub = bin_dir / "timeout"
+        stub.write_text(TIMEOUT_STUB, encoding="utf-8")
+        stub.chmod(0o755)
     return bin_dir
 
 
@@ -68,8 +87,12 @@ def pass_stubs() -> dict[str, str]:
 
 
 def test_linux_without_systemctl_reports_platform_limitation(tmp_path):
-    # The acceptance scene: NO systemctl and NO launchctl on the machine.
-    bin_dir = make_stub_dir(tmp_path, pass_stubs())
+    # The acceptance scene: a LINUX machine (the uname shim pins the
+    # platform — the real `uname` would make this scene host-dependent)
+    # with NO systemctl on the machine.
+    stubs = pass_stubs()
+    stubs["uname"] = "#!/bin/sh\necho Linux\n"
+    bin_dir = make_stub_dir(tmp_path, stubs)
     result = run_install(tmp_path, bin_dir)
     assert result.returncode == 1
     assert "systemctl" in result.stderr
@@ -105,6 +128,14 @@ def test_macos_with_launchctl_passes_the_scheduler_gate(tmp_path):
     )
     bin_dir = make_stub_dir(tmp_path, stubs)
     result = run_install(tmp_path, bin_dir)
+    # A missing marker is an INSTALLER failure scene: the message carries
+    # the captured rc/stdout/stderr so the log shows where the walk died.
+    assert marker.exists(), (
+        f"the installer never reached the clone step: "
+        f"rc={result.returncode} stdout={result.stdout!r} "
+        f"stderr={result.stderr!r} "
+        f"stub_dir={sorted(p.name for p in bin_dir.iterdir())!r}"
+    )
     assert marker.read_text().strip() == "reached"
     # The scheduler gate said nothing: no platform-limitation output.
     assert ISSUE_URL not in result.stderr
@@ -162,6 +193,12 @@ def test_macos_without_timeout_reaches_the_clone_step(tmp_path):
         ["/bin/bash", str(INSTALL_SH)],
         env=env, capture_output=True, text=True, timeout=60,
     )
+    assert marker.exists(), (
+        f"the installer never reached the clone step: "
+        f"rc={result.returncode} stdout={result.stdout!r} "
+        f"stderr={result.stderr!r} "
+        f"stub_dir={sorted(p.name for p in bin_dir.iterdir())!r}"
+    )
     assert marker.read_text().strip() == "reached"
     assert "command not found" not in result.stderr
 
@@ -180,3 +217,14 @@ def test_sed_in_place_uses_the_bsd_compatible_form():
 @pytest.mark.parametrize("name", ["install.sh"])
 def test_install_script_exists(name):
     assert INSTALL_SH.is_file()
+
+
+def test_make_stub_dir_fails_loudly_when_the_host_lacks_a_core_tool(
+        tmp_path, monkeypatch):
+    # A host without one of the core tools must fail the sandbox setup
+    # LOUDLY — a dangling symlink would only surface later as an
+    # opaque `127: command not found` inside install.sh (the hosted
+    # macOS /bin vs /usr/bin scene, Issue #894).
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(pytest.fail.Exception, match="core tool 'mkdir'"):
+        make_stub_dir(tmp_path, pass_stubs())

@@ -20,6 +20,10 @@ import orbi.runner as runner
 from orbi import pilot_setup
 from orbi import systemd_deploy
 
+# The systemd-shape deployment/setup contract, pinned to the systemd
+# impl on every host (the conftest fixture documents the seam).
+pytestmark = pytest.mark.usefixtures("systemd_scheduler")
+
 @pytest.fixture(autouse=True)
 def _default_command_lookup(monkeypatch):
     """Issue #140: the installed `orbi` CLI is a required

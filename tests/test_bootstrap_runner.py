@@ -28,6 +28,21 @@ from seam import seam
 from orbi.delivery_scene import RunContext
 from orbi.pi_process import PiWatchOptions
 
+# Hosted-macOS boundaries; the Ubuntu CI keeps every scene here
+# authoritative. The idle-recovery scenes discover hung tools via
+# /proc (Linux-only by pi_recovery's contract); the unit-drift
+# preflight scenes contract the systemd deployment over systemd-shaped
+# fixtures.
+_stream_pi_linux_only = pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason=(
+        "pi_recovery idle-descendant discovery reads /proc (Linux); on "
+        "macOS the recovery loop honestly finds no target, so these "
+        "real-subprocess recovery scenes stay Linux-authoritative"
+    ),
+)
+_unit_drift_systemd = pytest.mark.usefixtures("systemd_scheduler")
+
 
 def test_runner_main_config_failure_is_one_structured_log_line(
     monkeypatch, caplog,
@@ -8782,6 +8797,7 @@ def make_slow_model_pi(tmp_path, *, port: int, hold_seconds: float = 2.5,
     return [sys.executable, "-c", script]
 
 
+@_stream_pi_linux_only
 def test_stream_pi_hung_model_request_killed_despite_live_upstream(
     tmp_path, caplog,
 ):
@@ -9184,6 +9200,7 @@ def make_timeout_tool_pi_release_gated(tmp_path, *, release: Path) -> list[str]:
     return [sys.executable, "-c", script]
 
 
+@_stream_pi_linux_only
 def test_stream_pi_timeout_tool_inside_deadline_not_killed(
     tmp_path, caplog,
 ):
@@ -9300,6 +9317,7 @@ def make_timeout_tool_pi_controlled(tmp_path, *, tool_seconds: float,
     return [sys.executable, "-c", script]
 
 
+@_stream_pi_linux_only
 def test_stream_pi_timeout_tool_deadline_grace_window_not_killed(
     tmp_path, caplog,
 ):
@@ -9372,6 +9390,7 @@ def test_stream_pi_timeout_tool_deadline_grace_window_not_killed(
     assert len(resumed) >= 1, lines
 
 
+@_stream_pi_linux_only
 def test_stream_pi_timeout_tool_past_deadline_still_terminated(
     tmp_path, caplog,
 ):
@@ -9410,6 +9429,7 @@ def test_stream_pi_timeout_tool_past_deadline_still_terminated(
     assert "reason=idle_recovery_stale_" in failures[0]
 
 
+@_stream_pi_linux_only
 def test_stream_pi_idle_recovery_state_wait_visible_in_progress_callback(
     tmp_path,
 ):
@@ -9428,6 +9448,7 @@ def test_stream_pi_idle_recovery_state_wait_visible_in_progress_callback(
     assert seen[-1] is None
 
 
+@_stream_pi_linux_only
 def test_stream_pi_wait_state_cleared_when_waited_tool_exits(
     tmp_path, caplog,
 ):
@@ -9828,6 +9849,7 @@ def make_hung_pi(tmp_path, *, child_sleep=10.0, ignore_sigterm=False,
     return [sys.executable, "-c", script]
 
 
+@_stream_pi_linux_only
 def test_stream_pi_idle_recovery_terms_hung_descendant_and_resumes(
     tmp_path, caplog,
 ):
@@ -9868,6 +9890,7 @@ def test_stream_pi_idle_recovery_terms_hung_descendant_and_resumes(
     assert " pi_idle_kill " not in caplog.text
 
 
+@_stream_pi_linux_only
 def test_stream_pi_idle_recovery_kills_descendant_that_ignores_term(
     tmp_path, caplog,
 ):
@@ -9898,6 +9921,7 @@ def test_stream_pi_idle_recovery_kills_descendant_that_ignores_term(
     assert "run_failed" not in caplog.text
 
 
+@_stream_pi_linux_only
 def test_stream_pi_idle_recovery_kills_pi_session_after_three_idle_cycles(
     tmp_path, caplog,
 ):
@@ -9962,6 +9986,7 @@ def test_stream_pi_idle_recovery_without_descendants_still_terminates(
     assert "reason=idle_recovery_stale_" in failures[0]
 
 
+@_stream_pi_linux_only
 def test_stream_pi_idle_recovery_never_signals_non_descendants(
     tmp_path, caplog,
 ):
@@ -10008,6 +10033,7 @@ def test_stream_pi_idle_recovery_never_fires_during_model_wait(
     assert "reason=model_wait_dead_stale_" in failures[0]
 
 
+@_stream_pi_linux_only
 def test_stream_pi_idle_recovery_state_visible_in_progress_callback(
     tmp_path,
 ):
@@ -10741,6 +10767,7 @@ def _fake_preflight_run(monkeypatch, installed: Path) -> list:
     return calls
 
 
+@_unit_drift_systemd
 def test_main_unit_drift_blocks_claim_before_slot(monkeypatch, tmp_path,
                                                   caplog):
     """Issue #142: a drift the self-heal CANNOT resolve (the re-verify
@@ -10814,6 +10841,7 @@ def test_main_unit_drift_blocks_claim_before_slot(monkeypatch, tmp_path,
     assert not (repo / ".orbi" / "slots").exists()
 
 
+@_unit_drift_systemd
 def test_main_unit_drift_auto_syncs_and_proceeds_to_claim(
     monkeypatch, tmp_path, caplog,
 ):
@@ -10865,6 +10893,7 @@ def test_main_unit_drift_auto_syncs_and_proceeds_to_claim(
     assert (repo / ".orbi" / "slots" / "slot-1").exists()
 
 
+@_unit_drift_systemd
 def test_main_unit_drift_auto_sync_failure_blocks_claim(
     monkeypatch, tmp_path, caplog,
 ):
@@ -10906,6 +10935,7 @@ def test_main_unit_drift_auto_sync_failure_blocks_claim(
     assert not (repo / ".orbi" / "slots").exists()
 
 
+@_unit_drift_systemd
 def test_main_unit_drift_clean_proceeds_to_claim(monkeypatch, tmp_path,
                                                  caplog):
     """Issue #103: matching units log `unit_drift result=clean` and the tick
