@@ -90,6 +90,93 @@ def test_gh_write_command_does_not_retry_permission_error(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("stderr", [
+    "HTTP 401: Bad credentials",
+    "HTTP 404: Not Found",
+])
+def test_gh_write_command_does_not_retry_four_x(monkeypatch, stderr):
+    def fake_run(command, **kwargs):
+        raise subprocess.CalledProcessError(1, command, stderr=stderr)
+
+    monkeypatch.setattr(github.time, "sleep", lambda _: pytest.fail("slept"))
+    with pytest.raises(subprocess.CalledProcessError):
+        github.run_gh_write_command(["gh", "issue", "edit", "9"], command_runner=fake_run)
+
+
+def test_gh_write_command_handles_zero_attempt_budget(monkeypatch):
+    monkeypatch.setattr(github, "GH_WRITE_MAX_ATTEMPTS", 0)
+    assert github.run_gh_write_command(["gh", "issue", "edit", "9"], command_runner=lambda *a, **k: pytest.fail("executed")) is None
+
+
+def test_gh_write_command_forwards_cwd_and_timeout(monkeypatch):
+    seen = []
+
+    def fake_run(command, **kwargs):
+        seen.append((command, kwargs))
+        raise subprocess.CalledProcessError(1, command, stderr="HTTP 503")
+
+    monkeypatch.setattr(github.time, "sleep", lambda _: None)
+    with pytest.raises(subprocess.CalledProcessError):
+        github.run_gh_write_command(
+            ["gh", "issue", "edit", "9"], cwd="/tmp", timeout=7,
+            command_runner=fake_run,
+        )
+    assert seen[0][1] == {"cwd": "/tmp", "timeout": 7}
+
+
+def test_gh_write_command_retries_when_idempotency_check_is_false(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        raise subprocess.CalledProcessError(1, command, stderr="HTTP 503")
+
+    monkeypatch.setattr(github.time, "sleep", lambda _: None)
+    with pytest.raises(subprocess.CalledProcessError):
+        github.run_gh_write_command(
+            ["gh", "issue", "comment", "9"],
+            command_runner=fake_run, already_applied=lambda: False,
+        )
+    assert len(calls) == github.GH_WRITE_MAX_ATTEMPTS
+
+
+def test_gh_write_command_retries_when_idempotency_check_fails(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        raise subprocess.CalledProcessError(1, command, stderr="HTTP 503")
+
+    monkeypatch.setattr(github.time, "sleep", lambda _: None)
+    with pytest.raises(subprocess.CalledProcessError):
+        github.run_gh_write_command(
+            ["gh", "issue", "comment", "9"], command_runner=fake_run,
+            already_applied=lambda: (_ for _ in ()).throw(RuntimeError("read failed")),
+        )
+    assert len(calls) == github.GH_WRITE_MAX_ATTEMPTS
+
+
+def test_comment_issue_stops_after_remote_comment_is_found(monkeypatch):
+    calls = []
+    attempts = {"n": 0}
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise subprocess.CalledProcessError(
+                1, command, stderr="GraphQL: Something went wrong while executing your query",
+            )
+        if command[1:3] == ["issue", "view"]:
+            return '{"comments": [{"body": "hello\\n\\n<!-- runner=x -->"}]}'
+        raise AssertionError("the failed mutation must be followed by a read")
+
+    monkeypatch.setattr(github, "format_status_comment", lambda body: body + "\n\n<!-- runner=x -->")
+    monkeypatch.setattr(github, "run_command", fake_run)
+    github.comment_issue(9, repo="o/r", body="hello")
+    assert len(calls) == 2
+
+
 def test_gh_write_command_idempotency_check_prevents_duplicate(monkeypatch):
     calls = []
 

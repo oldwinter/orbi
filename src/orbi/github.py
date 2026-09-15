@@ -152,8 +152,8 @@ def run_gh_read_command(
 def _is_transient_gh_write_error(exc: subprocess.CalledProcessError) -> bool:
     """Recognize GitHub server failures, but never client/permission errors."""
     detail = " ".join(str(part or "") for part in (exc.stderr, exc.stdout))
-    return GH_TRANSIENT_ERROR_RE.search(detail) is not None or re.search(
-        r"something went wrong while executing your query|internal server error",
+    return re.search(
+        r"http 5\d\d|http 429|rate limit|something went wrong while executing your query|internal server error",
         detail, re.IGNORECASE,
     ) is not None
 
