@@ -14924,6 +14924,17 @@ def test_resolve_release_declaration_rejects_version_mismatch():
         )
 
 
+def test_resolve_release_declaration_requires_milestone_or_scope():
+    config = Mock(base_branch="main", repositories=[])
+    with pytest.raises(ValueError, match="Milestone or an explicit `scope`"):
+        release.resolve_release_declaration(
+            {"milestone": None},
+            {"version": "v0.5.8", "base_branch": "main",
+             "version_file": "none"},
+            config, "o/r", Path("/repo"), "abc123",
+        )
+
+
 def test_parse_release_declaration_requires_version():
     body = RELEASE_DECLARATION_BODY.replace("- version: v0.3.0\n", "")
     with pytest.raises(ValueError, match="version"):
