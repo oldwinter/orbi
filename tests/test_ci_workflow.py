@@ -145,6 +145,16 @@ def test_ci_workflow_checkout_fetches_all_tags_without_full_history():
         "Issue #910 removed the full-history reconciliation tests: the "
         f"checkout no longer needs fetch-depth: 0, got: {with_options!r}"
     )
+    tag_fetches = [
+        command for command in step_commands(steps)
+        if "refs/tags/*:refs/tags/*" in command
+    ]
+    assert len(tag_fetches) == 1, (
+        "CI must explicitly fetch tag refs for the release docs tests"
+    )
+    assert re.search(r"\btimeout\s+\d+\s+git fetch\b", tag_fetches[0]), (
+        "the tag fetch must be bounded"
+    )
 
 
 def test_workflows_use_node_24_compatible_actions():
