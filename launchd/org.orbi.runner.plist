@@ -23,7 +23,18 @@
            the exec'd runner; the `[ -r` guard keeps a missing env file
            from aborting the non-interactive sh (the `-` optional
            semantics); `&&` is XML-escaped as &amp;&amp; in this file. -->
-      <string>[ -r '{{ORBI_REPO_DIR}}/.orbi/env' ] &amp;&amp; { set -a; . '{{ORBI_REPO_DIR}}/.orbi/env'; set +a; }; exec '{{ORBI_USER_HOME}}/.local/bin/orbi'</string>
+      <!-- Issue #871: the sync step mirrors the Linux ExecStartPre
+           step 2 (systemd/orbi@.service): `sync-engine-source` brings
+           the deployment checkout to the configured engine_source_track
+           channel before the Runner starts, AFTER the env sourcing (the
+           sync's git transport may need the env-file credentials) and
+           chained with `&&` — a failed sync (the CLI exits 1) stops the
+           chain, the exec never runs and the tick does not start (fail
+           closed, the ExecStartPre failure semantics; the reason lands
+           in StandardErrorPath). macOS ships neither /usr/bin/flock nor
+           timeout, so the launchd shape is the plain Issue-pinned
+           command. -->
+      <string>[ -r '{{ORBI_REPO_DIR}}/.orbi/env' ] &amp;&amp; { set -a; . '{{ORBI_REPO_DIR}}/.orbi/env'; set +a; }; '{{ORBI_USER_HOME}}/.local/bin/orbi' sync-engine-source &amp;&amp; exec '{{ORBI_USER_HOME}}/.local/bin/orbi'</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
