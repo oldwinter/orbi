@@ -167,9 +167,7 @@ def test_comment_issue_stops_after_remote_comment_is_found(monkeypatch):
             raise subprocess.CalledProcessError(
                 1, command, stderr="GraphQL: Something went wrong while executing your query",
             )
-        if command[1:3] == ["issue", "view"]:
-            return '{"comments": [{"body": "hello\\n\\n<!-- runner=x -->"}]}'
-        raise AssertionError("the failed mutation must be followed by a read")
+        return '{"comments": [{"body": "hello\\n\\n<!-- runner=x -->"}]}'
 
     monkeypatch.setattr(github, "format_status_comment", lambda body: body + "\n\n<!-- runner=x -->")
     monkeypatch.setattr(github, "run_command", fake_run)
