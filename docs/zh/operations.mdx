@@ -627,8 +627,8 @@ idle 告警和模型请求挂死 kill 是日志/健康阈值——它们不是�
 第 2 步。`orbi doctor` 报告一致性（`cli_source: clean` 或
 `cli_source: DRIFT` + 结构化 `cli_source_drift` 行：实际导入路径、
 期望 deploy_home、精确的 editable 重装命令），`orbi setup` 校验或
-重装。期望来源是**部署 home**（`deploy_home`，缺省 `repo_dir`——Issue
-#330）：外部单仓库模式下 `cli_source` clean 表示 editable 安装从 orbi
+重装。期望来源是**部署 home**（`deploy_home`，缺省 `repo_dir`，
+Issue #330）：外部单仓库模式下 `cli_source` clean 表示 editable 安装从 orbi
 checkout 导入，即使交付 checkout 是外部仓库 X。checkout 根目录**没有** `orbi.py`（与 package 同名的 flat
 文件会遮蔽已安装 package）；直接执行入口 `python3 -m orbi.cli`
 运行与 console script 完全相同的代码，保留为开发/兼容路径。

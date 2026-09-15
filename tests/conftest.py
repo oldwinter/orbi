@@ -26,6 +26,7 @@ def git(repo: Path, *args: str) -> str:
     ``tests/test_suite_hygiene.py``."""
     result = subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True,
+        timeout=30,
     )
     if result.returncode != 0:
         raise AssertionError(

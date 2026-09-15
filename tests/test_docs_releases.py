@@ -171,16 +171,58 @@ def test_only_the_highest_version_pages_carry_latest_markers():
         assert ("（最新）" in zh_title) is is_latest
 
 
-def test_corrected_release_keeps_the_previous_release_record_link():
-    versions = sorted(release_page_slugs("en"), key=release_version)
-    assert len(versions) >= 2, "the corrected release needs a prior release"
-    corrected = versions[1]
-    previous = versions[0].removeprefix("release-")
-    for path in (DOCS_DIR / f"{corrected}.mdx", DOCS_DIR / "zh" / f"{corrected}.mdx"):
-        text = path.read_text(encoding="utf-8")
-        assert previous in text
-        assert ("correct" in text.lower()) or ("修正" in text)
-        assert f"/{versions[0]}" in text
+# Issue #910: the two pre-generator releases moved their records into
+# the GitHub Release bodies and their docs pages are gone. The tags
+# stay (a tag is never moved or deleted), so these two are the pinned
+# exception to tag/page completeness — and one-way: no page for them
+# may come back (the orphan check below still applies to them).
+PRE_GENERATOR_TAGS = frozenset({"v0.1.0", "v0.1.1"})
+
+
+def test_every_released_tag_has_its_release_page():
+    """Tag/page completeness (Issue #910): every released tag must have
+    a corresponding docs page and vice versa — the file/nav parity tests
+    above cannot see a release whose docs sync never ran, which is how
+    a version-sequence gap like the skipped v0.5.1 becomes visible in
+    the navigation without any test failing. Requires the tag refs in
+    the checkout (CI provides them with `fetch-tags: true`)."""
+    tags = {
+        tag for tag in git("tag", "--list", "v*").splitlines() if tag.strip()
+    }
+    assert tags, (
+        "no tags found in the checkout — the release pages cannot be "
+        "checked for completeness (CI fetches tags with fetch-tags: true)"
+    )
+    expected_slugs = {
+        f"release-{tag}" for tag in tags - PRE_GENERATOR_TAGS
+    }
+    for language_code in ("en", "zh"):
+        slugs = release_page_slugs(language_code)
+        missing_pages = expected_slugs - slugs
+        assert not missing_pages, (
+            f"released tags without a {language_code} docs page: "
+            f"{sorted(missing_pages)}"
+        )
+        orphan_pages = slugs - expected_slugs
+        assert not orphan_pages, (
+            f"{language_code} release pages without a released tag "
+            f"(the pre-generator records live on the GitHub Releases, "
+            f"not in docs/): {sorted(orphan_pages)}"
+        )
+
+
+def test_release_pages_carry_no_release_machine_audit_blocks():
+    """The docs page is for readers, not the release machine's audit
+    trail (Issue #910): no release page carries the `## Scope (verified
+    item by item)` or `## Pre-release gates` sections or a `run_id=`
+    line — those stay on the GitHub Release. Pins both the generator
+    change and the one-time trim of the existing pages."""
+    for directory in (DOCS_DIR, DOCS_DIR / "zh"):
+        for path in sorted(directory.glob("release-v*.mdx")):
+            text = path.read_text(encoding="utf-8")
+            assert "Scope (verified item by item)" not in text, path
+            assert "Pre-release gates" not in text, path
+            assert not re.search(r"^run_id=", text, re.MULTILINE), path
 
 
 def test_release_pages_have_matching_version_titles():
