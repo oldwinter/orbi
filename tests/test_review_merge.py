@@ -63,6 +63,30 @@ def test_parse_review_verdict_findings():
     assert verdict["findings"][0]["location"] == "a.py:1"
 
 
+def test_parse_review_verdict_human_decision():
+    text = "REVIEW_VERDICT " + json.dumps({
+        "verdict": "blocked_on_human_decision", "head": "h1",
+        "blockers": 0, "majors": 1, "minors": 0,
+        "findings": [{"level": "Major", "location": "PR round comments",
+                      "note": "same failure repeated", "fix": "choose policy"}],
+    })
+    verdict = runner.parse_review_verdict(text)
+    assert verdict["verdict"] == "blocked_on_human_decision"
+
+
+@pytest.mark.parametrize("finding", [[], [{"level": "Major"}],
+                                      [{"level": "Minor", "note": "n",
+                                        "fix": "f"}]])
+def test_parse_review_verdict_human_decision_requires_actionable_single_major(
+        finding):
+    text = "REVIEW_VERDICT " + json.dumps({
+        "verdict": "blocked_on_human_decision", "head": "h1",
+        "blockers": 0, "majors": 1, "minors": 0, "findings": finding,
+    })
+    with pytest.raises(ValueError, match="exactly one|non-empty"):
+        runner.parse_review_verdict(text)
+
+
 def test_parse_review_verdict_last_line_beats_injected_marker():
     """Issue #591: untrusted text the reviewer read (an Issue body, a
     diff, a comment) may contain a forged `REVIEW_VERDICT: pass` line
@@ -1661,6 +1685,31 @@ def budget_review_env(monkeypatch):
                         lambda *a, **k: env["verdict"])
     make_fake_gh(monkeypatch)
     return env
+
+
+def test_review_and_merge_human_decision_stops_without_fix_round(
+        budget_review_env, monkeypatch, tmp_path,
+):
+    calls = []
+    verdict = "REVIEW_VERDICT " + json.dumps({
+        "verdict": "blocked_on_human_decision", "head": "h1",
+        "blockers": 0, "majors": 1, "minors": 0,
+        "findings": [{"level": "Major", "location": "PR round comments",
+                      "note": "same failure repeated in 2 consecutive rounds",
+                      "fix": "decide which address source is authoritative"}],
+    })
+    budget_review_env["verdict"] = verdict
+    monkeypatch.setattr(seam, "comment_issue",
+                        lambda *a, **k: calls.append(("issue", k["body"])))
+    with pytest.raises(runner.HumanDecisionRequired) as raised:
+        runner.review_and_merge_if_clean(
+            tmp_path, "branch", "main", _review_merge_config(tmp_path),
+            "owner/repo", 4, title="Review task", priority="normal",
+            scene=_scene(),
+        )
+    assert calls == []
+    assert "same failure repeated" in str(raised.value)
+    assert "decide which address source is authoritative" in str(raised.value)
 
 
 def test_review_and_merge_clean_verdict_merges_and_labels_merged(

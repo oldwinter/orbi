@@ -392,6 +392,10 @@ class ReviewRoundsExhausted(UnrecoverableDeliveryError):
     """
 
 
+class HumanDecisionRequired(UnrecoverableDeliveryError):
+    """The reviewer found a decision that only a maintainer can make."""
+
+
 class ResumePrClosedError(UnrecoverableDeliveryError):
     """The resumed delivery's scene PR is no longer open.
 
@@ -4978,8 +4982,13 @@ def _json_dict_span(segment: str) -> dict | None:
 
 def _validated_verdict(parsed: dict) -> dict:
     """The semantic checks every verdict payload must pass."""
-    if parsed.get("verdict") not in ("pass", "findings"):
-        raise ValueError("verdict must be 'pass' or 'findings'")
+    if parsed.get("verdict") not in (
+        "pass", "findings", "blocked_on_human_decision",
+    ):
+        raise ValueError(
+            "verdict must be 'pass', 'findings' or "
+            "'blocked_on_human_decision'"
+        )
     head = parsed.get("head")
     if not isinstance(head, str) or not head:
         raise ValueError("head must be the reviewed commit SHA")
@@ -4993,8 +5002,28 @@ def _validated_verdict(parsed: dict) -> dict:
     majors = parsed["majors"]
     if parsed["verdict"] == "pass" and (blockers > 0 or majors > 0):
         raise ValueError("pass verdict cannot have blockers or majors")
-    if parsed["verdict"] == "findings" and blockers == 0 and majors == 0:
-        raise ValueError("findings verdict requires blockers or majors")
+    verdict = parsed["verdict"]
+    if verdict in ("findings", "blocked_on_human_decision") \
+            and blockers == 0 and majors == 0:
+        raise ValueError(f"{verdict} verdict requires blockers or majors")
+    if verdict == "blocked_on_human_decision":
+        findings = parsed["findings"]
+        if blockers != 0 or majors != 1 or len(findings) != 1:
+            raise ValueError(
+                "blocked_on_human_decision verdict requires exactly one "
+                "Major finding and no blockers"
+            )
+        finding = findings[0]
+        if (not isinstance(finding, dict)
+                or finding.get("level") != "Major"
+                or not isinstance(finding.get("note"), str)
+                or not finding["note"].strip()
+                or not isinstance(finding.get("fix"), str)
+                or not finding["fix"].strip()):
+            raise ValueError(
+                "blocked_on_human_decision finding must include a non-empty "
+                "Major note and fix"
+            )
     return parsed
 
 
@@ -6079,6 +6108,9 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
       without a comment or a label change: "pending" is a
       state, not a failure — the next tick re-reads it, the round budget
       does not advance; returns False;
+    - `blocked_on_human_decision` -> raise `HumanDecisionRequired` with
+      the finding note and fix direction; the caller marks the Issue
+      `ai-blocked` immediately, without recording another review round;
     - Blocker/Major findings the reviewer could not fix in-session ->
       comment them to Issue and PR (the comment carries the updated
       scene) and label the Issue `ai-fix-needed`; the next tick resumes
@@ -6205,6 +6237,15 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         verdict=verdict["verdict"], blockers=verdict["blockers"],
         majors=verdict["majors"],
     )
+    if verdict["verdict"] == "blocked_on_human_decision":
+        decisions = "; ".join(
+            f"note: {finding.get('note', '')}; "
+            f"fix: {finding.get('fix', '')}"
+            for finding in verdict["findings"]
+        )
+        raise HumanDecisionRequired(
+            "review requires human decision: " + decisions
+        )
     if review_has_findings(verdict):
         # The reviewer could not make the PR mergeable in this session
         # (findings are fixed in the same session; reaching
@@ -8420,12 +8461,13 @@ def _run_review_round(
         )
     except Exception as exc:
         detail = _failure_detail(exc)
-        if isinstance(exc, ReviewRoundsExhausted):
-            # The bounded budget is an intentional human decision
-            # point, not a Runner bug. Keep the structured event and
-            # terminal handling below, but do not emit a traceback.
+        if isinstance(exc, (ReviewRoundsExhausted, HumanDecisionRequired)):
+            # These are intentional human decision points, not Runner
+            # bugs. Keep structured evidence without a traceback.
             event(
-                "review_rounds_exhausted_expected_terminal",
+                "review_human_decision_required"
+                if isinstance(exc, HumanDecisionRequired)
+                else "review_rounds_exhausted_expected_terminal",
                 level=logging.ERROR, issue=number, pr=pr_url,
                 reason=detail,
             )
