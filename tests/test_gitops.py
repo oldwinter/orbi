@@ -221,6 +221,27 @@ def test_fetch_origin_branch_uses_an_explicit_refspec(monkeypatch, tmp_path):
     assert not (tmp_path / ".orbi" / "base-sync.lock").exists()
 
 
+def test_delivery_branch_from_push_only_matches_orbi_heads():
+    assert gitops._delivery_branch_from_push(
+        ["git", "push", "origin", "HEAD:orbi/issue-898"],
+    ) == "orbi/issue-898"
+    assert gitops._delivery_branch_from_push(
+        ["git", "push", "origin", "HEAD:refs/heads/orbi/issue-898"],
+    ) == "orbi/issue-898"
+    assert gitops._delivery_branch_from_push(
+        ["git", "push", "origin", "HEAD:main"],
+    ) is None
+    assert gitops._delivery_branch_from_push(
+        ["git", "push", "origin", "HEAD:refs/heads/main"],
+    ) is None
+    assert gitops._delivery_branch_from_push(
+        ["git", "push", "origin", "refs/tags/v1.0.0"],
+    ) is None
+    assert gitops._delivery_branch_from_push(
+        ["git", "fetch", "origin", "orbi/issue-898"],
+    ) is None
+
+
 def test_base_sync_lock_is_released_after_the_fetch(monkeypatch, tmp_path):
     monkeypatch.setattr(seam, "run_command", lambda c, **k: "")
     gitops.fetch_base_ref(tmp_path, "main", lock_timeout_seconds=1.0)
