@@ -666,6 +666,11 @@ orbi check --config orbi.toml
 # 传输连通性（fail fast，没有回退））
 orbi setup --config orbi.toml
 
+# 把 active milestone 推进到一个 exact 的 GitHub Milestone 标题
+# （auto_next_milestone=false 确认流程背后的人工命令；只有
+# active_milestone 这一行会变化）
+orbi milestone set v0.6.0 --config orbi.toml
+
 # 打印当前 run 的 Pi session JSONL 路径（没有 session 时 fail fast）
 orbi session --config orbi.toml
 orbi session --follow --config orbi.toml   # tail -f
@@ -676,14 +681,51 @@ orbi session --pretty --config orbi.toml   # 一行摘要
 （默认 `orbi.toml`）。`status` 和 `session` 是调试附件——
 journal 和 GitHub 仍是正常可观测路径。
 
+### 人工推进 active milestone
+
+`orbi milestone set <title>`（Issue #895）是 milestone 生命周期中的
+人工命令：当 `auto_next_milestone = false` 让推进进入待确认状态
+（确认 Issue 中给出的就是这条命令），或任何一次版本切换应当是运维的
+明确动作时，它把本地 `orbi.toml` 的 `active_milestone` 改为给定的
+GitHub Milestone 标题——不再手工编辑文件。该标题必须在唯一配置的
+source repo 上恰好对应一个 Milestone（GitHub Milestone 标题不唯一，
+exact title 重名是硬错误）。只有 `active_milestone` 这一行会被重写：
+注释、空行和其他所有字段保持逐字节不变。
+
+```bash
+orbi milestone set v0.6.0 --config orbi.toml
+# active_milestone: v0.5.6 -> v0.6.0
+# repo: orbi-build/orbi
+# config: /path/to/orbi.toml
+# next: the Runner's next tick claims Issues from Milestone "v0.6.0" and
+# syncs the ORBI_ACTIVE_MILESTONE variable (verify: gh api
+# repos/orbi-build/orbi/actions/variables/ORBI_ACTIVE_MILESTONE --jq .value)
+```
+
+命令本身从不写 GitHub——Milestone 列表读取是它唯一的网络调用。
+`ORBI_ACTIVE_MILESTONE` Actions variable 由 Runner 下一 tick 的
+preflight 发布（bypass 契约），因此命令成功不代表 variable 已同步：
+用输出里给出的 `gh api` 探针验证。所有失败都以非零退出，在 stderr
+输出一行结构化 `milestone_set_failed reason=... fix=...`，配置保持
+原样——目标不存在、exact title 重名、GitHub API 或权限失败、配置
+没有 `active_milestone` 行（该字段从不被隐式创建）、文件不可写，
+全部带实际原因快速失败：
+
+```bash
+orbi milestone set v0.9.9 --config orbi.toml
+# milestone_set_failed reason=milestone_not_found title='v0.9.9'
+#   repo=orbi-build/orbi open milestones: v0.6.0(3); fix=use one exact
+#   title from `gh api repos/orbi-build/orbi/milestones?state=open --jq '.[].title'`
+```
+
 ## 公开表面
 
 以下接口和持久化命名都是公开表面。任何变更都必须在 release notes
 中声明，以便下游自动化有计划地迁移：
 
 - **CLI：**裸 `orbi` tick，以及 `add`、`status`、`doctor`、`setup`、
-  `install-units`、`session` 子命令，包括 `--config` 和
-  `ORBI_CONFIG` 环境变量。
+  `install-units`、`session`、`milestone set` 子命令，包括
+  `--config` 和 `ORBI_CONFIG` 环境变量。
 - **配置：**`orbi.toml` 字段（`source_repos`、`repo_dir`、`deploy_home`、
   `workspace_root`、`prompt`、`prompt_review`、`base_branch`、
   `git_transport`、`active_milestone`、`max_concurrency`、

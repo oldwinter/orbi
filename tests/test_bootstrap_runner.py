@@ -5971,6 +5971,9 @@ def test_advance_active_milestone_pending_creates_one_p0_ready_issue(
     assert len(create) == 1
     assert "--label" not in create[0]
     assert "`v0.3.1`：2 open issues" in create[0][create[0].index("--body") + 1]
+    # Issue #895: the human instruction names the explicit advance
+    # command instead of a hand-edit of orbi.toml.
+    assert "orbi milestone set" in create[0][create[0].index("--body") + 1]
     assert "active_milestone_advance_pending old=v0.3.0" in caplog.text
     assert "auto_next_milestone=false" in caplog.text
 
