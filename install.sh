@@ -13,6 +13,20 @@ require_command() {
   fi
 }
 
+# A vanilla macOS has no `timeout` (coreutils ships only via Homebrew,
+# as gtimeout — Issue #868), so a bare `timeout N …` aborts the whole
+# install with `command not found` under set -e. When `timeout` exists
+# every timed step keeps its bound; when it does not, the step simply
+# runs without one.
+with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$@"
+  else
+    shift
+    "$@"
+  fi
+}
+
 # The scheduler is platform state, not a package the user can add:
 # Orbi schedules its runner through launchd on macOS and systemd on
 # Linux (Issue #849). A machine without its platform scheduler cannot
@@ -54,8 +68,8 @@ if ! command -v uv >/dev/null 2>&1; then
   printf 'orbi install: uv not found; installing it with the official installer\n' >&2
   uv_installer=$(mktemp)
   trap 'rm -f "$uv_installer"' EXIT
-  timeout 120 curl -LsSf https://astral.sh/uv/install.sh -o "$uv_installer"
-  timeout 120 sh "$uv_installer"
+  with_timeout 120 curl -LsSf https://astral.sh/uv/install.sh -o "$uv_installer"
+  with_timeout 120 sh "$uv_installer"
   rm -f "$uv_installer"
   trap - EXIT
   export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
@@ -69,11 +83,11 @@ elif [ -e "$ORBI_SRC" ]; then
   printf 'orbi install: %s exists but is not a git checkout\n' "$ORBI_SRC" >&2
   exit 1
 else
-  timeout 300 git clone git@github.com:orbi-build/orbi.git "$ORBI_SRC"
+  with_timeout 300 git clone git@github.com:orbi-build/orbi.git "$ORBI_SRC"
 fi
 
 cd "$ORBI_SRC"
-timeout 300 uv tool install --force --reinstall --editable .
+with_timeout 300 uv tool install --force --reinstall --editable .
 if [ ! -e orbi.toml ]; then
   cp src/orbi/example_config.toml orbi.toml
 fi
@@ -92,7 +106,7 @@ if grep -q 'OWNER/PILOT-REPO' orbi.toml; then
     printf 'orbi install: invalid GitHub repository: %s\n' "$source_repo" >&2
     exit 1
   fi
-  sed -i "s#OWNER/PILOT-REPO#$source_repo#; /OWNER\\/BACKLOG-REPO/d" orbi.toml
+  sed -i.bak "s#OWNER/PILOT-REPO#$source_repo#; /OWNER\\/BACKLOG-REPO/d" orbi.toml && rm -f orbi.toml.bak
 fi
 
 # uv's tool bin directory may not be in PATH in the shell running curl|bash.

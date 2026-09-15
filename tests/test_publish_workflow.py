@@ -7,7 +7,9 @@ fail when the workflow stops enforcing that chain — the tag/version
 consistency check, the artifact content + secret verification, the
 clean-venv wheel smoke (the artifact shape users install), the
 structured failure-path smoke, the Trusted-Publishing-only upload, and
-the post-publish `orbi==X.Y.Z` installation from PyPI — or when it
+the post-publish `orbi-cli==X.Y.Z` installation from PyPI (Issue #874: the
+PyPI distribution is `orbi-cli`, artifact filenames normalize to
+`orbi_cli_<version>` per PEP 625/PEP 427) — or when it
 drifts into unpinned actions.
 
 Issue #852 adds the manual (re)publish path: the PyPI-side trusted
@@ -159,6 +161,7 @@ def test_publish_workflow_verifies_complete_and_clean_artifacts():
     for needle in (
         "src/orbi",  # every runtime module walked from the package dir
         "orbi/example_config.toml",  # in the wheel AND the sdist
+        "orbi_cli-",  # Issue #874: the orbi-cli artifact filename prefix
         ".pi-session/",
         "github_pat_",
         "ghp_",
@@ -218,8 +221,9 @@ def test_publish_workflow_verifies_the_published_pypi_version():
     assert "timeout 300" in commands, (
         "the PyPI propagation wait is bounded (Issue #95), then fails fast"
     )
-    assert 'orbi==$2' in commands or 'orbi=="' in commands or 'orbi==$version' in commands, (
-        "the exact published version must be installed from PyPI"
+    assert 'orbi-cli==$2' in commands or 'orbi-cli=="' in commands or 'orbi-cli==$version' in commands, (
+        "the exact published version must be installed from PyPI "
+        "under the orbi-cli distribution name (Issue #874)"
     )
     assert 'orbi --version' in commands, (
         "the installed CLI must report the tagged version"

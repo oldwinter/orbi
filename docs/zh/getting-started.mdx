@@ -27,30 +27,15 @@ bash install.sh
 手动安装时，`orbi setup` 找不到 `orbi.toml` 会生成一个：相邻存在
 `.orbi.example.toml` 就用它，否则用 CLI 包内自带的示例——且不会覆盖已有配置。
 
-## 从 PyPI 安装 CLI
+## PyPI 安装
 
-已发布的 CLI 可以直接从 PyPI 安装（Issue #163）——不需要源码 checkout：
-
-```bash
-python3 -m pip install orbi
-orbi --version
-orbi --help
-```
-
-uv 用户以非 editable 方式安装同一个发布包：
-
-```bash
-uv tool install orbi
-```
-
-**PyPI 发布包 vs editable 部署**：PyPI 安装的是*版本化发布 CLI*——
-site-packages 里某一次发布的冻结副本，升级即重装
-（`python3 -m pip install --upgrade orbi` / `uv tool install --reinstall orbi`）。
-下面的 editable checkout 安装仍是官方**部署方式**：tool 环境直接从部署
-checkout 导入 `orbi` 包，`ExecStartPre` 同步把新引擎代码送到下一个 CLI
-进程，无需重装。真正跑 Runner 仍需要那套部署布局（配置、deploy home、
-调度器 user units）；机器是否就绪用只读前置条件门禁 `orbi check` 验证
-（命令参考在 [Operations](/zh/operations)）。
+CLI **尚未发布到 PyPI**——v0.5.5 的发布在 PyPI 侧 trusted-publisher
+配置上失败（[Issue #852](https://github.com/orbi-build/orbi/issues/852)），
+所以 `pip install orbi-cli` 和 `uv tool install orbi-cli` 现在会报包仓库
+"not found" 错误。发布包名为 `orbi-cli`（Issue #874）；安装后的命令仍是
+`orbi`。当前受支持的安装路径就是本页已有的两条：上方的一键
+安装（自动 clone 源码并完成 editable 安装）和下面第 2 步的 editable
+checkout 安装。真正发布之后，这一节才会补上真实的 PyPI 命令。
 
 ## 前提
 
@@ -133,7 +118,9 @@ cd orbi
 在 clone 目录里安装，`--python` 传一个**兼容**的解释器（Issue #861）：
 系统 Python 是 3.14 或更新（Fedora 43、当前 Arch 自带）时直接用
 `python3`，否则传 `3.14` 让 uv 自动供应或选择——Ubuntu 24.04 系统自带
-Python 3.12，硬编码其系统解释器会因依赖解析失败而退出 1：
+Python 3.12，用精确路径把安装钉死到该系统解释器会因依赖解析失败而退出
+1；而 `python3`、`3.14` 这类宽泛写法会让 uv 选取或供应一个满足要求的
+解释器（在这类宿主机上即托管安装的 CPython 3.14）：
 
 ```bash
 # 系统 Python >= 3.14（Fedora 43、当前 Arch）：

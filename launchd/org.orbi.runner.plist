@@ -41,7 +41,10 @@
       <key>ORBI_CONFIG</key>
       <string>{{ORBI_REPO_DIR}}/orbi.toml</string>
       <key>PATH</key>
-      <string>{{ORBI_USER_HOME}}/.npm-global/bin:{{ORBI_USER_HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <!-- /opt/homebrew/bin leads: the Apple Silicon Homebrew prefix
+           carries gh, uv and the global npm pi (Issue #869); Intel's
+           /usr/local/bin stays for x86_64 macs. -->
+      <string>/opt/homebrew/bin:{{ORBI_USER_HOME}}/.npm-global/bin:{{ORBI_USER_HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
     <key>StartInterval</key>
     <integer>300</integer>

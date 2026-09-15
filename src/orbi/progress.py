@@ -77,7 +77,7 @@ def runner_fingerprint() -> str:
             if re.fullmatch(r"[0-9a-fA-F]{7,40}", fingerprint):
                 return fingerprint
             return "unknown"
-        version = metadata.version("orbi")
+        version = metadata.version("orbi-cli")
         return version if isinstance(version, str) and version else "unknown"
     except Exception:
         return "unknown"
