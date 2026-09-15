@@ -607,6 +607,9 @@ class RunnerConfig:
     pi_provider: str | None = None
     pi_model: str | None = None
     pi_thinking: str | None = None
+    review_pi_provider: str | None = None
+    review_pi_model: str | None = None
+    review_pi_thinking: str | None = None
     pi_extensions: tuple[dict, ...] = ()
     model_wait_dead_seconds: float = PI_MODEL_WAIT_DEAD_SECONDS
     issue_comments_limit: int = ISSUE_COMMENTS_LIMIT
@@ -719,6 +722,9 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     pi_provider = _optional_pi_string(data, "pi_provider")
     pi_model = _optional_pi_string(data, "pi_model")
     pi_thinking = _optional_pi_string(data, "pi_thinking")
+    review_pi_provider = _optional_pi_string(data, "review_pi_provider")
+    review_pi_model = _optional_pi_string(data, "review_pi_model")
+    review_pi_thinking = _optional_pi_string(data, "review_pi_thinking")
     pi_extensions = _load_pi_extensions(data.get("pi_extensions"), base)
     # Hung-model-request threshold: the model_wait dead
     # silence is configurable; omitted -> PI_MODEL_WAIT_DEAD_SECONDS
@@ -788,11 +794,21 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
     pi_providers_data = None
     if pi_providers_path is not None:
         try:
+            env_file = deploy_home / ".orbi" / "env"
             pi_providers_data = _load_pi_providers(
-                pi_providers_path, pi_provider, pi_model,
-                deploy_home / ".orbi" / "env",
+                pi_providers_path, pi_provider, pi_model, env_file,
                 check_api_key=check_provider_api_keys,
             )
+            try:
+                _load_pi_providers(
+                    pi_providers_path,
+                    review_pi_provider or pi_provider,
+                    review_pi_model or pi_model,
+                    env_file,
+                    check_api_key=check_provider_api_keys,
+                )
+            except ValueError as exc:
+                raise ValueError(f"review provider selection invalid: {exc}") from exc
         except FileNotFoundError:
             # A missing path is the setup/doctor diagnostic case.  Preserve
             # fail-fast behavior for an existing non-file path (for example,
@@ -847,6 +863,9 @@ def load_config(path: Path, *, check_provider_api_keys: bool = True,
         pi_provider=pi_provider,
         pi_model=pi_model,
         pi_thinking=pi_thinking,
+        review_pi_provider=review_pi_provider,
+        review_pi_model=review_pi_model,
+        review_pi_thinking=review_pi_thinking,
         pi_extensions=tuple(pi_extensions),
         model_wait_dead_seconds=model_wait_dead_seconds,
         issue_comments_limit=issue_comments_limit,
@@ -1346,7 +1365,8 @@ def _expand_pi_api_key_refs(api_key: str) -> str:
     )
 
 
-def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
+def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig,
+                         role: str = ROLE_IMPLEMENT) -> Path | None:
     """Materialize the per-run Pi agent dir.
 
     Returns None when no provider file is configured — the Pi command
@@ -1460,8 +1480,12 @@ def prepare_pi_agent_dir(worktree: Path, config: RunnerConfig) -> Path | None:
             )
         base_settings = loaded
     settings = dict(base_settings)
-    pi_provider = config.pi_provider
-    pi_model = config.pi_model
+    if role == ROLE_REVIEW:
+        pi_provider = config.review_pi_provider or config.pi_provider
+        pi_model = config.review_pi_model or config.pi_model
+    else:
+        pi_provider = config.pi_provider
+        pi_model = config.pi_model
     if pi_provider is not None and pi_model is not None:
         settings["defaultProvider"] = pi_provider
         settings["defaultModel"] = pi_model
@@ -1530,7 +1554,7 @@ def _resolve_enabled_models(patterns: list, providers: dict) -> list:
     return resolved
 
 
-def _pi_model_args(config: RunnerConfig) -> list[str]:
+def _pi_model_args(config: RunnerConfig, role: str = ROLE_IMPLEMENT) -> list[str]:
     """Return the configured Pi model flags.
 
     One `--flag value` pair per configured key, in the fixed order
@@ -1541,12 +1565,15 @@ def _pi_model_args(config: RunnerConfig) -> list[str]:
     `log_command`, so the journal run scene records what was launched.
     """
     args: list[str] = []
+    prefix = "review_" if role == ROLE_REVIEW else ""
     for flag, key in (
         ("--provider", "pi_provider"),
         ("--model", "pi_model"),
         ("--thinking", "pi_thinking"),
     ):
-        value = getattr(config, key)
+        value = getattr(config, f"{prefix}{key}")
+        if prefix and value is None:
+            value = getattr(config, key)
         if value is not None:
             args.extend((flag, value))
     return args
@@ -3952,7 +3979,7 @@ def run_pi(issue: dict, ctx: RunContext, config: RunnerConfig, *,
     command = [
         "pi", *_pi_extension_args(config),
         *_skill_args(_skills_for(config, IMPLEMENT_EXCLUDED_SKILLS)),
-        *_pi_model_args(config),
+        *_pi_model_args(config, ROLE_IMPLEMENT),
         "--print", "--session-dir",
         str(worktree / ".pi-session"), "--system-prompt", system_prompt, context,
     ]
@@ -3961,7 +3988,7 @@ def run_pi(issue: dict, ctx: RunContext, config: RunnerConfig, *,
     # through the command line or the log (the redacted command keeps
     # only the #119 provider/model/thinking identifiers). Unconfigured
     # -> the stream_pi call keeps its exact pre-#157 shape.
-    agent_dir = prepare_pi_agent_dir(worktree, config)
+    agent_dir = prepare_pi_agent_dir(worktree, config, role=ROLE_IMPLEMENT)
     # Startup phase: the provider config is loaded and
     # materialized for this run (or resolved to Pi's own agent dir when
     # unconfigured) — the first startup line, before the process is
@@ -3983,7 +4010,7 @@ def run_pi(issue: dict, ctx: RunContext, config: RunnerConfig, *,
         ctx=ctx,
         timeout=timeout,
         log_command=[
-            "pi", *_pi_extension_args(config), *_pi_model_args(config),
+            "pi", *_pi_extension_args(config), *_pi_model_args(config, ROLE_IMPLEMENT),
             "--print", "--session-dir", str(worktree / ".pi-session"),
             "--system-prompt", "<redacted>", "<issue-context-redacted>",
         ],
@@ -5117,14 +5144,14 @@ def run_review(ctx: RunContext, pr: dict, config: RunnerConfig, round: int,
     command = [
         "pi", *_pi_extension_args(config),
         *_skill_args(_skills_for(config, REVIEW_EXCLUDED_SKILLS)),
-        *_pi_model_args(config),
+        *_pi_model_args(config, ROLE_REVIEW),
         "--print", "--session-dir",
         str(worktree / ".pi-session"), "--system-prompt", system_prompt,
         context,
     ]
-    # The review session uses the SAME provider config as
-    # the implementer (one materialized dir per worktree, re-used).
-    agent_dir = prepare_pi_agent_dir(worktree, config)
+    # The review session uses its role-specific provider selection,
+    # falling back to the implementer selection when no override exists.
+    agent_dir = prepare_pi_agent_dir(worktree, config, role=ROLE_REVIEW)
     # Startup phase: the review session's provider config
     # is loaded and materialized too (same line shape, role=review).
     _log_provider_config_loaded(
@@ -5145,7 +5172,7 @@ def run_review(ctx: RunContext, pr: dict, config: RunnerConfig, round: int,
         timeout=timeout,
         role=ROLE_REVIEW,
         log_command=[
-            "pi", *_pi_extension_args(config), *_pi_model_args(config),
+            "pi", *_pi_extension_args(config), *_pi_model_args(config, ROLE_REVIEW),
             "--print", "--session-dir", str(worktree / ".pi-session"),
             "--system-prompt", "<redacted>", "<review-context-redacted>",
         ],

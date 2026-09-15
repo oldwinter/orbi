@@ -12939,6 +12939,9 @@ def test_load_config_defaults_pi_model_keys_to_none(tmp_path):
     assert config.pi_provider is None
     assert config.pi_model is None
     assert config.pi_thinking is None
+    assert config.review_pi_provider is None
+    assert config.review_pi_model is None
+    assert config.review_pi_thinking is None
 
 
 def test_load_config_reads_pi_model_keys(tmp_path):
@@ -12947,13 +12950,19 @@ def test_load_config_reads_pi_model_keys(tmp_path):
         'source_repos = ["owner/repo"]\n'
         'pi_provider = "openai"\n'
         'pi_model = "gpt-5.6-sol"\n'
-        'pi_thinking = "medium"\n',
+        'pi_thinking = "medium"\n'
+        'review_pi_provider = "deepseek"\n'
+        'review_pi_model = "deepseek-chat"\n'
+        'review_pi_thinking = "high"\n',
         encoding="utf-8",
     )
     config = runner.load_config(config_path)
     assert config.pi_provider == "openai"
     assert config.pi_model == "gpt-5.6-sol"
     assert config.pi_thinking == "medium"
+    assert config.review_pi_provider == "deepseek"
+    assert config.review_pi_model == "deepseek-chat"
+    assert config.review_pi_thinking == "high"
 
 
 @pytest.mark.parametrize(
@@ -13076,6 +13085,31 @@ def test_run_review_passes_configured_model_args(monkeypatch, tmp_path):
     ]
 
 
+def test_run_review_uses_independent_model_args(monkeypatch, tmp_path):
+    (tmp_path / "prompt_review.md").write_text("REVIEW", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        runner, "stream_pi",
+        lambda command, **kwargs: calls.append((command, kwargs)) or "ok",
+    )
+    config = _model_config(
+        tmp_path, pi_provider="cheap", pi_model="fast",
+        pi_thinking="low", review_pi_provider="strong",
+        review_pi_model="careful", review_pi_thinking="high",
+    )
+    runner.run_review(
+        RunContext(run_id=config.run_id, issue=4, branch="branch",
+                   worktree=tmp_path, source_repo="owner/repo"),
+        {"number": 4, "url": "https://x/pull/4", "base_oid": "b1",
+         "head_oid": "h1", "head_ref": "h"}, config, 1,
+    )
+    command, kwargs = calls[0]
+    expected = [("--provider", "strong"), ("--model", "careful"),
+                ("--thinking", "high")]
+    assert _command_model_args(command) == expected
+    assert _command_model_args(kwargs["log_command"]) == expected
+
+
 def test_run_review_omits_model_args_when_not_configured(monkeypatch, tmp_path):
     """Default compatibility for the review session as well."""
     (tmp_path / "prompt_review.md").write_text("REVIEW", encoding="utf-8")
@@ -13131,6 +13165,20 @@ def _providers_config(tmp_path, providers, **toml_keys):
     config_path = tmp_path / "orbi.toml"
     config_path.write_text(toml, encoding="utf-8")
     return config_path
+
+
+def test_load_config_rejects_unknown_review_provider(tmp_path):
+    providers = {"providers": {"base": {
+        "baseUrl": "https://example.test", "api": "openai-completions",
+        "models": [{"id": "base-model"}],
+    }}}
+    config_path = _providers_config(
+        tmp_path, providers,
+        pi_provider='"base"', pi_model='"base-model"',
+        review_pi_provider='"missing"', review_pi_model='"base-model"',
+    )
+    with pytest.raises(ValueError, match="review provider selection invalid"):
+        runner.load_config(config_path)
 
 
 def test_load_config_pi_providers_absent_defaults_to_none(tmp_path):
