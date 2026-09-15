@@ -94,7 +94,6 @@ HOST_ONLY_KEYS = frozenset({
     "model_wait_probe_seconds",
     # host scheduling / transport / recovery semantics.
     "max_concurrency",
-    "slot_dir",
     "unit_name",
     "git_transport",
     # Tick-start worktree reclamation: the host owns its
@@ -105,6 +104,7 @@ HOST_ONLY_KEYS = frozenset({
     "engine_source_track",
     "auto_next_milestone",
     "allow_stale_runner",
+    "human_review_gate",
     "release_ci_wait_seconds",
     "release_deliveries_wait_seconds",
     "health_alert_repo",

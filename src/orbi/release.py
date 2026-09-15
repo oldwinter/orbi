@@ -780,7 +780,7 @@ def build_release_changelog(repo: str, scope: list[int]) -> str:
     return "\n".join(sections)
 
 
-def check_release_gates(repo: str, base_branch: str, release_commit: str,
+def check_release_gates(repo: str, release_commit: str,
                         release_number: int, *,
                         milestone: str | None = None,
                         ci_wait_seconds: float = RELEASE_CI_WAIT_SECONDS,
@@ -1018,7 +1018,7 @@ def prepare_release_version(worktree: Path, tag: str,
                 cwd=worktree,
             )
         return run_command(["git", "rev-parse", "HEAD"], cwd=worktree).strip()
-    if version_file not in ("pyproject.toml", "package.json", "composer.json"):
+    if version_file != "pyproject.toml":
         source = worktree / version_file
         try:
             text = source.read_text(encoding="utf-8")
@@ -1983,7 +1983,7 @@ def process_release(issue: dict, config: RunnerConfig,
             issue, config.active_milestone,
         )
         gate_evidence, repo_has_ci = check_release_gates(
-            source_repo, base_branch, release_commit, number,
+            source_repo, release_commit, number,
             milestone=target_milestone,
             # The gate waits out pending CI checks on the
             # release commit; the real load_config always provides the
@@ -2070,7 +2070,7 @@ def process_release(issue: dict, config: RunnerConfig,
         # frozen base = this repository runs CI) forbids the empty-list
         # pass here.
         gate_evidence, _ = check_release_gates(
-            source_repo, base_branch, release_commit, number,
+            source_repo, release_commit, number,
             milestone=target_milestone,
             repo_has_ci=repo_has_ci,
             ci_wait_seconds=config.release_ci_wait_seconds,

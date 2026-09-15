@@ -11335,16 +11335,6 @@ def fake_pr_view(monkeypatch, state: str) -> tuple[list, object]:
     return seen, fake_run
 
 
-def test_pr_state_returns_open_merged_or_closed_from_source_repo(
-        monkeypatch, tmp_path,
-):
-    # The deploy home can be an unrelated checkout in external single-repo
-    # mode; the command must not infer the repository from cwd.
-    monkeypatch.chdir(tmp_path)
-    for state in ("OPEN", "MERGED", "CLOSED"):
-        fake_pr_view(monkeypatch, state)
-        assert runner.pr_state(PR_URL, "owner/repo") == state
-
 
 def test_fake_pr_view_rejects_unexpected_commands(monkeypatch):
     seen, fake_run = fake_pr_view(monkeypatch, "OPEN")
@@ -11353,19 +11343,6 @@ def test_fake_pr_view_rejects_unexpected_commands(monkeypatch):
         fake_run(["gh", "pr", "list"])
 
 
-def test_pr_state_fails_fast_on_unexpected_state(monkeypatch):
-    fake_pr_view(monkeypatch, "WEIRD")
-    with pytest.raises(ValueError, match="unexpected PR state"):
-        runner.pr_state(PR_URL, "owner/repo")
-
-
-def test_pr_state_fails_fast_on_non_object_json(monkeypatch):
-    def fake_run(command, **kwargs):
-        return json.dumps(["OPEN"])
-
-    monkeypatch.setattr(seam, "run_command", fake_run)
-    with pytest.raises(ValueError, match="pr view must be a JSON object"):
-        runner.pr_state(PR_URL, "owner/repo")
 
 
 def test_pr_delivery_status_rejects_non_array_check_rollup(monkeypatch):
@@ -16075,7 +16052,7 @@ def test_check_release_gates_pass_clean(monkeypatch):
         check_runs=[("tests", "completed", "success"),
                     ("lint", "completed", "skipped")],
     )
-    evidence, _ = release.check_release_gates("o/r", "main", "abc123", 99)
+    evidence, _ = release.check_release_gates("o/r", "abc123", 99)
     assert evidence == [
         "no open Issue carries ai-in-progress / ai-pr-opened / ai-fix-needed",
         "CI on the release commit: 2 check(s) all success/neutral/skipped",
@@ -16131,7 +16108,7 @@ def test_check_release_gates_waits_for_late_registered_checks(monkeypatch):
     ])
     monkeypatch.setattr("time.sleep", lambda seconds: None)
     evidence, has_ci = release.check_release_gates(
-        "o/r", "main", "abc123", 99, repo_has_ci=True,
+        "o/r", "abc123", 99, repo_has_ci=True,
     )
     assert has_ci is True
     assert not any("nothing to gate" in line for line in evidence)
@@ -16149,7 +16126,7 @@ def test_check_release_gates_times_out_when_ci_never_registers(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda seconds: None)
     with pytest.raises(RuntimeError, match="wait timeout, not a CI failure"):
         release.check_release_gates(
-            "o/r", "main", "abc123", 99,
+            "o/r", "abc123", 99,
             repo_has_ci=True, ci_wait_seconds=60,
         )
 
@@ -16159,7 +16136,7 @@ def test_check_release_gates_empty_without_ci_still_passes(monkeypatch):
     仍立即放行，"nothing to gate" 语义保持（Issue #657 的判据只收紧
     有 CI 的仓库）。"""
     make_registration_lag_gh(monkeypatch, api_responses=[[]])
-    evidence, has_ci = release.check_release_gates("o/r", "main", "abc123", 99)
+    evidence, has_ci = release.check_release_gates("o/r", "abc123", 99)
     assert has_ci is False
     assert any("nothing to gate" in line for line in evidence)
 
@@ -16170,7 +16147,7 @@ def test_check_release_gates_excludes_the_release_issue_itself(monkeypatch):
         leftover_labels={"ai-in-progress": [99]},  # the release Issue
         check_runs=[],
     )
-    evidence, _ = release.check_release_gates("o/r", "main", "abc123", 99)
+    evidence, _ = release.check_release_gates("o/r", "abc123", 99)
     assert evidence[0].startswith("no open Issue carries")
 
 
@@ -16181,7 +16158,7 @@ def test_check_release_gates_fails_on_leftover_in_progress(monkeypatch):
         check_runs=[],
     )
     with pytest.raises(runner.ReleaseDeliveriesWaiting) as excinfo:
-        release.check_release_gates("o/r", "main", "abc123", 99)
+        release.check_release_gates("o/r", "abc123", 99)
     assert excinfo.value.issue_numbers == [7]
 
 
@@ -16192,14 +16169,14 @@ def test_check_release_gates_fails_on_leftover_fix_needed(monkeypatch):
         check_runs=[],
     )
     with pytest.raises(runner.ReleaseDeliveriesWaiting) as excinfo:
-        release.check_release_gates("o/r", "main", "abc123", 99)
+        release.check_release_gates("o/r", "abc123", 99)
     assert excinfo.value.issue_numbers == [8]
 
 
 def test_check_release_gates_delivery_wait_timeout_is_not_ci_failure(monkeypatch):
     make_gate_gh(monkeypatch, leftover_labels={"ai-in-progress": [7]}, check_runs=[])
     with pytest.raises(RuntimeError, match="delivery wait timeout, not a CI failure"):
-        release.check_release_gates("o/r", "main", "abc123", 99,
+        release.check_release_gates("o/r", "abc123", 99,
                                    delivery_wait_seconds=5,
                                    delivery_waited_seconds=5)
 
@@ -16210,7 +16187,7 @@ def test_check_release_gates_fails_on_failing_ci(monkeypatch):
         check_runs=[("tests", "completed", "failure")],
     )
     with pytest.raises(RuntimeError, match="check 'tests' is completed/failure"):
-        release.check_release_gates("o/r", "main", "abc123", 99)
+        release.check_release_gates("o/r", "abc123", 99)
 
 
 def test_check_release_gates_waits_for_pending_ci_then_passes(
@@ -16242,7 +16219,7 @@ def test_check_release_gates_waits_for_pending_ci_then_passes(
     waits = []
     with caplog.at_level(logging.INFO, logger="orbi.bootstrap"):
         evidence, _ = release.check_release_gates(
-            "o/r", "main", "abc123", 99, on_wait=waits.append,
+            "o/r", "abc123", 99, on_wait=waits.append,
         )
     assert evidence == [
         "no open Issue carries ai-in-progress / ai-pr-opened / ai-fix-needed",
@@ -16281,7 +16258,7 @@ def test_check_release_gates_waits_then_fails_on_final_ci_failure(
     monkeypatch.setattr(seam, "run_command", fake_run_command)
     monkeypatch.setattr(runner.time, "sleep", lambda _s: None)
     with pytest.raises(RuntimeError, match="check 'tests' is completed/failure"):
-        release.check_release_gates("o/r", "main", "abc123", 99)
+        release.check_release_gates("o/r", "abc123", 99)
 
 
 def test_check_release_gates_ci_wait_times_out(monkeypatch, caplog):
@@ -16303,7 +16280,7 @@ def test_check_release_gates_ci_wait_times_out(monkeypatch, caplog):
         match=r"waiting for CI on the release commit abc123 "
               r"timed out after 7s.*not a CI failure",
     ):
-        release.check_release_gates("o/r", "main", "abc123", 99,
+        release.check_release_gates("o/r", "abc123", 99,
                                    ci_wait_seconds=7.0)
     # The deadline is exact even when the poll interval exceeds the
     # remaining budget (the sleep step is capped, never overshot).
@@ -16324,13 +16301,13 @@ def test_check_release_gates_reports_missing_checks_permission(monkeypatch):
     monkeypatch.setattr(seam, "run_command", fake_run_command)
     monkeypatch.setattr(seam, "run_command", fake_run_command)
     with pytest.raises(RuntimeError, match=r"lacks Checks:read"):
-        release.check_release_gates("o/r", "main", "abc123", 99)
+        release.check_release_gates("o/r", "abc123", 99)
 
 
 def test_check_release_gates_reraises_real_gh_failure(monkeypatch):
     make_gate_gh(monkeypatch, check_runs=None)
     with pytest.raises(subprocess.CalledProcessError):
-        release.check_release_gates("o/r", "main", "abc123", 99)
+        release.check_release_gates("o/r", "abc123", 99)
 
 
 def test_check_release_gates_scopes_leftover_scan_to_the_milestone(monkeypatch):
@@ -16344,7 +16321,7 @@ def test_check_release_gates_scopes_leftover_scan_to_the_milestone(monkeypatch):
         check_runs=[],
     )
     evidence, repo_has_ci = release.check_release_gates(
-        "o/r", "main", "abc123", 99, milestone="v0.4.3",
+        "o/r", "abc123", 99, milestone="v0.4.3",
     )
     assert evidence == [
         "no open Issue in milestone 'v0.4.3' carries "
@@ -16371,7 +16348,7 @@ def test_check_release_gates_ignores_leftover_outside_the_milestone(monkeypatch)
         check_runs=[],
     )
     evidence, _ = release.check_release_gates(
-        "o/r", "main", "abc123", 99, milestone="v0.4.3",
+        "o/r", "abc123", 99, milestone="v0.4.3",
     )
     assert evidence[0].startswith("no open Issue in milestone 'v0.4.3'")
 
@@ -16387,7 +16364,7 @@ def test_check_release_gates_still_waits_on_leftover_in_the_milestone(monkeypatc
     )
     with pytest.raises(runner.ReleaseDeliveriesWaiting) as excinfo:
         release.check_release_gates(
-            "o/r", "main", "abc123", 99, milestone="v0.4.3",
+            "o/r", "abc123", 99, milestone="v0.4.3",
         )
     assert excinfo.value.issue_numbers == [7]
 
@@ -16401,7 +16378,7 @@ def test_check_release_gates_without_milestone_keeps_full_repo_scan(monkeypatch)
         check_runs=[],
     )
     with pytest.raises(runner.ReleaseDeliveriesWaiting):
-        release.check_release_gates("o/r", "main", "abc123", 99)
+        release.check_release_gates("o/r", "abc123", 99)
     assert not any("--milestone" in c for c in calls)
 
 

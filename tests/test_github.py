@@ -450,7 +450,6 @@ def test_pr_delivery_status_parses_state_and_check_summaries(monkeypatch):
         "https://github.com/o/r/pull/9", "o/r")
     assert state == "OPEN"
     assert summaries == ["ci=COMPLETED/SUCCESS", "legacy=PENDING"]
-    assert github.pr_state("https://github.com/o/r/pull/9", "o/r") == "OPEN"
 
     bad = json.dumps({"state": "WEIRD", "statusCheckRollup": None})
     monkeypatch.setattr(seam, "run_command", lambda c, **k: bad)

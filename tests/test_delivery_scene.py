@@ -176,7 +176,6 @@ TRUSTED_SCENE_RECORD = Scene(
 def test_classify_decision_table(labels, scene, pr_state, markers, expected):
     assert classify(
         labels, scene, pr_state,
-        worktree_present=False, branch_present=False,
         body_markers=frozenset(markers),
     ) is expected
 
@@ -186,17 +185,14 @@ def test_classify_custom_dispatch_label():
     a custom-label ticket is fresh-claimable only under its own label."""
     assert classify(
         {"my-queue"}, None, None,
-        worktree_present=False, branch_present=False,
         body_markers=frozenset(), ready_label="my-queue",
     ) is DeliveryScene.FRESH_CLAIM
     assert classify(
         {"my-queue", IN_PROGRESS_LABEL}, None, None,
-        worktree_present=False, branch_present=False,
         body_markers=frozenset(), ready_label="my-queue",
     ) is DeliveryScene.RESTART_IN_FLIGHT
     assert classify(
         {"my-queue"}, None, "OPEN",
-        worktree_present=False, branch_present=False,
         body_markers=frozenset(MARKER), ready_label="my-queue",
     ) is DeliveryScene.EXTERNAL_TAKEOVER
 
@@ -208,56 +204,22 @@ def test_classify_human_review_hold():
     hold_kwargs = {"human_review_hold": True}
     assert classify(
         {PR_OPENED_LABEL}, TRUSTED_SCENE, None,
-        worktree_present=False, branch_present=False,
         body_markers=frozenset(), **hold_kwargs,
     ) is DeliveryScene.HUMAN_REVIEW_WAIT
     assert classify(
         {FIX_NEEDED_LABEL}, TRUSTED_SCENE, None,
-        worktree_present=False, branch_present=False,
         body_markers=frozenset(), **hold_kwargs,
     ) is DeliveryScene.HUMAN_REVIEW_WAIT
     assert classify(
         {PR_OPENED_LABEL, "ai-human-review"}, TRUSTED_SCENE,
-        None, worktree_present=False, branch_present=False,
+        None,
         body_markers=frozenset(), **hold_kwargs,
     ) is DeliveryScene.RESUME_REVIEW
     assert classify(
         {PR_OPENED_LABEL}, TRUSTED_SCENE, None,
-        worktree_present=False, branch_present=False,
         body_markers=frozenset(),
     ) is DeliveryScene.RESUME_REVIEW
 
-
-@pytest.mark.parametrize(
-    "labels,scene,pr_state,markers",
-    [
-        ({READY_LABEL}, None, None, frozenset()),
-        ({READY_LABEL}, None, "OPEN", frozenset()),
-        ({READY_LABEL}, None, "OPEN", MARKER),
-        ({READY_LABEL, IN_PROGRESS_LABEL}, None, None, frozenset()),
-        ({PR_OPENED_LABEL}, TRUSTED_SCENE, None, frozenset()),
-        ({READY_LABEL, OPS_LABEL}, None, None, frozenset()),
-        ({READY_LABEL, RELEASE_LABEL}, None, None, frozenset()),
-    ],
-)
-def test_classify_ignores_local_presence(labels, scene, pr_state, markers):
-    """No scene today keys on the local worktree/branch presence: a
-    missing worktree is the handler's fail-fast, an existing branch the
-    handler's resume point — both facts ride along, neither re-routes
-    the classification (claim_route's "implement" for a branch without
-    an open PR is the pinned counterpart)."""
-    expected = classify(
-        labels, scene, pr_state, worktree_present=False,
-        branch_present=False, body_markers=frozenset(markers),
-    )
-    for worktree_present in (False, True):
-        for branch_present in (False, True):
-            assert classify(
-                labels, scene, pr_state,
-                worktree_present=worktree_present,
-                branch_present=branch_present,
-                body_markers=frozenset(markers),
-            ) is expected
 
 
 def test_body_markers():

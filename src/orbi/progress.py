@@ -194,16 +194,6 @@ def bump_failure_repeat(body: str, fingerprint: str) -> str:
     )
 
 
-def find_run_comment(comments: list[dict], run_id: str) -> dict | None:
-    """Return the first comment carrying this run's marker, or None."""
-    marker = run_marker(run_id)
-    for comment in comments:
-        body = comment.get("body")
-        if isinstance(body, str) and marker in body:
-            return comment
-    return None
-
-
 def find_progress_comment(
     comments: list[dict], run_id: str,
 ) -> dict | None:
