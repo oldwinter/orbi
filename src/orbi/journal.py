@@ -333,6 +333,7 @@ JOURNAL_EVENTS: dict[str, str] = {
     "command_spawn_failed": "an external command could not be spawned",
     "git_network_retry": "a transient git fetch/push failure is retried with backoff",
     "gh_read_retry": "a transient `gh` read failure is retried with backoff",
+    "gh_write_retry": "a transient `gh` write failure is retried with backoff",
 }
 
 

@@ -707,6 +707,7 @@ registry — in both directions (a name only in code or only in docs fails
 | `command_spawn_failed` | an external command could not be spawned |
 | `git_network_retry` | a transient git fetch/push failure is retried with backoff |
 | `gh_read_retry` | a transient `gh` read failure is retried with backoff |
+| `gh_write_retry` | a transient `gh` write failure is retried with backoff |
 
 The idle warning, the idle recovery and the hung-model-request kill are
 log/health thresholds — they are not the 5-minute schedule and not a
