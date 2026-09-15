@@ -1568,6 +1568,26 @@ def test_report_failure_history_read_failure_degrades_fail_open(
     assert "failure_history_read_failed" in caplog.text
 
 
+def test_human_decision_failure_is_terminal_with_decision_details(
+        monkeypatch, tmp_path):
+    captured = make_report_fake(monkeypatch, labels=("ai-pr-opened",))
+    decision = (
+        "review requires human decision: note: same failure repeated; "
+        "fix: choose the authoritative address source"
+    )
+    outcome = runner.report_delivery_failure(
+        runner.HumanDecisionRequired(decision),
+        issue={"number": 39, "title": "task", "body": ""},
+        source_repo="owner/repo", run_id=RUN_ID, pr_url=PR_URL,
+        worktree=Path("/nonexistent"), branch=BRANCH,
+        role=runner.ROLE_REVIEW, cause=decision,
+    )
+    assert outcome == "blocked"
+    assert captured["edits"] == [("ai-blocked", "ai-pr-opened")]
+    assert decision in captured["comments"][0]
+    assert captured["pr_comments"] == []
+
+
 def test_report_failure_without_run_id_keeps_the_plain_path(
         monkeypatch, tmp_path):
     """Issue #825: without a bound run id there is nothing to
