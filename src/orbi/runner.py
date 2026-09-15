@@ -5002,11 +5002,28 @@ def _validated_verdict(parsed: dict) -> dict:
     majors = parsed["majors"]
     if parsed["verdict"] == "pass" and (blockers > 0 or majors > 0):
         raise ValueError("pass verdict cannot have blockers or majors")
-    if parsed["verdict"] in ("findings", "blocked_on_human_decision") \
+    verdict = parsed["verdict"]
+    if verdict in ("findings", "blocked_on_human_decision") \
             and blockers == 0 and majors == 0:
-        raise ValueError(
-            f"{parsed['verdict']} verdict requires blockers or majors"
-        )
+        raise ValueError(f"{verdict} verdict requires blockers or majors")
+    if verdict == "blocked_on_human_decision":
+        findings = parsed["findings"]
+        if blockers != 0 or majors != 1 or len(findings) != 1:
+            raise ValueError(
+                "blocked_on_human_decision verdict requires exactly one "
+                "Major finding and no blockers"
+            )
+        finding = findings[0]
+        if (not isinstance(finding, dict)
+                or finding.get("level") != "Major"
+                or not isinstance(finding.get("note"), str)
+                or not finding["note"].strip()
+                or not isinstance(finding.get("fix"), str)
+                or not finding["fix"].strip()):
+            raise ValueError(
+                "blocked_on_human_decision finding must include a non-empty "
+                "Major note and fix"
+            )
     return parsed
 
 
