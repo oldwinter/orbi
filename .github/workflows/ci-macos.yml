@@ -105,13 +105,17 @@ jobs:
         run: |
           timeout 600 python3 -m pip install --quiet build
           timeout 900 python3 -m build
-          timeout 300 python3 -m venv /tmp/orbi-wheel-macos
-          timeout 300 /tmp/orbi-wheel-macos/bin/pip install --quiet dist/*.whl
-          /tmp/orbi-wheel-macos/bin/orbi --version
-          /tmp/orbi-wheel-macos/bin/orbi --help > /dev/null
-          source_path=$(cd / && /tmp/orbi-wheel-macos/bin/python -c "import orbi; print(orbi.__file__)")
+          # $RUNNER_TEMP, not /tmp: on macOS /tmp is a symlink to
+          # /private/tmp and the interpreter reports the RESOLVED path,
+          # so a literal /tmp case glob below would never match.
+          wheel_venv="$RUNNER_TEMP/orbi-wheel-macos"
+          timeout 300 python3 -m venv "$wheel_venv"
+          timeout 300 $wheel_venv/bin/pip install --quiet dist/*.whl
+          $wheel_venv/bin/orbi --version
+          $wheel_venv/bin/orbi --help > /dev/null
+          source_path=$(cd / && $wheel_venv/bin/python -c "import orbi; print(orbi.__file__)")
           case "$source_path" in
-            /tmp/orbi-wheel-macos/lib/python*/site-packages/orbi/*)
+            $wheel_venv/lib/python*/site-packages/orbi/*)
               echo "wheel import ok: $source_path"
               ;;
             *)
