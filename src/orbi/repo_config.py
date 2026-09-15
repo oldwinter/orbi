@@ -106,6 +106,7 @@ HOST_ONLY_KEYS = frozenset({
     # never a repository policy.
     "engine_source_track",
     "auto_next_milestone",
+    "warn_on_dangling_milestone",
     "allow_stale_runner",
     "human_review_gate",
     "release_ci_wait_seconds",

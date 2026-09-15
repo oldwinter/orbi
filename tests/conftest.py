@@ -16,7 +16,10 @@ from pathlib import Path
 import pytest
 
 import orbi.runner as runner
+from orbi.milestone_idle import install as install_milestone_idle
 from seam import seam
+
+install_milestone_idle()
 
 
 def git(repo: Path, *args: str) -> str:
