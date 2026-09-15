@@ -424,6 +424,12 @@ context_files = ["AGENTS.md"]
 在错误里列出违规键，Issue 进入 `ai-blocked`——一个仓库的坏文件绝不
 影响其他池。host-only 集合同样包括宿主调度：`max_concurrency`
 永远不能下放到仓库文件——并发 slot 池属于部署宿主。
+`auto_next_milestone`（默认 `true`）与
+`warn_on_dangling_milestone`（默认 `false`）同属这类宿主键：发版关闭
+当前 Milestone 后，idle tick 要么改写宿主 `orbi.toml`
+（`auto_next_milestone = true`），要么停在待确认（`false`）。告警
+开关**不推进**，只发出 `active_milestone_dangling`，让空转可被检索。
+两个键都不能写进仓库文件。
 `dispatch_label` 不得是交付生命周期标签
 （`ai-in-progress`、`ai-merged` 等）：那些恒为宿主常量。阻塞落在
 claim 选中的那个 Issue 上；`dispatch_label` 不是 `ai-ready` 的仓库在
