@@ -573,6 +573,29 @@ def test_run_review_launches_independent_readonly_pi_session(monkeypatch, tmp_pa
 # merge gate
 # ---------------------------------------------------------------------------
 
+
+def test_assess_base_freshness_has_one_typed_three_state_contract(monkeypatch,
+                                                                  tmp_path):
+    outcomes = iter([True, False, False])
+    monkeypatch.setattr(seam, "_is_ancestor", lambda *args, **kwargs: next(outcomes))
+
+    assert runner.assess_base_freshness(tmp_path, "main") is runner.BaseFreshness.FRESH
+    assert runner.assess_base_freshness(
+        tmp_path, "main", mergeable="MERGEABLE",
+    ) is runner.BaseFreshness.ABSORBABLE
+    assert runner.assess_base_freshness(
+        tmp_path, "main", mergeable="DIRTY",
+    ) is runner.BaseFreshness.CONFLICTED
+
+
+def test_assess_base_freshness_moved_reviewed_head_is_conflicted(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(seam, "_is_ancestor", lambda *args, **kwargs: True)
+    assert runner.assess_base_freshness(
+        tmp_path, "main", head="new", reviewed_head="reviewed",
+    ) is runner.BaseFreshness.CONFLICTED
+
+
 def _merge_gate_fake(pr_state="MERGEABLE", head_oid="h1",
                      check_runs=None, base_check_runs=None):
     def fake_run(command, **kwargs):
@@ -888,6 +911,30 @@ def test_merge_gate_rejects_head_behind_latest_base(monkeypatch, tmp_path, caplo
                                      "head_oid": "h1"}, "main",
                           repo_dir=tmp_path)
     assert "base_branch=main" in caplog.text
+
+
+def test_merge_gate_rechecks_base_after_pr_read(monkeypatch, tmp_path):
+    """A base update between the initial probe and PR read must not merge."""
+    answers = iter([True, False])
+
+    def fake_run(command, **kwargs):
+        if (command[0] == "git" and command[1] == "merge-base"
+                and command[2] == "--is-ancestor"):
+            if next(answers):
+                return ""
+            raise subprocess.CalledProcessError(1, command, stderr="behind")
+        if (command[0] == "git" and command[1] == "rev-parse"
+                and command[2] == "origin/main"):
+            return "base-2"
+        return _merge_gate_fake()(command, **kwargs)
+
+    monkeypatch.setattr(seam, "run_command", fake_run)
+    with pytest.raises(runner.RecoverableMergeGateError, match="behind latest remote base"):
+        runner.merge_gate(
+            tmp_path, {"number": 4, "url": "u", "base_ref": "main",
+                       "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
+            "main", repo_dir=tmp_path,
+        )
 
 
 def test_merge_gate_defers_when_ci_pending(monkeypatch, tmp_path, caplog):
