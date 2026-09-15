@@ -574,7 +574,7 @@ def test_run_review_launches_independent_readonly_pi_session(monkeypatch, tmp_pa
 # ---------------------------------------------------------------------------
 
 def _merge_gate_fake(pr_state="MERGEABLE", head_oid="h1",
-                     check_runs=None):
+                     check_runs=None, base_check_runs=None):
     def fake_run(command, **kwargs):
         if command[:2] == ["gh", "pr"] and "view" in command:
             return json.dumps({
@@ -587,7 +587,8 @@ def _merge_gate_fake(pr_state="MERGEABLE", head_oid="h1",
                 "mergedAt": None, "mergeCommit": None,
             })
         if command[:2] == ["gh", "api"] and "check-runs" in command[2]:
-            return json.dumps([])
+            return json.dumps([] if base_check_runs is None
+                              else base_check_runs)
         return ""
     return fake_run
 
@@ -598,7 +599,10 @@ def test_merge_gate_rejects_failed_github_ci(monkeypatch, tmp_path):
             "name": "tests", "status": "COMPLETED", "conclusion": "FAILURE",
         }]),
     )
-    with pytest.raises(RuntimeError, match="delivery gate: CI check 'tests'"):
+    # Issue #906: the recoverable CI failure is identified by TYPE
+    # (GateCIFailure), never by matching text inside the message.
+    with pytest.raises(runner.GateCIFailure,
+                       match="delivery gate: CI check 'tests'"):
         runner.merge_gate(tmp_path, {"number": 4, "url": "u",
                                      "base_ref": "main", "base_oid": "b1",
                                      "head_ref": "h", "head_oid": "h1"},
@@ -635,13 +639,39 @@ def test_merge_gate_rejects_preexisting_failed_ci_as_unrecoverable(
         )
 
 
+def test_merge_gate_preexisting_failure_matches_apostrophe_name(
+        monkeypatch, tmp_path):
+    """Issue #906: the failed check name comes from structured data, never
+    from re-parsing the rendered message — an apostrophe in the name must
+    still match the same failing check on base and fail fast. The old
+    rendered-string round trip split the name on the apostrophe and
+    compared 'Bob' against main's 'Bob's lint'."""
+    monkeypatch.setattr(seam, "run_command", _merge_gate_fake(
+        check_runs=[{
+            "name": "Bob's lint", "status": "COMPLETED",
+            "conclusion": "FAILURE",
+        }],
+        base_check_runs=[{
+            "name": "Bob's lint", "status": "completed",
+            "conclusion": "failure",
+        }],
+    ))
+    with pytest.raises(runner.PreExistingCIFailure,
+                       match="main is already red on check 'Bob's lint'"):
+        runner.merge_gate(
+            tmp_path, {"number": 4, "url": "u", "base_ref": "main",
+                       "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
+            "main", repo_dir=tmp_path, source_repo="owner/repo",
+        )
+
+
 def test_merge_gate_rejects_failed_status_context(monkeypatch, tmp_path):
     monkeypatch.setattr(seam, "run_command",
         _merge_gate_fake(check_runs=[{
             "context": "status", "state": "FAILURE",
         }]),
     )
-    with pytest.raises(RuntimeError, match="CI check 'status'"):
+    with pytest.raises(runner.GateCIFailure, match="CI check 'status'"):
         runner.merge_gate(
             tmp_path, {"number": 4, "url": "u", "base_ref": "main",
                        "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
@@ -653,7 +683,9 @@ def test_classify_rollup_sorts_pending_and_failed_checks():
     """Issue #788: one pure classifier serves the pre-review CI gate and
     the merge gate — a non-final status is pending, a completed check
     with a non-passing conclusion (or a legacy FAILURE/ERROR context)
-    is failed."""
+    is failed. Issue #906: the classifier returns structured entries
+    carrying name, status and conclusion — rendering is derived from the
+    data, never the source of it."""
     pending, failed = runner._classify_rollup([
         {"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
         {"name": "docs", "status": "COMPLETED", "conclusion": "neutral"},
@@ -663,9 +695,13 @@ def test_classify_rollup_sorts_pending_and_failed_checks():
         {"name": "e2e", "status": "COMPLETED", "conclusion": "FAILURE"},
         {"context": "status", "state": "ERROR"},
     ])
-    assert pending == ["check 'build' is IN_PROGRESS", "check 'lint' is QUEUED"]
+    assert pending == [
+        {"name": "build", "status": "IN_PROGRESS", "conclusion": ""},
+        {"name": "lint", "status": "QUEUED", "conclusion": ""},
+    ]
     assert failed == [
-        "check 'e2e' is COMPLETED/FAILURE", "check 'status' is ERROR",
+        {"name": "e2e", "status": "COMPLETED", "conclusion": "FAILURE"},
+        {"name": "status", "status": "ERROR", "conclusion": ""},
     ]
 
 
@@ -673,8 +709,22 @@ def test_classify_rollup_reads_a_missing_status_as_pending():
     pending, failed = runner._classify_rollup([
         {"name": "ghost", "status": "", "conclusion": ""},
     ])
-    assert pending == ["check 'ghost' is UNKNOWN"]
+    assert pending == [
+        {"name": "ghost", "status": "", "conclusion": ""},
+    ]
     assert failed == []
+
+
+def test_classify_rollup_keeps_apostrophe_names_intact():
+    """Issue #906: the structured entry carries the check name verbatim —
+    an apostrophe can never corrupt it (the old rendered-string round
+    trip split on the apostrophe)."""
+    _pending, failed = runner._classify_rollup([
+        {"name": "Bob's lint", "status": "COMPLETED", "conclusion": "FAILURE"},
+    ])
+    assert failed == [
+        {"name": "Bob's lint", "status": "COMPLETED", "conclusion": "FAILURE"},
+    ]
 
 
 def test_merge_gate_merges_after_green_ci(monkeypatch, tmp_path):
@@ -2226,13 +2276,15 @@ def test_review_and_merge_ci_failure_labels_fix_needed(monkeypatch, tmp_path):
     monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
     monkeypatch.setattr(runner, "freeze_pr", lambda *a, **k: _pr())
     monkeypatch.setattr(runner, "run_review", lambda *a, **k: _pass_verdict_text())
-    # Issue #788: the merge gate's one-shot CI read is the only gate —
-    # a red check raises the classified "delivery gate: CI" RuntimeError.
+    # Issue #788: the merge gate's one-shot CI read is the only gate.
+    # Issue #906: a red check raises the typed GateCIFailure and the
+    # message is REWORDED here — control flow must follow the type,
+    # never the old "delivery gate: CI" literal.
     monkeypatch.setattr(
         runner, "merge_gate",
         lambda *a, **k: (_ for _ in ()).throw(
-            RuntimeError(
-                "delivery gate: CI check 'tests' failed on PR #4 "
+            runner.GateCIFailure(
+                "check 'tests' failed on PR #4 "
                 "(https://github.com/owner/repo/actions/runs/42)"
             ),
         ),
@@ -2275,8 +2327,8 @@ def test_review_and_merge_ci_failure_comment_counts_toward_round_budget(
     monkeypatch.setattr(
         runner, "merge_gate",
         lambda *a, **k: (_ for _ in ()).throw(
-            RuntimeError(
-                "delivery gate: CI check 'tests' failed on PR #4 "
+            runner.GateCIFailure(
+                "check 'tests' failed on PR #4 "
                 "(https://github.com/owner/repo/actions/runs/42)"
             ),
         ),
@@ -2311,6 +2363,44 @@ def test_review_and_merge_ci_failure_comment_counts_toward_round_budget(
     assert '"review_round": 1' in calls[0][1]
     assert calls[2] == ("edit", {"repo": "owner/repo", "add": "ai-fix-needed",
                                  "remove": "ai-pr-opened"})
+
+
+def test_review_and_merge_preexisting_ci_failure_is_not_swallowed(
+        monkeypatch, tmp_path):
+    """Issue #906: routing is by exception type. A PreExistingCIFailure
+    whose message happens to contain the old 'delivery gate: CI' literal
+    must still fail fast — the wording of the message can never route an
+    unrecoverable failure into the recoverable CI path."""
+    calls = []
+    monkeypatch.setattr(seam, "issue_comments", lambda *a, **k: [])
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: _pr())
+    monkeypatch.setattr(seam, "run_review", lambda *a, **k: _pass_verdict_text())
+    monkeypatch.setattr(
+        seam, "merge_gate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            runner.PreExistingCIFailure(
+                "delivery gate: CI main is already red on check 'tests' "
+                "— fix main first"
+            ),
+        ),
+    )
+    monkeypatch.setattr(seam, "comment_issue",
+        lambda *a, **k: calls.append(("issue", k.get("body"))),
+    )
+    monkeypatch.setattr(
+        seam, "comment_pr", lambda *a, **k: calls.append(("pr", k.get("body"))),
+    )
+    monkeypatch.setattr(seam, "edit_issue", lambda *a, **k: calls.append(("edit", k)),
+    )
+    make_fake_gh(monkeypatch)
+    with pytest.raises(runner.PreExistingCIFailure):
+        runner.review_and_merge_if_clean(
+            tmp_path, "branch", "main", _review_merge_config(tmp_path),
+            "owner/repo", 4, title="Review task", priority="normal",
+            scene=_scene(),
+        )
+    # No recoverable transition happened: no comment, no label change.
+    assert calls == []
 
 
 def test_review_and_merge_deferred_gate_writes_nothing(
