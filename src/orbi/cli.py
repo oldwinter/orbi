@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from orbi import __version__, cli_source, engine_source, git_transport, runner, scheduler
+from orbi.auto_release_ticket import install as install_auto_release_ticket
 from orbi.delivery_labels import (
     BLOCKED_LABEL,
     FIX_NEEDED_LABEL,
@@ -59,6 +60,9 @@ from orbi.runner import (
 from orbi import pilot_setup
 from orbi.pilot_slots import slot_occupancy
 from orbi.pi_activity import activity_snapshot
+
+install_auto_release_ticket()
+load_config = runner.load_config
 
 LOGGER = logging.getLogger("orbi.cli")
 # Same run correlation mechanism as the runner: when a run id is
