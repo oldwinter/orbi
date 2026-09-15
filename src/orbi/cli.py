@@ -645,13 +645,13 @@ def milestone_set(config: RunnerConfig, config_path: Path,
         )
     try:
         milestones = list_milestones(repo, timeout=30)
-    except subprocess.CalledProcessError as orig:
-        detail = (orig.stderr or "").strip() or str(orig)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or str(exc)
         raise MilestoneSetError(
             f"milestone_set_failed reason=milestone lookup failed: {detail}; "
             "fix=check `gh auth status` and Milestone read access to "
             f"{repo}"
-        ) from orig
+        ) from exc
     matches = [
         milestone for milestone in milestones
         if isinstance(milestone, dict) and milestone.get("title") == title
@@ -676,11 +676,11 @@ def milestone_set(config: RunnerConfig, config_path: Path,
         )
     try:
         rewrite_active_milestone_line(config_path, title)
-    except (OSError, RuntimeError) as orig:
+    except (OSError, RuntimeError) as exc:
         raise MilestoneSetError(
-            f"milestone_set_failed reason={orig}; "
+            f"milestone_set_failed reason={exc}; "
             f"fix=repair the config file at {config_path}"
-        ) from orig
+        ) from exc
     return config.active_milestone, title
 
 
@@ -813,8 +813,8 @@ def main(argv: list[str] | None = None) -> int:
             lines = pilot_setup.run_checks(
                 args.config, run_command=run_command,
             )
-        except pilot_setup.CheckError as orig:
-            print(pilot_setup.format_check_failure(orig), file=sys.stderr)
+        except pilot_setup.CheckError as exc:
+            print(pilot_setup.format_check_failure(exc), file=sys.stderr)
             return 1
         print("\n".join(lines))
         return 0
@@ -841,24 +841,24 @@ def main(argv: list[str] | None = None) -> int:
         # same single-source-repo contract as runner.main, so a config
         # the Runner will reject is reported instead of all-green.
         validate_execution_source_repos(config.source_repos)
-    except (ValueError, pilot_setup.SetupError) as orig:
+    except (ValueError, pilot_setup.SetupError) as exc:
         if args.command == "setup":
-            print(f"setup_failed reason={orig}", file=sys.stderr)
+            print(f"setup_failed reason={exc}", file=sys.stderr)
         else:
-            LOGGER.error("config_invalid reason=%s", orig)
+            LOGGER.error("config_invalid reason=%s", exc)
         return 1
-    except FileNotFoundError as orig:
+    except FileNotFoundError as exc:
         # A PyPI first run (`orbi setup` in a fresh dir with
         # the just-created example config) fails validation on a missing
         # deployment path (prompts/, deploy_home, ...); the user gets the
         # structured failure line, never a traceback.
         if args.command == "setup":
             print(
-                f"setup_failed reason=required path missing: {orig}",
+                f"setup_failed reason=required path missing: {exc}",
                 file=sys.stderr,
             )
         else:
-            LOGGER.error("config_invalid reason=required path missing: %s", orig)
+            LOGGER.error("config_invalid reason=required path missing: %s", exc)
         return 1
     if args.command == "add":
         repo = args.repo or config.source_repos[0]
@@ -914,11 +914,11 @@ def main(argv: list[str] | None = None) -> int:
                 config.deploy_home, config.engine_source_track,
                 run_command=run_command,
             )
-        except engine_source.EngineSourceError as orig:
+        except engine_source.EngineSourceError as exc:
             # The structured line (reason + fix) is the message; the
             # non-zero exit fails the ExecStartPre, so the service does
             # not start (fail closed).
-            LOGGER.error("%s", orig)
+            LOGGER.error("%s", exc)
             return 1
     elif args.command == "doctor":
         print(doctor_report(config, args.installed_dir))
@@ -929,9 +929,9 @@ def main(argv: list[str] | None = None) -> int:
                 repos=[args.repo] if args.repo else None,
                 run_command=run_command,
             )
-        except pilot_setup.SetupError as orig:
+        except pilot_setup.SetupError as exc:
             print(
-                f"setup_failed reason={orig}",
+                f"setup_failed reason={exc}",
                 file=sys.stderr,
             )
             return 1
@@ -942,10 +942,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "milestone":
         try:
             old, new = milestone_set(config, args.config, args.title)
-        except MilestoneSetError as orig:
+        except MilestoneSetError as exc:
             # One structured line with the actual reason and the repair
             # action; the config file is untouched on every failure path.
-            print(orig, file=sys.stderr)
+            print(exc, file=sys.stderr)
             return 1
         repo = config.source_repos[0]
         print(f"active_milestone: {old} -> {new}")
