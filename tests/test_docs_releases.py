@@ -187,7 +187,7 @@ def test_every_released_tag_has_its_release_page():
     the navigation without any test failing. Requires the tag refs in
     the checkout (CI provides them with `fetch-tags: true`)."""
     tags = {
-        tag for tag in git("tag", "--list", "v*").splitlines() if tag.strip()
+        tag for tag in git(REPO_ROOT, "tag", "--list", "v*").splitlines() if tag.strip()
     }
     assert tags, (
         "no tags found in the checkout — the release pages cannot be "
