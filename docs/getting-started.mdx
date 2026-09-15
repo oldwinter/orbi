@@ -34,8 +34,8 @@ from the example shipped inside the CLI package — without overwriting it.
 ## PyPI installation
 
 The CLI is published on PyPI as
-[`orbi-cli`](https://pypi.org/project/orbi-cli/) — release 0.5.7,
-sdist + wheel, requiring Python ≥ 3.14. The distribution name is
+[`orbi-cli`](https://pypi.org/project/orbi-cli/) — sdist + wheel,
+requiring Python ≥ 3.14. The distribution name is
 `orbi-cli`; the installed command stays `orbi`.
 
 `uv tool install orbi-cli` installs it into an isolated tool
@@ -45,14 +45,14 @@ environment, `pip install orbi-cli` is the plain pip path:
 
 ```bash
 uv tool install orbi-cli
-orbi --version  # → orbi 0.5.7
+orbi --version  # → orbi <version>
 orbi --help
 ```
 
 The ≥ 3.14 floor applies to the interpreter that runs the install:
 an explicit `--python 3.13` on the `uv tool install` call fails with
 the uv resolver message
-`orbi-cli==0.5.7 depends on Python>=3.14`; `pip install orbi-cli`
+`orbi-cli==<version> depends on Python>=3.14`; `pip install orbi-cli`
 inside an activated older environment reports
 `No matching distribution found for orbi-cli`. The repair in both
 cases is the same: select a compatible interpreter — point

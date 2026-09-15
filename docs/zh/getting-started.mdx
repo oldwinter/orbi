@@ -30,7 +30,7 @@ bash install.sh
 ## PyPI 安装
 
 CLI 已发布到 PyPI：[`orbi-cli`](https://pypi.org/project/orbi-cli/)——
-版本 0.5.7，同时提供 sdist 和 wheel，要求 Python ≥ 3.14。发布包名为
+同时提供 sdist 和 wheel，要求 Python ≥ 3.14。发布包名为
 `orbi-cli`；安装后的命令仍是 `orbi`。
 
 `uv tool install orbi-cli` 把它装进隔离的 tool 环境（系统解释器过旧时，
@@ -39,13 +39,13 @@ uv 会自动供应兼容的 Python 3.14）；在已激活的 Python ≥ 3.14 环
 
 ```bash
 uv tool install orbi-cli
-orbi --version  # → orbi 0.5.7
+orbi --version  # → orbi <version>
 orbi --help
 ```
 
 ≥ 3.14 的底线约束的是执行安装的解释器本身：给 `uv tool install` 显式加
 `--python 3.13`，会以 uv resolver 消息
-`orbi-cli==0.5.7 depends on Python>=3.14` 失败；在已激活的旧版本环境里
+`orbi-cli==<version> depends on Python>=3.14` 失败；在已激活的旧版本环境里
 运行 `pip install orbi-cli`，则报
 `No matching distribution found for orbi-cli`。两种情况的修复方式相同：
 选择兼容的解释器——给 `uv tool install` 指定 `--python 3.14`（uv 自动

@@ -685,11 +685,14 @@ def test_current_docs_do_not_carry_stale_pypi_availability_claims():
 
 def test_pypi_installation_sections_carry_the_real_commands():
     """Issue #892: the getting-started PyPI section documents the
-    verified reality — the released version on the live package page,
-    both install commands (`pip install orbi-cli` inside a Python
-    >= 3.14 environment, `uv tool install orbi-cli` for the isolated
-    tool install), the `orbi --version` check, the `uv tool uninstall
-    orbi-cli` removal, and the >= 3.14 floor with its repair."""
+    verified reality — both install commands (`pip install orbi-cli`
+    inside a Python >= 3.14 environment, `uv tool install orbi-cli`
+    for the isolated tool install), the `orbi --version` check whose
+    output prints `orbi <version>`, the `uv tool uninstall orbi-cli`
+    removal, and the >= 3.14 floor with its repair. The uv resolver
+    failure message is pinned version-free (Issue #909: the docs
+    never quote a release number); the `orbi-cli==<version> ...`
+    shape is what uv prints for ANY released version."""
     for slug in ("docs/getting-started.mdx", "docs/zh/getting-started.mdx"):
         text = (REPO_ROOT / slug).read_text(encoding="utf-8")
         section = PYPI_SECTION_RE.search(text)
@@ -701,7 +704,7 @@ def test_pypi_installation_sections_carry_the_real_commands():
             "uv tool install orbi-cli",
             "orbi --version",
             "uv tool uninstall orbi-cli",
-            "orbi-cli==0.5.7 depends on Python>=3.14",
+            "depends on Python>=3.14",
             "No matching distribution found for orbi-cli",
             "3.14",
         ):
@@ -711,30 +714,34 @@ def test_pypi_installation_sections_carry_the_real_commands():
             )
 
 
-def test_docs_pypi_version_claims_match_the_released_version():
-    """Issue #892: the released-version claims in the current docs are
-    pinned to the packaging version — the next release must move them
-    together (the docs check fails with an actionable assertion when
-    the claim goes stale, never shipping another outdated PyPI
-    description)."""
-    import orbi
+# Issue #909: the release number is an OUTPUT (the user reads it with
+# `orbi --version`), not a docs claim — a hardcoded literal turned every
+# release commit red until a human edited four files (Issue #903). The
+# guard matches only the orbi-release shapes, never the legitimate
+# three-part numbers these pages keep (gh 2.94.0, Ubuntu's 2.45.0
+# package, 127.0.0.1): the availability claims, the `orbi --version`
+# output example, and the uv resolver message example.
+RELEASE_CLAIM_RE = re.compile(
+    r"(?:release|当前版本|版本)\s+\d+\.\d+\.\d+"
+    r"|→\s*orbi\s+\d+\.\d+\.\d+"
+    r"|orbi-cli==\d+\.\d+\.\d+"
+)
 
-    released = load_pyproject()["project"]["version"]
-    claim_re = re.compile(
-        r"(?:release|当前版本|版本)\s+(\d+\.\d+\.\d+)"
-    )
+
+def test_docs_carry_no_hardcoded_release_version():
+    """Issue #909: none of the four authoritative pages quotes an orbi
+    release number in any shape (`release X.Y.Z` / `当前版本 X.Y.Z`,
+    `→ orbi X.Y.Z`, `orbi-cli==X.Y.Z`). Reintroducing one fails here —
+    write `orbi <version>` / `orbi-cli==<version>` instead.
+    `requires Python ≥ 3.14` stays: it is a user INPUT that decides
+    which command to copy, pinned to the packaging floor elsewhere."""
     for slug in PYPI_AVAILABILITY_PAGES:
         text = (REPO_ROOT / slug).read_text(encoding="utf-8")
-        claims = claim_re.findall(text)
-        assert claims, (
-            f"{slug} must state the released version (expected "
-            f"{released}, matching pyproject.toml / PyPI)"
-        )
-        wrong = [v for v in claims if v != released]
-        assert not wrong, (
-            f"{slug} claims released version(s) {wrong} but the "
-            f"released version is {released} (pyproject.toml, "
-            f"installed `orbi --version` prints orbi {orbi.__version__})"
+        match = RELEASE_CLAIM_RE.search(text)
+        assert not match, (
+            f"{slug} hardcodes the release version {match.group(0)!r} "
+            "(Issue #909): the release number is read with "
+            "`orbi --version`, never quoted in the docs"
         )
 
 
