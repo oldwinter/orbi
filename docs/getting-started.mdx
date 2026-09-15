@@ -50,13 +50,14 @@ orbi --help
 ```
 
 The ≥ 3.14 floor applies to the interpreter that runs the install:
-an explicit `--python 3.13` on the `uv tool install` call, or
-`pip install orbi-cli` inside an activated older environment, fails
-with the resolver message
-`orbi-cli==0.5.6 depends on Python>=3.14`; the repair is to select a
-compatible interpreter — point `uv tool install` at `--python 3.14`
-(uv provisions it) or run pip inside an environment built on
-Python ≥ 3.14.
+an explicit `--python 3.13` on the `uv tool install` call fails with
+the uv resolver message
+`orbi-cli==0.5.6 depends on Python>=3.14`; `pip install orbi-cli`
+inside an activated older environment reports
+`No matching distribution found for orbi-cli`. The repair in both
+cases is the same: select a compatible interpreter — point
+`uv tool install` at `--python 3.14` (uv provisions it) or run pip
+inside an environment built on Python ≥ 3.14.
 
 Uninstall the tool install with `uv tool uninstall orbi-cli` (the
 full removal story lives in

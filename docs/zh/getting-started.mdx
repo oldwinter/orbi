@@ -44,11 +44,12 @@ orbi --help
 ```
 
 ≥ 3.14 的底线约束的是执行安装的解释器本身：给 `uv tool install` 显式加
-`--python 3.13`，或在已激活的旧版本环境里运行 `pip install orbi-cli`，
-安装会以 resolver 消息 `orbi-cli==0.5.6 depends on Python>=3.14`
-失败；修复方式是选择兼容的解释器——给 `uv tool install` 指定
-`--python 3.14`（uv 自动供应），或在 Python ≥ 3.14 构建的环境里运行
-pip。
+`--python 3.13`，会以 uv resolver 消息
+`orbi-cli==0.5.6 depends on Python>=3.14` 失败；在已激活的旧版本环境里
+运行 `pip install orbi-cli`，则报
+`No matching distribution found for orbi-cli`。两种情况的修复方式相同：
+选择兼容的解释器——给 `uv tool install` 指定 `--python 3.14`（uv 自动
+供应），或在 Python ≥ 3.14 构建的环境里运行 pip。
 
 卸载 tool 安装用 `uv tool uninstall orbi-cli`（完整卸载步骤见
 [Operations](/zh/operations)）；这些安装只给你 `orbi` 命令本身。要运行

@@ -692,6 +692,8 @@ def test_pypi_installation_sections_carry_the_real_commands():
             "uv tool install orbi-cli",
             "orbi --version",
             "uv tool uninstall orbi-cli",
+            "orbi-cli==0.5.6 depends on Python>=3.14",
+            "No matching distribution found for orbi-cli",
             "3.14",
         ):
             assert needle in body, (
