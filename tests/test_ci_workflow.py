@@ -113,19 +113,19 @@ def test_ci_workflow_keeps_one_job_without_lint_matrix_or_cache():
         )
 
 
-def test_ci_workflow_checkout_fetches_full_history_and_tags():
-    """Issue #126: the release reconciliation tests
-    (tests/test_release_v01.py) verify the REAL annotated tag object
-    (v0.1.0 → 912631d3) and its commit relationships with `git
-    cat-file` / `git rev-parse` / `git merge-base --is-ancestor`
-    against the checkout. The default shallow checkout (fetch-depth: 1)
-    runs `git fetch --no-tags` (verified against the official
-    actions/checkout@v5 source: git-command-manager.ts), so the tag
-    object is absent in the CI environment and the test fails with
-    `could not get object info`. `fetch-depth: 0` makes the action
-    fetch all branches and `+refs/tags/*:refs/tags/*` without `--depth`
-    (full history plus every tag object), so the release verification
-    uses the real remote objects."""
+def test_ci_workflow_checkout_fetches_all_tags_without_full_history():
+    """The release docs tests (tests/test_docs_releases.py) verify every
+    released tag's docs page against the REAL tag objects with `git
+    rev-parse` / `git cat-file` against the checkout, and the default
+    shallow checkout (fetch-depth: 1) runs `git fetch --no-tags`
+    (verified against the official actions/checkout@v5 source:
+    git-command-manager.ts), so the tag objects would be absent in the
+    CI environment and the tests would fail with `could not get object
+    info`. Issue #910 removed the full-history reconciliation tests
+    (tests/test_release_v01.py), so `fetch-depth: 0` is gone;
+    `fetch-tags: true` (official input: "Whether to fetch tags, even if
+    fetch-depth > 0") fetches every tag ref shallowly — all the tag
+    objects the tests read, no full history."""
     steps = steps_of(load_workflow())
     checkout = [
         step for step in steps
@@ -134,10 +134,16 @@ def test_ci_workflow_checkout_fetches_full_history_and_tags():
     assert checkout, "CI must check out the repository via actions/checkout"
     assert len(checkout) == 1, f"exactly one checkout step, got {len(checkout)}"
     with_options = checkout[0].get("with", {})
-    assert str(with_options.get("fetch-depth")) == "0", (
-        "CI checkout must fetch full history and all tags "
-        f"(fetch-depth: 0) so the annotated tag objects exist for the "
-        f"release reconciliation tests, got: {with_options!r}"
+    assert str(with_options.get("fetch-tags")).lower() == "true", (
+        "CI checkout must fetch all tags (fetch-tags: true) so the "
+        f"annotated tag objects exist for the release docs tests, "
+        f"got: {with_options!r}"
+    )
+    assert "fetch-depth" not in with_options or (
+        str(with_options.get("fetch-depth")) != "0"
+    ), (
+        "Issue #910 removed the full-history reconciliation tests: the "
+        f"checkout no longer needs fetch-depth: 0, got: {with_options!r}"
     )
 
 

@@ -52,12 +52,13 @@ Python 行或分支未达 100% 覆盖时退出非零。
 文档 PR 没有变更的 Python，直接通过）。没有 lint、没有矩阵、没有缓存。
 workflow 自含环境声明——CI 的工具链属于 ci.yml，不属于仓库（Issue #569）。
 
-Checkout 用 `fetch-depth: 0`（完整历史 + 全部 tags）：发布对账测试
-（`tests/test_release_v01.py`）用 `git cat-file` / `git rev-parse` 对
-checkout 里的真实 annotated tag object（`v0.1.0`）及其 commit 关系做校验，
-而默认浅 checkout（`fetch-depth: 1`）以 `--no-tags` 抓取，CI 环境里没有
-tag object，测试会以 `could not get object info` 失败（Issue #126）。现有
-tags 只是在 CI 里可见，不被移动、覆盖或重写。
+Checkout 保持默认浅克隆并加 `fetch-tags: true`（所有 tag refs，即使
+fetch-depth 为 1）：发布文档测试（`tests/test_docs_releases.py`）用
+`git rev-parse` / `git cat-file` 对 checkout 里每个已发布 tag 的真实
+tag object 做校验，默认 `--no-tags` 抓取会让 tag object 缺失、测试以
+`could not get object info` 失败（Issue #126）。被删除的发布对账测试
+曾需要的完整历史 checkout（`fetch-depth: 0`）已随之移除（Issue #910）。
+现有 tags 只是在 CI 里可见，不被移动、覆盖或重写。
 
 CI 里还运行 Mintlify 文档构建 smoke（Issue #116）：官方 `mint` CLI
 的 `mint validate`（严格构建校验，任何 warning 或 error 都退出非零）

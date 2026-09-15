@@ -24,21 +24,22 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-      # The release reconciliation tests (tests/test_release_v01.py) verify
-      # the real annotated tag object (v0.1.0) and its commit relationships
-      # with `git cat-file` / `git rev-parse` / `git merge-base --is-ancestor`
-      # against the checkout. The default shallow checkout (fetch-depth: 1)
-      # runs `git fetch --no-tags` (verified against the official
-      # actions/checkout@v5 source), so the tag object is absent and the
-      # test fails with `could not get object info` (Issue #126).
-      # fetch-depth: 0 makes the action fetch all branches and
-      # +refs/tags/*:refs/tags/* without --depth (full history plus every
-      # tag object), so the release verification uses the real remote
-      # objects. No tags are moved, overwritten, or rewritten.
-      - name: Check out the repository (full history + all tags)
+      # The release docs tests (tests/test_docs_releases.py) verify every
+      # released tag's docs page against the REAL tag objects with
+      # `git rev-parse` / `git cat-file` against the checkout, and the
+      # default shallow checkout (fetch-depth: 1) runs `git fetch
+      # --no-tags` (verified against the official actions/checkout@v5
+      # source), so the tag objects would be absent and the tests would
+      # fail with `could not get object info` (Issue #126). Issue #910
+      # removed the full-history reconciliation tests, so `fetch-depth: 0`
+      # is gone; `fetch-tags: true` (official input: "Whether to fetch
+      # tags, even if fetch-depth > 0") fetches every tag ref — shallow
+      # history plus every tag object — which is all those tests read.
+      # No tags are moved, overwritten, or rewritten.
+      - name: Check out the repository (shallow history + all tags)
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python 3.14 (production minor version)
         uses: actions/setup-python@v6

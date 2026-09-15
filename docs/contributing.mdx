@@ -109,14 +109,7 @@ first.
    [Testing](/testing) for the exact commands). How you set up your
    local environment is your own business — it is not a repository
    contract, and the repository maintains no local test chain
-   (Issue #569):
-
-   ```bash
-   COVERAGE_FILE=.orbi/.coverage /usr/bin/python3 -m coverage run --branch -m pytest tests/ -q
-   COVERAGE_FILE=.orbi/.coverage /usr/bin/python3 -m coverage report --show-missing
-   COVERAGE_FILE=.orbi/.coverage /usr/bin/python3 tools/coverage_gate.py .orbi/.coverage
-   COVERAGE_FILE=.orbi/.coverage /usr/bin/python3 tools/diff_coverage_gate.py origin/main
-   ```
+   (Issue #569).
 
 5. Open one PR per Issue. The PR description must contain
    `Fixes #<issue-number>` so GitHub closes the Issue natively on merge
@@ -130,8 +123,8 @@ first.
 
 Orbi is a public repository: external Issues and PRs are a **mainline
 input**, not an edge case. You keep full freedom over your branch name —
-the integration duty is the system's, never the contributor's (Issue
-#608).
+the integration duty is the system's, never the contributor's
+(Issue #608).
 
 What happens to an external PR, in order:
 

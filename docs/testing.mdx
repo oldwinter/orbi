@@ -62,14 +62,14 @@ changed Python and passes). No lint, no matrix, no cache. The workflow
 declares its own environment — the CI toolchain belongs to ci.yml, not
 to the repository (Issue #569).
 
-The checkout uses `fetch-depth: 0` (full history + all tags): the release
-reconciliation tests (`tests/test_release_v01.py`) verify the REAL annotated
-tag object (`v0.1.0`) and its commit relationships with `git cat-file` /
-`git rev-parse` against the checkout, while the default shallow checkout
-(`fetch-depth: 1`) fetches with `--no-tags`, so the tag object is absent in
-the CI environment and the test fails with `could not get object info`
-(Issue #126). The existing tags are only made visible in CI — never moved,
-overwritten, or rewritten.
+The checkout keeps the default shallow clone and adds `fetch-tags: true`
+(all tag refs, even at fetch-depth 1): the release docs tests
+(`tests/test_docs_releases.py`) verify every released tag's docs page
+against the real tag objects with `git rev-parse` / `git cat-file`,
+which the default `--no-tags` fetch would hide (Issue #126). The
+full-history checkout (`fetch-depth: 0`) that the removed release
+reconciliation tests once needed is gone (Issue #910). The existing tags
+are only made visible in CI — never moved, overwritten, or rewritten.
 
 The same single job also runs the Mintlify docs build smoke (Issue #116):
 the official `mint` CLI's `mint validate` (strict build validation of the

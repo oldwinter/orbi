@@ -19163,7 +19163,14 @@ RELEASE_DOCS_BODY_V040 = (
     "- tag: `v0.4.0`\n"
     "- release commit: `" + "c" * 40 + "`\n\n"
     "## Changelog\n\n"
-    "- A useful change ([Issue #123](https://github.com/o/r/issues/123))"
+    "- A useful change ([Issue #123](https://github.com/o/r/issues/123))\n\n"
+    "## Scope (verified item by item)\n\n"
+    "- Issue #123 closed (mergeCommit=" + "c" * 40 + "…)\n\n"
+    "## Pre-release gates\n\n"
+    "- no open Issue in milestone 'v0.4.0' carries ai-in-progress\n\n"
+    "## Tests\n\n"
+    "- release tests gated by GitHub Actions CI on the release commit\n\n"
+    "run_id=a1b2c3d4"
 )
 
 
@@ -19796,26 +19803,30 @@ def test_release_docs_page_rejects_an_unknown_language():
         )
 
 
-def test_release_docs_page_drops_html_comment_lines_but_keeps_the_run_id():
+def test_release_docs_page_drops_html_comments_audit_blocks_and_run_id():
     """The Mintlify MDX parser rejects `<!-- ... -->` comment lines
     (mint validate: 'Unexpected character `!`'), so the run-marker
-    comments of the release body must be dropped — but the visible
-    `run_id=` line stays (the correlation is kept)."""
-    body = (
-        "# v0.4.0\n\n"
-        "- A useful change\n\n"
-        "<!-- orbi:run=a1b2c3d4 -->\n"
-        "run_id=a1b2c3d4"
-    )
+    comments of the release body must be dropped — and the docs page is
+    for readers, not the release machine's audit trail (Issue #910):
+    the `## Scope (verified item by item)` and `## Pre-release gates`
+    sections and the `run_id=` lines stay on the GitHub Release, while
+    the changelog, the meta bullets and the `## Tests` section stay."""
     page = release.release_docs_page(
         version="v0.4.0", tag_object="t" * 40, release_commit="c" * 40,
         published_at="2026-09-08T12:00:00Z",
         release_url="https://github.com/o/r/releases/tag/v0.4.0",
-        issue_number=77, body=body, language="en",
+        issue_number=77, body=RELEASE_DOCS_BODY_V040, language="en",
     )
     assert "<!--" not in page
-    assert "run_id=a1b2c3d4" in page
+    assert "## Scope (verified item by item)" not in page
+    assert "## Pre-release gates" not in page
+    assert "mergeCommit=" not in page
+    assert "run_id=" not in page
+    assert "## Changelog" in page
     assert "- A useful change" in page
+    assert "- tag: `v0.4.0`" in page
+    assert "## Tests" in page
+    assert "release tests gated by GitHub Actions CI" in page
 
 
 def test_release_docs_page_handles_a_body_without_any_lines():
