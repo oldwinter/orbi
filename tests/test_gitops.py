@@ -157,6 +157,43 @@ def test_create_worktree_fetches_an_existing_remote_branch(
     ]
 
 
+def test_create_worktree_fork_takeover_fetches_pull_head_ref(
+    monkeypatch, tmp_path,
+):
+    """Issue #945: a fork PR head is fetched via refs/pull/N/head."""
+    path = tmp_path / ".worktrees" / "orbi-o-r-issue-3-run1"
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return ""
+
+    monkeypatch.setattr(seam, "run_command", run)
+    assert gitops.create_worktree(
+        tmp_path, "o/r", 3, "run1", "base",
+        existing_branch=True, branch="fix/outer", pr_number=592,
+    ) == path
+    assert commands[0] == [
+        "git", "fetch", "origin",
+        "+refs/pull/592/head:refs/remotes/origin/fix/outer",
+    ]
+    assert commands[-1][-1] == "origin/fix/outer"
+
+
+def test_create_worktree_same_repo_takeover_still_fetches_the_branch(
+    monkeypatch, tmp_path,
+):
+    """Internal / same-repo takeover keeps `git fetch origin <branch>`."""
+    commands = []
+    monkeypatch.setattr(seam, "run_command", lambda c, **k: (
+        commands.append(c), "")[1])
+    gitops.create_worktree(
+        tmp_path, "o/r", 3, "run1", "base",
+        existing_branch=True, branch="fix/outer",
+    )
+    assert commands[0] == ["git", "fetch", "origin", "fix/outer"]
+
+
 def test_create_worktree_returns_the_existing_path(monkeypatch, tmp_path):
     commands = []
     monkeypatch.setattr(seam, "run_command", lambda c, **k: (
