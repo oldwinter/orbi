@@ -16,7 +16,10 @@ from pathlib import Path
 import pytest
 
 import orbi.runner as runner
+from orbi.auto_release_ticket import install as install_auto_release_ticket
 from seam import seam
+
+install_auto_release_ticket()
 
 
 def git(repo: Path, *args: str) -> str:
