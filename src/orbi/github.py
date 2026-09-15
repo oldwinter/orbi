@@ -301,7 +301,10 @@ def list_milestones(repo: str, *, timeout: int | None = None) -> list[dict]:
         "gh", "api", f"repos/{repo}/milestones?state=all&per_page=100",
         "--paginate", "--slurp",
     ], timeout=timeout)
-    return parse_paginated_issue_array(raw)
+    milestones = parse_paginated_issue_array(raw)
+    from orbi.milestone_idle import observe_idle_milestones
+    observe_idle_milestones(repo, milestones)
+    return milestones
 
 
 def milestone_open_issue_count(repo: str, milestone_title: str) -> int:
@@ -938,3 +941,8 @@ def pr_delivery_status(pr_url: str, source_repo: str) -> tuple[str, list[str]]:
     """Return PR state and CI summaries for delivery-wait evidence."""
     state, rollup = pr_delivery_rollup(pr_url, source_repo)
     return state, _check_summaries(rollup)
+
+
+# Bind the idle-path log_format wrap before runner snapshots that name
+# (runner imports this module first, then `from orbi.journal import log_format`).
+import orbi.milestone_idle  # noqa: E402,F401
