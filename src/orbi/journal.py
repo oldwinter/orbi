@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -299,6 +300,7 @@ JOURNAL_EVENTS: dict[str, str] = {
     "active_milestone_advance_none": "no pending Milestone to advance to",
     "active_milestone_advance_pending": "a pending Milestone candidate is waiting",
     "active_milestone_advance_failed": "advancing the active Milestone failed",
+    "active_milestone_dangling": "the configured active Milestone is closed or missing while idle",
     "active_milestone_variable_removed": "the active_milestone repo variable was removed",
     "active_milestone_variable_unchanged": "the active_milestone repo variable matches the config",
     "active_milestone_variable_updated": "the active_milestone repo variable was updated",
@@ -525,3 +527,30 @@ def clear_active_run() -> None:
 def active_run() -> dict | None:
     """The in-flight delivery scene, or None (the stop handler reads it)."""
     return _ACTIVE_RUN
+
+
+_ORIG_LOGGER_EXCEPTION = LOGGER.exception
+
+
+def _exception_with_advance_failed_event(msg, *args, **kwargs):
+    """Emit ``active_milestone_advance_failed`` as a structured event.
+
+    The idle tick swallows advance errors (Issue #614) so a missing
+    Milestone cannot fail the process; Issue #855 requires that failure
+    to be greppable in the journal, not only as a traceback.
+    """
+    if isinstance(msg, str) and "active_milestone_advance_failed" in msg:
+        error = sys.exc_info()[1]
+        repo = args[0] if args else "-"
+        milestone = args[1] if len(args) > 1 else "-"
+        event(
+            "active_milestone_advance_failed",
+            level=logging.ERROR,
+            repo=repo,
+            milestone=milestone,
+            error=error if error is not None else msg,
+        )
+    return _ORIG_LOGGER_EXCEPTION(msg, *args, **kwargs)
+
+
+LOGGER.exception = _exception_with_advance_failed_event
