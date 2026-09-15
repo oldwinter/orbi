@@ -41,12 +41,13 @@ jobs:
         with:
           fetch-tags: true
 
-      # Explicitly fetch tag refs and the base ref because shallow
-      # pull_request checkouts have not reliably populated either ref.
-      # The release tests need annotated tag objects and the diff coverage
-      # gate needs origin/main, but neither needs full history.
-      - name: Fetch release tags and base for documentation checks
-        run: timeout 120 git fetch --no-tags --no-recurse-submodules origin 'refs/heads/main:refs/remotes/origin/main' '+refs/tags/*:refs/tags/*'
+      # Explicitly fetch tag refs because actions/checkout's fetch-tags input
+      # has not reliably populated tag refs in pull_request checkouts. The
+      # release tests need annotated tag objects, but not full history. The
+      # diff coverage gate also needs the base ancestry, so unshallow the
+      # checkout here rather than coupling that requirement to checkout.
+      - name: Fetch release tags and base history for checks
+        run: timeout 120 git fetch --no-tags --no-recurse-submodules --unshallow origin 'refs/heads/main:refs/remotes/origin/main' '+refs/tags/*:refs/tags/*'
 
       - name: Set up Python 3.14 (production minor version)
         uses: actions/setup-python@v6
