@@ -89,7 +89,7 @@ jobs:
         run: |
           timeout 300 python3 -m pip install --upgrade pip
           timeout 300 python3 -m pip install -r requirements.txt
-          timeout 300 python3 -m pip install pytest pyyaml
+          timeout 300 python3 -m pip install pytest coverage pyyaml
 
       # The full suite, one bounded command, the real exit code: no pipe
       # sits between pytest and the step (Issue #180).

@@ -206,9 +206,11 @@ def test_workflow_installs_its_own_test_requirements():
         f"steps run: {commands!r}"
     )
     assert any(
-        "pip install pytest pyyaml" in command for command in commands
+        "pip install pytest coverage pyyaml" in command for command in commands
     ), (
-        "the workflow must install its own test toolchain (pytest pyyaml), "
+        "the workflow must install its own test toolchain (pytest coverage "
+        "pyyaml — the same toolchain as ci.yml; tests/test_coverage_gate.py "
+        "imports coverage at module level), "
         f"steps run: {commands!r}"
     )
 
