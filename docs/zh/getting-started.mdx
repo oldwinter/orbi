@@ -7,3 +7,52 @@ Issue 被领取、实现、测试、开 PR、独立审查、合并。这里的�
 
 
 ## 一键安装
+
+新用户只需运行安装器；它会安装 CLI、生成配置并进入交互式 setup：
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/orbi-build/orbi/main/install.sh | bash
+```
+
+担心 `curl | bash` 时可先下载、检查，再执行：
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/orbi-build/orbi/main/install.sh -o install.sh
+less install.sh
+bash install.sh
+```
+
+安装器需要 `git`、`gh` 和调度器 user session（Linux 为 systemd，macOS
+为 launchd）；uv 会在需要时提供 Python 3.14。
+手动安装时，`orbi setup` 找不到 `orbi.toml` 会生成一个：相邻存在
+`.orbi.example.toml` 就用它，否则用 CLI 包内自带的示例——且不会覆盖已有配置。
+
+## PyPI 安装
+
+CLI 已发布到 PyPI：[`orbi-cli`](https://pypi.org/project/orbi-cli/)——
+同时提供 sdist 和 wheel，要求 Python ≥ 3.14。发布包名为
+`orbi-cli`；安装后的命令仍是 `orbi`。
+
+`uv tool install orbi-cli` 把它装进隔离的 tool 环境（系统解释器过旧时，
+uv 会自动供应兼容的 Python 3.14）；在已激活的 Python ≥ 3.14 环境里，
+`pip install orbi-cli` 是普通 pip 路径：
+
+```bash
+uv tool install orbi-cli
+orbi --version  # → orbi \u003cversion\u003e
+orbi --help
+```
+
+## 3. 创建配置
+
+`orbi setup` 会在配置缺失时自动创建 `orbi.toml`。
+
+| 字段 | 必填 | 默认 | 含义 |
+|---|---|---|---|
+| `warn_on_dangling_milestone` | 否 | `false` | 仅宿主的 idle 告警（Issue #855）：当 `active_milestone` 指向**已关闭或不存在**的 Milestone、且本次 fresh-claim 扫描无可认领票时，显式 `true` 发出结构化 `active_milestone_dangling active=\u003ctitle\u003e state=closed\\|missing` journal 事件，让发版后的空队列可被检索。未设置 / `false` 与今天的 journal 完全一致（不多一行）。不改变 `auto_next_milestone`、不改写 `active_milestone`、不改三条 ready 扫描。非法值让配置加载 fail fast |
+
+## 故障排查
+
+| 症状 | 证据 | 修复 |
+|---|---|---|
+| 启动在任何 slot/claim 前失败 | journal `API key for provider ... references missing environment variable GROQ_API_KEY`（只报变量**名**） | 把 key 值放进你的 `.orbi/env`（第 4 步），并确认已安装 unit 的 `EnvironmentFile` 指向它；手工 tick 则在 shell 里 export 该变量 |
