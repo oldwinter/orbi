@@ -54,6 +54,59 @@ def test_gh_read_command_retries_transient_failures_then_succeeds(
     assert "attempt=2" in caplog.text
 
 
+def test_gh_write_command_retries_server_error_then_succeeds(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(
+                1, command, stderr="HTTP 503: Service Unavailable"
+            )
+        return "ok"
+
+    monkeypatch.setattr(github.time, "sleep", sleeps.append)
+    assert github.run_gh_write_command(
+        ["gh", "issue", "comment", "9", "--body", "x"],
+        command_runner=fake_run,
+    ) == "ok"
+    assert len(calls) == 2
+    assert sleeps == [1]
+
+
+def test_gh_write_command_does_not_retry_permission_error(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        raise subprocess.CalledProcessError(
+            1, command, stderr="HTTP 403: Resource not accessible"
+        )
+
+    monkeypatch.setattr(github.time, "sleep", lambda _: pytest.fail("slept"))
+    with pytest.raises(subprocess.CalledProcessError):
+        github.run_gh_write_command(["gh", "issue", "edit", "9"], command_runner=fake_run)
+    assert len(calls) == 1
+
+
+def test_gh_write_command_idempotency_check_prevents_duplicate(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        raise subprocess.CalledProcessError(
+            1, command, stderr="GraphQL: Something went wrong while executing your query"
+        )
+
+    monkeypatch.setattr(github.time, "sleep", lambda _: pytest.fail("slept"))
+    assert github.run_gh_write_command(
+        ["gh", "issue", "comment", "9", "--body", "x"],
+        command_runner=fake_run, already_applied=lambda: True,
+    ) == ""
+    assert len(calls) == 1
+
+
 def test_gh_read_command_returns_first_success_without_retry(monkeypatch):
     calls = []
 
