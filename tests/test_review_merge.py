@@ -573,6 +573,29 @@ def test_run_review_launches_independent_readonly_pi_session(monkeypatch, tmp_pa
 # merge gate
 # ---------------------------------------------------------------------------
 
+
+def test_assess_base_freshness_has_one_typed_three_state_contract(monkeypatch,
+                                                                  tmp_path):
+    outcomes = iter([True, False, False])
+    monkeypatch.setattr(seam, "_is_ancestor", lambda *args, **kwargs: next(outcomes))
+
+    assert runner.assess_base_freshness(tmp_path, "main") is runner.BaseFreshness.FRESH
+    assert runner.assess_base_freshness(
+        tmp_path, "main", mergeable="MERGEABLE",
+    ) is runner.BaseFreshness.ABSORBABLE
+    assert runner.assess_base_freshness(
+        tmp_path, "main", mergeable="DIRTY",
+    ) is runner.BaseFreshness.CONFLICTED
+
+
+def test_assess_base_freshness_moved_reviewed_head_is_conflicted(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(seam, "_is_ancestor", lambda *args, **kwargs: True)
+    assert runner.assess_base_freshness(
+        tmp_path, "main", head="new", reviewed_head="reviewed",
+    ) is runner.BaseFreshness.CONFLICTED
+
+
 def _merge_gate_fake(pr_state="MERGEABLE", head_oid="h1",
                      check_runs=None, base_check_runs=None):
     def fake_run(command, **kwargs):
