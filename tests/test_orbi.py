@@ -12,6 +12,10 @@ import orbi.runner as runner
 import orbi.cli as orbi
 from seam import seam
 
+# The systemd-shape deployment/setup contract, pinned to the systemd
+# impl on every host (the conftest fixture documents the seam).
+pytestmark = pytest.mark.usefixtures("systemd_scheduler")
+
 
 def _write_prompts(tmp_path):
     prompts = tmp_path / "prompts"

@@ -25,6 +25,10 @@ import pytest
 from orbi import cli
 from orbi import pilot_setup
 
+# The systemd-shape deployment/setup contract, pinned to the systemd
+# impl on every host (the conftest fixture documents the seam).
+pytestmark = pytest.mark.usefixtures("systemd_scheduler")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 REPO = "octocat/hello-world"

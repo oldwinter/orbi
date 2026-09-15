@@ -105,7 +105,14 @@ the macOS code paths (tests, packaging, installer logic) and the
 runner-level launchd prerequisite — it cannot prove a real user's
 logged-in GUI session, credentials, model provider, or the full GitHub
 Issue-to-merge journey, and it does not replace a real
-macOS launchd smoke run on real Mac hardware. The coverage and
+macOS launchd smoke run on real Mac hardware. The same honesty applies
+inside the suite: the deployment, setup, doctor and health-check
+contracts are pinned to the systemd implementation through the
+`systemd_scheduler` test fixture (the launchd implementation keeps its
+own fakes-based tests), and the real-subprocess idle-recovery scenes
+(`/proc`-based descendant discovery) plus the runner-subprocess e2e
+scenes skip on Darwin with named reasons — the Ubuntu workflow above
+keeps every one of them authoritative. The coverage and
 changed-code gates stay authoritative in the Ubuntu workflow above; the
 macOS job still fails on any test, package, or installer compatibility
 failure — nothing is swallowed or converted into a pass.

@@ -107,9 +107,13 @@ def test_dispatch_maps_darwin_to_launchd():
 
 
 def test_dispatch_defaults_to_the_running_platform():
-    # This suite runs on Linux CI; the default must be the real
-    # platform, not a hardcoded one.
-    assert scheduler.detect().name == "systemd"
+    # The default must be the REAL running platform, not a hardcoded
+    # one: the suite runs on Linux CI and on the hosted macOS runner
+    # alike, and each must see its own scheduler.
+    from platform import system as platform_system
+
+    expected = {"Darwin": "launchd"}.get(platform_system(), "systemd")
+    assert scheduler.detect().name == expected
 
 
 def test_dispatch_rejects_unsupported_platforms_with_the_issue_link():

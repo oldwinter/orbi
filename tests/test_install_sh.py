@@ -22,10 +22,16 @@ ISSUE_URL = "https://github.com/orbi-build/orbi/issues/849"
 # The coreutils the script needs beyond the stubs, symlinked into the
 # stub PATH so no real systemctl/launchctl can leak in through /usr/bin.
 # chmod is for the #868 stub uv-installer, not the script itself.
+# `timeout` is deliberately absent: a vanilla macOS (and the hosted
+# macOS runner, Issue #868) has no /usr/bin/timeout, so a symlink would
+# dangle there — install.sh's `command -v timeout` still finds a dangling
+# link and then dies at exec under `set -e`. The stub dir always carries
+# the bounded-exec stub below instead, on every host.
 CORE_TOOLS = (
-    "mkdir", "sed", "grep", "mktemp", "timeout", "rm", "cp", "cat", "uname",
+    "mkdir", "sed", "grep", "mktemp", "rm", "cp", "cat", "uname",
     "chmod",
 )
+TIMEOUT_STUB = "#!/bin/sh\nshift\nexec \"$@\"\n"
 
 
 def make_stub_dir(
@@ -42,6 +48,10 @@ def make_stub_dir(
         if tool in stubs or tool in without:
             continue  # a stub with this name wins (e.g. the uname shim)
         (bin_dir / tool).symlink_to(f"/usr/bin/{tool}")
+    if "timeout" not in stubs and "timeout" not in without:
+        stub = bin_dir / "timeout"
+        stub.write_text(TIMEOUT_STUB, encoding="utf-8")
+        stub.chmod(0o755)
     return bin_dir
 
 
@@ -68,8 +78,12 @@ def pass_stubs() -> dict[str, str]:
 
 
 def test_linux_without_systemctl_reports_platform_limitation(tmp_path):
-    # The acceptance scene: NO systemctl and NO launchctl on the machine.
-    bin_dir = make_stub_dir(tmp_path, pass_stubs())
+    # The acceptance scene: a LINUX machine (the uname shim pins the
+    # platform — the real `uname` would make this scene host-dependent)
+    # with NO systemctl on the machine.
+    stubs = pass_stubs()
+    stubs["uname"] = "#!/bin/sh\necho Linux\n"
+    bin_dir = make_stub_dir(tmp_path, stubs)
     result = run_install(tmp_path, bin_dir)
     assert result.returncode == 1
     assert "systemctl" in result.stderr

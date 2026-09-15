@@ -31,6 +31,10 @@ from orbi import runner_health
 from seam import seam
 import orbi.journal as journal
 
+# The systemd-shape deployment/setup contract, pinned to the systemd
+# impl on every host (the conftest fixture documents the seam).
+pytestmark = pytest.mark.usefixtures("systemd_scheduler")
+
 # Captured at import time (before any monkeypatch): the conftest default
 # stubs `run_health_check` for the dispatch tests, and this module
 # exercises the REAL implementation (the fixture below restores it).

@@ -76,3 +76,26 @@ def _default_health_check_preflight(monkeypatch):
     monkeypatch.setattr(
         runner_health, "run_health_check", lambda *a, **k: [],
     )
+
+
+@pytest.fixture
+def systemd_scheduler(monkeypatch):
+    """Pin `scheduler.detect()` to the systemd impl on any host.
+
+    The deployment/health suites contract the SYSTEMD behavior over
+    systemd-shaped fixtures (fake `run_command`, tmp unit dirs). Left
+    to the running platform, a macOS host dispatches to the launchd
+    impl (Issue #849) and the same fixtures miss its plist template.
+    `detect(system)` is the documented override seam, and `detect` is
+    bound only in `orbi.scheduler` (every consumer reads the module
+    attribute), so one patch here pins install/drift/doctor/setup/
+    health checks alike. The launchd impl keeps its own explicit tests
+    (`tests/fakes/launchd.py`); a test-level `monkeypatch` always wins
+    over this pin.
+    """
+    from orbi import scheduler
+
+    real_detect = scheduler.detect
+    monkeypatch.setattr(
+        scheduler, "detect", lambda system=None: real_detect("Linux"),
+    )
