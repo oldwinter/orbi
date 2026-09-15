@@ -684,7 +684,7 @@ def test_pypi_installation_sections_carry_the_real_commands():
     for slug in ("docs/getting-started.mdx", "docs/zh/getting-started.mdx"):
         text = (REPO_ROOT / slug).read_text(encoding="utf-8")
         section = PYPI_SECTION_RE.search(text)
-        assert section is not None, f"docs/{slug} lost its PyPI section"
+        assert section is not None, f"{slug} lost its PyPI section"
         body = section.group(1)
         for needle in (
             "https://pypi.org/project/orbi-cli/",
@@ -695,7 +695,7 @@ def test_pypi_installation_sections_carry_the_real_commands():
             "3.14",
         ):
             assert needle in body, (
-                f"docs/{slug} PyPI section must document {needle!r} "
+                f"{slug} PyPI section must document {needle!r} "
                 "(Issue #892: the verified real commands and floor)"
             )
 
