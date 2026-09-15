@@ -119,6 +119,14 @@ def test_macos_with_launchctl_passes_the_scheduler_gate(tmp_path):
     )
     bin_dir = make_stub_dir(tmp_path, stubs)
     result = run_install(tmp_path, bin_dir)
+    # A missing marker is an INSTALLER failure scene: the message carries
+    # the captured rc/stdout/stderr so the log shows where the walk died.
+    assert marker.exists(), (
+        f"the installer never reached the clone step: "
+        f"rc={result.returncode} stdout={result.stdout!r} "
+        f"stderr={result.stderr!r} "
+        f"stub_dir={sorted(p.name for p in bin_dir.iterdir())!r}"
+    )
     assert marker.read_text().strip() == "reached"
     # The scheduler gate said nothing: no platform-limitation output.
     assert ISSUE_URL not in result.stderr
@@ -175,6 +183,12 @@ def test_macos_without_timeout_reaches_the_clone_step(tmp_path):
     result = subprocess.run(
         ["/bin/bash", str(INSTALL_SH)],
         env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert marker.exists(), (
+        f"the installer never reached the clone step: "
+        f"rc={result.returncode} stdout={result.stdout!r} "
+        f"stderr={result.stderr!r} "
+        f"stub_dir={sorted(p.name for p in bin_dir.iterdir())!r}"
     )
     assert marker.read_text().strip() == "reached"
     assert "command not found" not in result.stderr
