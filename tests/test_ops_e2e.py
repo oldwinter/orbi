@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 import orbi.runner as runner
 import orbi.journal as journal
 
@@ -252,18 +254,6 @@ sys.stdout.write("committed")
 """
 
 
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
-
-
 @pytest.fixture()
 def clone(tmp_path: Path) -> Path:
     """Local bare origin plus a clone with `main` and a `beta` branch
@@ -383,11 +373,6 @@ def worktree_for(clone: Path, run_id: str) -> Path:
         clone / ".worktrees"
         / f"orbi-{REPO.replace('/', '-')}-issue-{ISSUE_NUMBER}-{run_id}"
     )
-
-
-def test_git_helper_fails_fast_on_nonzero_exit(tmp_path):
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git(tmp_path, "rev-parse", "no-such-ref")
 
 
 def test_e2e_pure_ops_ticket_executes_merges_and_delivers_evidence(

@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 import orbi.runner as runner
 from seam import seam
 import orbi.journal as journal
@@ -122,18 +124,6 @@ for command in (
 ):
     subprocess.run(command, cwd=cwd, check=True, capture_output=True)
 """
-
-
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 @pytest.fixture()
@@ -582,12 +572,6 @@ def test_e2e_claim_reuses_orphan_local_branch(
     assert "ai-in-progress" not in labels[ISSUE_NUMBER]
     # No exit-255 claim failure was logged.
     assert "command_failed" not in caplog.text
-
-
-def test_git_helper_fails_fast_on_nonzero_exit(tmp_path):
-    """A git failure is a test failure with the exact reason."""
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git(tmp_path, "rev-parse", "refs/heads/does-not-exist")
 
 
 def test_fake_gh_handler_answers_the_unreached_transitions(

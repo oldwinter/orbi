@@ -9,31 +9,20 @@ them would post the previous run's results as its own `plan ready` /
 `tests passed` milestones. They are therefore gitignored (like
 `.pi-session/`), and these tests guard the contract.
 """
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def git(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 def test_run_artifacts_are_not_tracked_at_repository_root():
     """A tracked plan.md/test.log would be checked out into every new
     task worktree (created from the base SHA) as the previous run's
     stale artifact."""
-    tracked = git("ls-files", "plan.md", "test.log")
+    tracked = git(REPO_ROOT, "ls-files", "plan.md", "test.log")
     assert tracked == "", f"run artifacts are tracked: {tracked}"
 
 
@@ -52,31 +41,6 @@ def test_run_artifacts_are_gitignored():
     assert "verify.md" in patterns
 
 
-def test_git_helper_fails_fast_on_nonzero_exit():
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git("rev-parse", "no-such-ref")
-
-
-def git_in(repo: Path, *args: str) -> str:
-    """`git()` bound to an arbitrary repo dir (same fail-fast contract)."""
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
-
-
-def test_git_in_helper_fails_fast_on_nonzero_exit(tmp_path):
-    repo = tmp_path / "empty"
-    repo.mkdir()
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git_in(repo, "rev-parse", "no-such-ref")
-
-
 def make_repo_with_real_gitignore(tmp_path: Path, pre_tracked=()) -> Path:
     """A fresh repo whose base commit carries the repository's real
     `.gitignore` — exactly the state of a new task worktree created
@@ -85,18 +49,18 @@ def make_repo_with_real_gitignore(tmp_path: Path, pre_tracked=()) -> Path:
     land, i.e. files already under version control."""
     repo = tmp_path / "wt"
     repo.mkdir()
-    git_in(repo, "init", "-q")
-    git_in(repo, "config", "user.email", "pilot@test.local")
-    git_in(repo, "config", "user.name", "Pilot")
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "pilot@test.local")
+    git(repo, "config", "user.name", "Pilot")
     for name, content in pre_tracked:
         (repo / name).write_text(content, encoding="utf-8")
-        git_in(repo, "add", name)
+        git(repo, "add", name)
     (repo / ".gitignore").write_text(
         (REPO_ROOT / ".gitignore").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    git_in(repo, "add", ".gitignore")
-    git_in(repo, "commit", "-q", "-m", "base")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-q", "-m", "base")
     return repo
 
 
@@ -118,16 +82,16 @@ def test_log_and_coverage_artifacts_are_gitignored():
         "coverage.json",
         "htmlcov/index.html",
     ]:
-        out = git("check-ignore", "-v", path)
+        out = git(REPO_ROOT, "check-ignore", "-v", path)
         assert out.splitlines()[0].endswith("\t" + path)
     # The coverage-file rule is the glob `.coverage*` (the old exact
     # `.coverage` line was replaced), not a coincidental match.
-    out = git("check-ignore", "-v", ".coverage.host123")
+    out = git(REPO_ROOT, "check-ignore", "-v", ".coverage.host123")
     assert out.splitlines()[0].split("\t")[0].rsplit(":", 1)[-1] == ".coverage*"
     # Issue #301: `coverage.json` (the tiered gate's `coverage json -o`
     # artifact) is ignored by its own explicit rule — `.coverage*` does
     # not match it because it does not start with `.coverage`.
-    out = git("check-ignore", "-v", "coverage.json")
+    out = git(REPO_ROOT, "check-ignore", "-v", "coverage.json")
     assert out.splitlines()[0].split("\t")[0].rsplit(":", 1)[-1] == "coverage.json"
 
 
@@ -147,7 +111,7 @@ def test_common_dev_artifacts_are_gitignored():
         "edit.swp",
         "scratch.tmp",
     ]:
-        out = git("check-ignore", "-v", path)
+        out = git(REPO_ROOT, "check-ignore", "-v", path)
         assert out.splitlines()[0].endswith("\t" + path)
 
 
@@ -161,11 +125,11 @@ def test_tracked_log_file_stays_tracked(tmp_path):
     )
     # The ignore rule is in place and the tracked log survives it:
     # `git ls-files` still lists it and the file is still on disk.
-    assert "tracked.log" in git_in(repo, "ls-files").splitlines()
+    assert "tracked.log" in git(repo, "ls-files").splitlines()
     assert (repo / "tracked.log").exists()
     # A new untracked log is ignored: the gate sees a clean tree.
     (repo / "fresh.log").write_text("new log\n", encoding="utf-8")
-    assert git_in(repo, "status", "--porcelain") == ""
+    assert git(repo, "status", "--porcelain") == ""
 
 
 def test_untracked_source_and_docs_still_reported(tmp_path):
@@ -175,7 +139,7 @@ def test_untracked_source_and_docs_still_reported(tmp_path):
     repo = make_repo_with_real_gitignore(tmp_path)
     (repo / "unexpected.py").write_text("x = 1\n", encoding="utf-8")
     (repo / "notes.md").write_text("notes\n", encoding="utf-8")
-    lines = git_in(repo, "status", "--porcelain").splitlines()
+    lines = git(repo, "status", "--porcelain").splitlines()
     assert "?? unexpected.py" in lines
     assert "?? notes.md" in lines
 
@@ -189,13 +153,13 @@ def test_pi_loop_state_is_gitignored():
     # `git check-ignore -v` prints `<source>:<line>:<pattern>\t<path>`
     # for an ignored path (exit 0); the git() helper fails fast on any
     # other outcome, so reaching the assertions IS the "ignored" proof.
-    out = git("check-ignore", "-v", ".pi/loops.json")
+    out = git(REPO_ROOT, "check-ignore", "-v", ".pi/loops.json")
     assert out.splitlines()[0].endswith("\t.pi/loops.json")
     # The matching pattern is the `.pi/` directory rule in .gitignore —
     # not a coincidental substring of another pattern.
     assert out.splitlines()[0].split("\t")[0].rsplit(":", 1)[-1] == ".pi/"
     # `.pi-session/` remains ignored as before.
-    out2 = git("check-ignore", "-v", ".pi-session/sess.jsonl")
+    out2 = git(REPO_ROOT, "check-ignore", "-v", ".pi-session/sess.jsonl")
     assert out2.splitlines()[0].split("\t")[0].rsplit(":", 1)[-1] == ".pi-session/"
 
 
@@ -208,10 +172,10 @@ def test_worktree_with_only_coverage_json_is_clean_for_status(tmp_path):
     `git status --porcelain`, while a real leftover is still reported."""
     repo = make_repo_with_real_gitignore(tmp_path)
     (repo / "coverage.json").write_text('{"totals": {}}\n', encoding="utf-8")
-    assert git_in(repo, "status", "--porcelain") == ""
+    assert git(repo, "status", "--porcelain") == ""
     # The gate is NOT weakened: untracked source is still reported.
     (repo / "unexpected.py").write_text("x = 1\n", encoding="utf-8")
-    assert git_in(repo, "status", "--porcelain") == "?? unexpected.py"
+    assert git(repo, "status", "--porcelain") == "?? unexpected.py"
 
 
 def test_worktree_with_only_pi_loop_state_is_clean_for_status(tmp_path):
@@ -223,39 +187,22 @@ def test_worktree_with_only_pi_loop_state_is_clean_for_status(tmp_path):
     weakened: any other untracked file is still reported."""
     repo = tmp_path / "wt"
     repo.mkdir()
-
-    def git_in(*args: str) -> str:
-        result = subprocess.run(
-            ["git", *args], cwd=repo, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            raise AssertionError(
-                f"git {' '.join(args)} failed rc={result.returncode} "
-                f"stdout={result.stdout.strip()} "
-                f"stderr={result.stderr.strip()}"
-            )
-        return result.stdout.strip()
-
-    git_in("init", "-q")
-    git_in("config", "user.email", "pilot@test.local")
-    git_in("config", "user.name", "Pilot")
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "pilot@test.local")
+    git(repo, "config", "user.name", "Pilot")
     (repo / ".gitignore").write_text(
         (REPO_ROOT / ".gitignore").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     # The base commit carries the tracked .gitignore — exactly the
     # state of a new worktree created from the base SHA.
-    git_in("add", ".gitignore")
-    git_in("commit", "-q", "-m", "base")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-q", "-m", "base")
     (repo / ".pi").mkdir()
     (repo / ".pi" / "loops.json").write_text('{"loops": []}\n', encoding="utf-8")
     # Only the pi-loop state is untracked: the gate sees a clean tree.
-    assert git_in("status", "--porcelain") == ""
+    assert git(repo, "status", "--porcelain") == ""
     # Another untracked file is still reported: the dirty-worktree
     # gate is not weakened for real leftovers.
     (repo / "junk.txt").write_text("x", encoding="utf-8")
-    assert git_in("status", "--porcelain") == "?? junk.txt"
-    # The local helper fails fast on a nonzero git exit (same contract
-    # as the module-level git() helper).
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git_in("rev-parse", "no-such-ref")
+    assert git(repo, "status", "--porcelain") == "?? junk.txt"

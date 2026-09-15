@@ -6,29 +6,18 @@ These tests compare those sources instead of freezing a release snapshot.
 """
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from conftest import git
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
 DOCS_CONFIG = DOCS_DIR / "docs.json"
 RELEASE_SLUG_PATTERN = re.compile(r"^(release-v(\d+)\.(\d+)\.(\d+))$")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-
-
-def git(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 def docs_files() -> list[Path]:
@@ -86,11 +75,6 @@ def release_group_pages(language_code: str) -> list[str]:
             )
             return list(pages)
     raise AssertionError(f"{language_code} navigation has no release group")
-
-
-def test_git_helper_fails_fast_on_nonzero_exit():
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git("rev-parse", "no-such-ref")
 
 
 def test_release_group_lookup_fails_fast_when_the_release_group_is_missing(
@@ -163,12 +147,12 @@ def test_release_pages_exist_in_both_languages():
 def test_release_pages_pin_resolvable_tag_objects_and_commits():
     for slug in release_page_slugs("en"):
         version = slug.removeprefix("release-")
-        tag_object = git("rev-parse", f"refs/tags/{version}")
-        commit = git("rev-parse", f"refs/tags/{version}^{{commit}}")
-        assert git("cat-file", "-t", tag_object) == "tag", (
+        tag_object = git(REPO_ROOT, "rev-parse", f"refs/tags/{version}")
+        commit = git(REPO_ROOT, "rev-parse", f"refs/tags/{version}^{{commit}}")
+        assert git(REPO_ROOT, "cat-file", "-t", tag_object) == "tag", (
             f"{version} must be an annotated tag"
         )
-        assert git("rev-parse", f"{commit}^{{commit}}") == commit
+        assert git(REPO_ROOT, "rev-parse", f"{commit}^{{commit}}") == commit
         for path in (DOCS_DIR / f"{slug}.mdx", DOCS_DIR / "zh" / f"{slug}.mdx"):
             text = path.read_text(encoding="utf-8")
             hashes = SHA_PATTERN.findall(text)

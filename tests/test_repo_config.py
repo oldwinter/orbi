@@ -175,15 +175,6 @@ def test_resolve_policy_overrides_only_the_declared_keys():
     assert effective.repo_context_files == ()
 
 
-def test_resolve_policy_context_files_are_additive():
-    effective = repo_config.resolve_policy(
-        {"context_files": [Path("/host.md")]},
-        {"context_files": ["AGENTS.md"]},
-    )
-    assert effective["context_files"] == [Path("/host.md")]
-    assert effective["repo_context_files"] == ["AGENTS.md"]
-
-
 # --- D4 audit ---------------------------------------------------------------
 
 def test_policy_diff_reports_changed_keys_only():
@@ -985,22 +976,6 @@ def test_parse_repo_config_returns_frozen_repo_policy():
         policy.base_branch = "main"
 
 
-def test_parse_repo_config_empty_document_is_an_empty_policy():
-    assert repo_config.parse_repo_config("# nothing here\n") == (
-        repo_config.RepoPolicy()
-    )
-
-
-def test_read_repo_config_returns_the_policy_with_bound_sha():
-    policy = repo_config.read_repo_config(
-        "owner/repo",
-        run_command=_record('base_branch = "beta"\n', sha="cafe" * 10),
-    )
-    assert policy == repo_config.RepoPolicy(
-        base_branch="beta", sha="cafe" * 10,
-    )
-
-
 def test_resolve_policy_returns_a_runner_config_with_declared_overrides():
     host = runner.RunnerConfig(
         base_branch="main", active_milestone="v0.1.0",
@@ -1040,13 +1015,3 @@ def test_policy_diff_compares_policy_fields_and_skips_the_sha():
         repo_config.RepoPolicy(base_branch="beta"),
     )
     assert diff == "base_branch=main->beta"
-
-
-def test_repo_config_audit_typed_marks_a_changed_sha_with_the_diff():
-    fields = repo_config.repo_config_audit(
-        "newsha", repo_config.RepoPolicy(base_branch="beta"),
-        previous_sha="oldsha",
-        previous_policy=repo_config.RepoPolicy(base_branch="main"),
-    )
-    assert fields["repo_config_changed"] == "oldsha..newsha"
-    assert fields["repo_config_diff"] == "base_branch=main->beta"

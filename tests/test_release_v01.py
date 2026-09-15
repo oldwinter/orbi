@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RECORD = REPO_ROOT / "docs" / "release-v0.1.0.mdx"
 
@@ -37,18 +39,6 @@ PR92_MERGE_COMMIT = "f6c065e8ec7ec53d7e9fb99e6475c1bc16c2dabf"
 CORE_ISSUES = (
     75, 77, 78, 79, 82, 52, 53, 71, 73, 74, 49, 76, 81, 83,
 )
-
-
-def git(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 def is_ancestor(ancestor: str, descendant: str) -> bool:
@@ -76,11 +66,11 @@ def test_record_pins_real_tag_commit_relationship(record_text: str):
         assert sha in record_text, f"record must pin SHA {sha}"
     # The pinned objects must be real objects of this repository: the
     # tag object is a tag, the commit SHAs resolve to commits.
-    assert git("cat-file", "-t", V010_TAG_OBJECT) == "tag", (
+    assert git(REPO_ROOT, "cat-file", "-t", V010_TAG_OBJECT) == "tag", (
         "the pinned v0.1.0 tag object is not a tag object here"
     )
     for sha in (V010_COMMIT, V011_COMMIT, PR92_MERGE_COMMIT):
-        assert git("rev-parse", f"{sha}^{{commit}}") == sha, (
+        assert git(REPO_ROOT, "rev-parse", f"{sha}^{{commit}}") == sha, (
             f"the pinned SHA {sha} does not resolve to a commit"
         )
     # The real history says: v0.1.0 target is an ancestor of the
@@ -145,13 +135,6 @@ def test_record_verdict_93_verified_incomplete(record_text: str):
     assert re.search(r"verified incomplete|stays? open", line, re.IGNORECASE), (
         "#93 must be recorded as verified incomplete / stays OPEN"
     )
-
-
-def test_git_helper_fails_fast_on_nonzero_exit():
-    """The helper must fail fast (no silent swallow) when git exits
-    non-zero — the same contract as the other git smoke helpers."""
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git("rev-parse", "no-such-ref")
 
 
 def test_session_cli_contract_matches_one_real_call():

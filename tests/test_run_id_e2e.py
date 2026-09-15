@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git
+
 import orbi.runner as runner
 from seam import seam
 import orbi.journal as journal
@@ -115,18 +117,6 @@ for command in (
     subprocess.run(command, cwd=cwd, check=True, capture_output=True)
 sys.stdout.write("done")
 """
-
-
-def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"git {args} failed rc={result.returncode} "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 @pytest.fixture()
@@ -320,11 +310,6 @@ def worktree_for(clone: Path, run_id: str) -> Path:
         clone / ".worktrees"
         / f"orbi-{REPO.replace('/', '-')}-issue-{ISSUE_NUMBER}-{run_id}"
     )
-
-
-def test_git_helper_fails_fast_on_nonzero_exit(tmp_path):
-    with pytest.raises(AssertionError, match=r"git .* failed rc=128"):
-        git(tmp_path, "rev-parse", "no-such-ref")
 
 
 def test_fake_gh_rejects_unexpected_command(monkeypatch, tmp_path):

@@ -10,10 +10,29 @@ default. The preflight tests and the wiring/e2e suites stub or
 exercise the real checks explicitly (a ``monkeypatch`` always wins
 over this default).
 """
+import subprocess
+from pathlib import Path
+
 import pytest
 
 import orbi.runner as runner
 from seam import seam
+
+
+def git(repo: Path, *args: str) -> str:
+    """The one fail-fast git scaffold for the smoke/e2e suites (Issue
+    #908): a non-zero exit is an AssertionError carrying the rc, stdout
+    and stderr, never a silent pass. Guarded by
+    ``tests/test_suite_hygiene.py``."""
+    result = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"git {args} failed rc={result.returncode} "
+            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
+        )
+    return result.stdout.strip()
 
 
 @pytest.fixture(autouse=True)
