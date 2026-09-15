@@ -5331,35 +5331,22 @@ def merge_gate(worktree: Path, pr: dict, base_branch: str,
 
     Re-fetch the latest remote base, require the PR head to contain it, the PR
     to be mergeable, the remote head to still be the reviewed head, and the
-    exact head's GitHub CI checks to be completed successfully. Every state
-    is read ONCE: a pending check or an UNKNOWN mergeability is
-    not a failure but an intermediate state — the gate raises
-    `DeliveryDeferred`, the caller returns, and the next tick re-reads; a
-    failed check or a not-mergeable PR prevents the merge. Then merge with
-    `--match-head-commit` so only that exact head can land. No force push, no
-    direct push of the protected branch. The base fetch updates the shared
-    remote-tracking ref, so it runs under the base-sync lock
-    with the deployment checkout as the lock location.
+    exact head's GitHub CI checks to be completed successfully. If the base
+    advanced but GitHub reports a conflict-free PR, absorb it with a plain
+    merge and push the task branch, then read only the absorbed head's CI gate
+    again; this does not start another review round. Every state is read once
+    per gate pass: a pending check or an UNKNOWN mergeability is not a failure
+    but an intermediate state — the gate raises `DeliveryDeferred`, the caller
+    returns, and the next tick re-reads. A failed check or a not-mergeable PR
+    prevents the merge. Then merge with `--match-head-commit` so only that
+    exact head can land. No force push, no direct push of the protected branch.
+    The base fetch updates the shared remote-tracking ref, so it runs under the
+    base-sync lock with the deployment checkout as the lock location.
     """
     fetch_base_ref(repo_dir, base_branch, cwd=worktree)
-    freshness = assess_base_freshness(
-        worktree, base_branch, head=pr["head_oid"],
-    )
-    if freshness is BaseFreshness.ABSORBABLE:
-        base_sha = run_command(
-            ["git", "rev-parse", f"origin/{base_branch}"], cwd=worktree,
-        )
-        event(
-            "merge_gate_behind_base", level=logging.ERROR,
-            base_branch=base_branch, base_sha=base_sha,
-            pr=pr["number"], head=pr["head_oid"],
-            freshness=freshness.value,
-        )
-        raise RecoverableMergeGateError(
-            f"PR #{pr['number']} head {pr['head_oid']} is behind latest "
-            f"remote base origin/{base_branch} ({base_sha}); absorb the "
-            "latest base, rerun tests and review, then retry"
-        )
+    # Read GitHub mergeability before rejecting a stale head.  A clean PR can
+    # absorb the base here without changing its reviewed diff; a conflicted
+    # PR still follows the existing fix-needed path below.
     state = pr_view(pr["number"],
                     "state,mergeable,headRefOid,statusCheckRollup",
                     cwd=worktree)
@@ -5382,22 +5369,73 @@ def merge_gate(worktree: Path, pr: dict, base_branch: str,
         )
     freshness = assess_base_freshness(
         worktree, base_branch, head=pr["head_oid"],
-        reviewed_head=state.get("headRefOid"), mergeable=mergeable,
+        reviewed_head=state.get("headRefOid"),
+        # UNKNOWN is transient, not evidence of a merge conflict. It must
+        # reach the normal deferred mergeability path rather than absorb.
+        mergeable=mergeable if mergeable == "MERGEABLE" else None,
     )
-    if freshness is BaseFreshness.ABSORBABLE:
+    if freshness is BaseFreshness.ABSORBABLE and mergeable == "MERGEABLE":
         base_sha = run_command(
             ["git", "rev-parse", f"origin/{base_branch}"], cwd=worktree,
         )
-        event(
-            "merge_gate_behind_base", level=logging.ERROR,
-            base_branch=base_branch, base_sha=base_sha,
-            pr=pr["number"], head=pr["head_oid"],
-            freshness=freshness.value,
+        try:
+            run_command(["git", "merge", f"origin/{base_branch}"], cwd=worktree)
+        except subprocess.CalledProcessError as exc:
+            run_command(["git", "merge", "--abort"], cwd=worktree)
+            event(
+                "base_merge_conflict", level=logging.ERROR,
+                base_branch=base_branch, base_sha=base_sha,
+                pr=pr["number"], head=pr["head_oid"],
+                returncode=exc.returncode,
+                stderr=(exc.stderr or "").strip(),
+            )
+            raise RecoverableMergeGateError(
+                f"PR #{pr['number']} cannot absorb origin/{base_branch} "
+                f"({base_sha}); resolve the merge conflict and retry"
+            ) from None
+        absorbed_head = run_command(["git", "rev-parse", "HEAD"], cwd=worktree)
+        run_git_network_command(
+            ["git", "push", "origin", f"HEAD:{pr['head_ref']}"],
+            cwd=worktree,
         )
-        raise RecoverableMergeGateError(
-            f"PR #{pr['number']} head {pr['head_oid']} is behind latest "
-            f"remote base origin/{base_branch} ({base_sha}); absorb the "
-            "latest base, rerun tests and review, then retry"
+        remote_head = run_command(
+            ["git", "rev-parse", f"origin/{pr['head_ref']}"], cwd=worktree,
+        )
+        if remote_head != absorbed_head:
+            raise RuntimeError(
+                f"remote head {remote_head} does not match absorbed head "
+                f"{absorbed_head} after push origin {pr['head_ref']}"
+            )
+        event(
+            "base_absorbed", base_branch=base_branch,
+            base_sha=base_sha, pr=pr["number"],
+            old_head=pr["head_oid"], head=absorbed_head,
+        )
+        pr = {**pr, "head_oid": absorbed_head}
+        # The push starts a new CI run. Read the state once more, but do not
+        # start another review round: only the absorbed head's CI gate is
+        # needed before the exact-head merge below.
+        state = pr_view(pr["number"],
+                        "state,mergeable,headRefOid,statusCheckRollup",
+                        cwd=worktree)
+        mergeable = state.get("mergeable")
+        if state.get("headRefOid") != absorbed_head:
+            raise RuntimeError(
+                f"PR #{pr['number']} head moved after base absorb "
+                f"(absorbed={absorbed_head} remote={state.get('headRefOid')})"
+            )
+        if mergeable not in ("MERGEABLE", "UNKNOWN"):
+            event(
+                "merge_gate_not_mergeable", level=logging.ERROR,
+                pr=pr["number"], mergeable=mergeable,
+            )
+            raise RecoverableMergeGateError(
+                f"PR #{pr['number']} is not mergeable (mergeable={mergeable}); "
+                "resolve conflicts and retry"
+            )
+        freshness = assess_base_freshness(
+            worktree, base_branch, head=absorbed_head,
+            reviewed_head=absorbed_head,
         )
     if freshness is BaseFreshness.CONFLICTED:
         event(
