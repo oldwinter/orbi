@@ -725,8 +725,8 @@ is defined in [Getting started](/getting-started) step 2.
 `cli_source: DRIFT` with the structured `cli_source_drift` line: actual
 import path, expected deploy_home, the exact editable reinstall command),
 and `orbi setup` verifies or reinstalls it. The expected source is the
-**deployment home** (`deploy_home`, defaulting to `repo_dir` — Issue
-#330): in the external single-repo mode a clean `cli_source` means the
+**deployment home** (`deploy_home`, defaulting to `repo_dir`,
+Issue #330): in the external single-repo mode a clean `cli_source` means the
 editable install imports from the orbi checkout, even though the
 delivery checkout is a foreign repo X. The checkout root
 carries no `orbi.py`: a flat file named like the package would

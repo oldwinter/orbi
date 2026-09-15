@@ -488,20 +488,30 @@ def test_prompt_review_md_reads_the_run_artifacts_from_the_run_dir():
     )
 
 
-def test_agents_md_tdd_section_keeps_the_run_dir_coverage_commands():
+def test_agents_md_tdd_section_keeps_the_run_dir_coverage_rule():
+    """Issue #302 once pinned the run-dir coverage COMMANDS inside
+    AGENTS.md; Issue #910 made docs/testing.mdx their single source
+    (enforced by tests/test_docs_single_source.py), so the TDD section
+    keeps the run-dir RULE and the docs pointer — never the copied
+    command block."""
     text = _text(CONTRACT)
     tdd = text.split("## tdd and coverage", 1)
     assert len(tdd) == 2, "AGENTS.md is missing the TDD section"
     section = tdd[1].split("## ui work", 1)[0]
     missing = _missing(section, (
-        # The official COVERAGE_FILE env var points the data file into
-        # the run dir; the global gate takes the data file by argv.
-        ("tdd-coverage-file", "coverage_file=.orbi/.coverage"),
-        ("tdd-gate-data-file", "tools/coverage_gate.py .orbi/.coverage"),
+        # The run-dir rule (the what) stays in the contract mirror.
+        ("tdd-run-dir-rule",
+         "the coverage data file lives in the excluded run dir"),
+        # The commands (the how) are defined once in docs/testing.mdx.
+        ("tdd-docs-pointer", "docs/testing.mdx"),
     ))
     assert not missing, (
-        f"AGENTS.md TDD section is missing the run-dir coverage commands "
+        f"AGENTS.md TDD section is missing the run-dir coverage rule "
         f"(Issue #302): {missing}"
+    )
+    assert "coverage_file=.orbi/.coverage" not in section, (
+        "AGENTS.md restates the coverage contract commands — they live "
+        "once in docs/testing.mdx (Issue #910)"
     )
 
 
