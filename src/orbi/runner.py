@@ -6525,11 +6525,26 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         ),
     )
     try:
-        # A config built by load_config always carries both keys (the
-        # deploy home defaults to the repo dir); a hand-built config
-        # that leaves `engine_source_track` unset keeps the pre-#535
-        # sync behavior (the field default is None).
+        # A config built by load_config always carries both paths (the
+        # deploy home defaults to the repo dir). A split layout does not
+        # use the delivery checkout for the next tick; same-checkout
+        # configs retain the existing engine-channel guard below.
         if (
+            # ``Path(".")`` is the placeholder on hand-built partial
+            # configs; only load_config's resolved path represents an
+            # explicitly configured split deployment.
+            config.deploy_home != Path(".")
+            and config.repo_dir != config.deploy_home
+        ):
+            # The delivery checkout is not the engine source in a split
+            # deployment layout. The next tick loads code from deploy_home,
+            # so syncing this delivery checkout has no runtime effect.
+            event(
+                "base_checkout_sync_skipped", repo_dir=config.repo_dir,
+                base_branch=base_branch,
+                reason="repo_dir_is_not_deploy_home",
+            )
+        elif (
             config.engine_source_track is not None
             and config.deploy_home is not None
             and config.repo_dir == config.deploy_home

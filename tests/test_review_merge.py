@@ -1728,7 +1728,10 @@ def _pr():
 
 
 def _review_merge_config(tmp_path):
-    return runner.RunnerConfig(repo_dir=tmp_path, base_branch="main", base_sha="b1", run_id="a1b2c3d4")
+    return runner.RunnerConfig(
+        repo_dir=tmp_path, deploy_home=tmp_path, base_branch="main",
+        base_sha="b1", run_id="a1b2c3d4",
+    )
 
 
 def _seed_run_state(worktree: Path, **extra) -> None:
@@ -1896,6 +1899,40 @@ def test_review_and_merge_skips_checkout_sync_for_a_locked_engine_source(
     )
     assert merged is True
     assert "sync" not in calls
+
+
+def test_review_and_merge_skips_checkout_sync_for_split_deployment(
+        monkeypatch, tmp_path, caplog):
+    """A delivery checkout separate from deploy_home is not the checkout
+    loaded by the next timer tick, so merge closeout must not sync it."""
+    calls = []
+    caplog.set_level("INFO")
+    monkeypatch.setattr(seam, "freeze_pr", lambda *a, **k: _pr())
+    monkeypatch.setattr(seam, "run_review", lambda *a, **k: _pass_verdict_text())
+    monkeypatch.setattr(
+        seam, "merge_gate", lambda *a, **k: {**_pr(), "merged": True},
+    )
+    monkeypatch.setattr(
+        seam, "confirm_merged",
+        lambda *a, **k: {"state": "MERGED", "merge_commit": "m1"},
+    )
+    monkeypatch.setattr(
+        seam, "sync_base_checkout", lambda *a, **k: calls.append("sync"),
+    )
+    monkeypatch.setattr(seam, "edit_issue", lambda *a, **k: None)
+    monkeypatch.setattr(seam, "comment_issue", lambda *a, **k: None)
+    make_fake_gh(monkeypatch)
+    config = dataclasses.replace(
+        _review_merge_config(tmp_path), deploy_home=tmp_path / "deploy",
+    )
+
+    assert runner.review_and_merge_if_clean(
+        tmp_path, "branch", "main", config, "owner/repo", 4,
+        title="Review task", priority="normal", scene=_scene(),
+    ) is True
+    assert calls == []
+    assert "base_checkout_sync_skipped" in caplog.text
+    assert "reason=repo_dir_is_not_deploy_home" in caplog.text
 
 
 def test_review_and_merge_fix_round_clears_live_delivery_labels(
