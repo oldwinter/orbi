@@ -6032,10 +6032,74 @@ def _round_scene_block(resumed: dict, pr_url: str, round: int) -> str:
     ))
 
 
+def _shorten_review_shas(text: str) -> str:
+    """Keep full object IDs in the scene, but readable IDs in prose."""
+    return re.sub(
+        r"(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])",
+        lambda match: match.group(1)[:10], text, flags=re.IGNORECASE,
+    )
+
+
+def _review_findings_markdown(findings: list[dict]) -> str:
+    """Render the human part of a review verdict, never as JSON."""
+    items = []
+    for finding in findings:
+        items.append(
+            "- **Level:** " + str(finding.get("level", "")) + "\n"
+            "  **Location:** " + str(finding.get("location", "")) + "\n"
+            "  **Note:** " + str(finding.get("note", "")) + "\n"
+            "  **Fix:** " + str(finding.get("fix", ""))
+        )
+    return "\n".join(items)
+
+
+def review_round_comment_body(
+    marker: str, round: int, pr_number: int, blockers: int, majors: int,
+    findings: list[dict], scene_block: str, *,
+    previous_comments: list[dict] | None = None,
+    messages: list[str] | None = None,
+) -> str:
+    """Build a readable, resumable review-round comment.
+
+    The first human line is deliberately stable: ``review_rounds_so_far``
+    counts it. ``scene_block`` is appended untouched because it is the
+    machine-readable recovery protocol.
+    """
+    rendered = _review_findings_markdown(findings)
+    same_as = None
+    if rendered and previous_comments:
+        previous_prefix = f"Orbi review round {round - 1} for PR #{pr_number}:"
+        for comment in previous_comments:
+            if not _comment_is_trusted(comment):
+                continue
+            body = comment.get("body", "")
+            if (marker in body and previous_prefix in body
+                    and rendered in body):
+                same_as = round - 1
+                break
+    lines = [
+        f"{marker}",
+        f"Orbi review round {round} for PR #{pr_number}: "
+        f"{blockers} blocker(s), {majors} major(s).",
+    ]
+    if messages:
+        lines.extend(["", "\n\n".join(
+            _shorten_review_shas(message) for message in messages
+        )])
+    if rendered:
+        lines.extend(["", "### Findings", ""])
+        if same_as is not None:
+            lines.append(f"Findings are the same as round {same_as}.")
+            lines.append("")
+        lines.append(_shorten_review_shas(rendered))
+    return "\n".join(lines) + "\n" + scene_block
+
+
 def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
                               config: RunnerConfig, source_repo: str,
                               number: int, title: str, priority: str,
-                              *, scene: dict) -> bool:
+                              *, scene: dict,
+                              previous_comments: list[dict] | None = None) -> bool:
     """Run one independent review round; merge when the verdict is clean.
 
     `title` is the issue's GitHub title: the review
@@ -6218,15 +6282,11 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         event(
             "review_findings_unfixed", pr=pr["number"], round=round,
         )
-        body = (
-            f"{marker}\n"
-            f"Orbi review round {round} for PR #{pr['number']}: "
-            f"{verdict['blockers']} blocker(s), {verdict['majors']} "
-            "major(s). Findings: "
-            + json.dumps(verdict["findings"], ensure_ascii=False)
-            # The completed round advances the scene's budget counter:
-            # the next resume reads it from this comment.
-            + "\n" + _round_scene_block(scene, pr["url"], round)
+        body = review_round_comment_body(
+            marker, round, pr["number"], verdict["blockers"],
+            verdict["majors"], verdict["findings"],
+            _round_scene_block(scene, pr["url"], round),
+            previous_comments=previous_comments,
         )
         comment_issue(number, repo=source_repo, body=body)
         comment_pr(pr["number"], repo=source_repo, body=body)
@@ -6343,29 +6403,24 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
                 "stating the attempted-and-abandoned absorb with the "
                 "concrete reason, never an unrelated push"
             )
-        body = (
-            f"{marker}\n"
-            # Both gate-failure scenes carry the counted `Orbi review
-            # round` prefix and the updated scene block:
-            # the counted comment is the round budget's
-            # carrier, so a persistently red CI still consumes the
-            # budget and exhausts into the bounded human decision
-            # instead of looping forever.
-            + (f"Orbi review round {round} for PR #{pr['number']}: "
-               "CI merge gate blocked: "
-               f"{message} (run_id={config.run_id})" if ci_failure else
-               # Issue #879: the two recoverable gate scenes are
-               # distinguishable — the exception message names the
-               # concrete state (behind-base with the origin/<base> SHA,
-               # or a conflict with the actual mergeable value), never
-               # one ambiguous sentence for both.
-               f"Orbi review round {round} for PR #{pr['number']}: "
-               f"merge gate blocked: {message} (run_id={config.run_id}); "
-               f"the next review session merges the latest "
-               f"origin/{base_branch} into the branch in-session, resolves "
-               "conflicts, and reruns the full test suite"
-               + violation)
-        ) + "\n" + _round_scene_block(scene, pr["url"], round)
+        gate_message = (
+            f"CI merge gate blocked: {message} (run_id={config.run_id})"
+            if ci_failure else
+            f"Merge gate blocked: {message} (run_id={config.run_id})"
+        )
+        next_step = (
+            f"The next review session merges the latest origin/{base_branch} "
+            "into the branch in-session, resolves conflicts, and reruns "
+            "the full test suite"
+        )
+        messages = [gate_message, next_step]
+        if violation:
+            messages.append(violation.strip())
+        body = review_round_comment_body(
+            marker, round, pr["number"], 0, 0, [],
+            _round_scene_block(scene, pr["url"], round),
+            messages=messages,
+        )
         # CI evidence is best-effort observability.  A GitHub comment
         # outage must not prevent the required ai-fix-needed transition.
         try:
@@ -8353,9 +8408,8 @@ def _run_review_round(
     branch = None
     try:
         try:
-            scene = resume_scene(
-                issue_comments(number, repo=source_repo),
-            )
+            comments = issue_comments(number, repo=source_repo)
+            scene = resume_scene(comments)
         except ValueError as scene_exc:
             # Without the trusted scene the runner
             # cannot derive run_id, branch, worktree or PR and
@@ -8431,10 +8485,19 @@ def _run_review_round(
             base_sha=scene["base_sha"],
             run_id=scene["run_id"],
         )
+        review_kwargs = {}
+        if any(
+            isinstance(comment.get("body"), str)
+            and any(line.startswith("Orbi review round ")
+                    for line in comment["body"].splitlines())
+            for comment in comments
+        ):
+            review_kwargs["previous_comments"] = comments
         merged = review_and_merge_if_clean(
             worktree, branch, config.base_branch,
             review_config, source_repo, number,
             title=title, priority=priority, scene=scene,
+            **review_kwargs,
         )
     except Exception as exc:
         detail = _failure_detail(exc)
