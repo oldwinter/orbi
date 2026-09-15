@@ -1,1 +1,28 @@
-PLACEHOLDER_LOAD_FROM_FILE
+# 快速开始
+
+这一页带你从全新 clone 走到一次完整验证过的交付：前提、模型
+provider、一次性 setup，以及一个最小 smoke——证明完整闭环：GitHub
+Issue 被领取、实现、测试、开 PR、独立审查、合并。这里的所有命令在
+任何 clone 路径下都能工作——不依赖任何特定机器布局。
+
+
+## 一键安装
+
+新用户只需运行安装器；它会安装 CLI、生成配置并进入交互式 setup：
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/orbi-build/orbi/main/install.sh | bash
+```
+
+担心 `curl | bash` 时可先下载、检查，再执行：
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/orbi-build/orbi/main/install.sh -o install.sh
+less install.sh
+bash install.sh
+```
+
+安装器需要 `git`、`gh` 和调度器 user session（Linux 为 systemd，macOS
+为 launchd）；uv 会在需要时提供 Python 3.14。
+手动安装时，`orbi setup` 找不到 `orbi.toml` 会生成一个：相邻存在
+`.orbi.example.toml` 就用它，否则用 CLI 包内自带的示例——且不会覆盖已有配置。
