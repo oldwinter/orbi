@@ -38,6 +38,19 @@ def test_stable_branch_exists_reads_the_remote_head(fake_git):
     ) is False
 
 
+def test_fake_git_rejects_invalid_pull_fetches(fake_git):
+    with pytest.raises(subprocess.CalledProcessError):
+        fake_git([
+            "git", "fetch", "origin",
+            "+refs/pull/592/head:refs/remotes/origin/fix/outer",
+        ])
+    with pytest.raises(subprocess.CalledProcessError):
+        fake_git(["git", "fetch", "origin"])
+    assert gitops.stable_branch_exists(
+        fake_git.repo_dir, "orbi/owner-repo-issue-8"
+    ) is False
+
+
 def test_create_worktree_creates_the_branch_from_the_frozen_base(fake_git):
     base = fake_git.base_sha
     path = gitops.create_worktree(
