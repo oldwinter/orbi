@@ -623,7 +623,7 @@ def test_assess_base_freshness_moved_reviewed_head_is_conflicted(
 def _merge_gate_fake(pr_state="MERGEABLE", head_oid="h1",
                      check_runs=None, base_check_runs=None):
     def fake_run(command, **kwargs):
-        if command[:2] == ["gh", "pr"] and "view" in command:
+        if command[0] == "gh" and command[1] == "pr" and "view" in command:
             return json.dumps({
                 "number": 4, "url": "u", "state": "OPEN",
                 "mergeable": pr_state, "headRefOid": head_oid,
@@ -659,7 +659,7 @@ def test_merge_gate_rejects_failed_github_ci(monkeypatch, tmp_path):
 def test_merge_gate_rejects_preexisting_failed_ci_as_unrecoverable(
         monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
-        if command[:2] == ["gh", "pr"] and "view" in command:
+        if command[0] == "gh" and command[1] == "pr" and "view" in command:
             return json.dumps({
                 "state": "OPEN", "mergeable": "MERGEABLE", "headRefOid": "h1",
                 "statusCheckRollup": [{
@@ -817,7 +817,7 @@ def test_merge_gate_reads_the_state_once(monkeypatch, tmp_path):
     views = []
 
     def fake_run(command, **kwargs):
-        if command[:2] == ["gh", "pr"] and "view" in command:
+        if command[0] == "gh" and command[1] == "pr" and "view" in command:
             views.append(command)
             return json.dumps({
                 "state": "OPEN", "mergeable": "MERGEABLE", "headRefOid": "h1",
@@ -835,6 +835,95 @@ def test_merge_gate_reads_the_state_once(monkeypatch, tmp_path):
                                      "head_ref": "h", "head_oid": "h1"},
                           "main", repo_dir=tmp_path)
     assert len(views) == 1
+
+
+def _absorb_merge_command_fake(states, remote_head="h2"):
+    """Provide command results for the post-review base-absorb branches."""
+    views = iter(states)
+
+    def fake_run(command, **kwargs):
+        if command[0:3] == ["gh", "pr", "view"]:
+            return json.dumps(next(views))
+        if command[0:3] == ["git", "merge-base", "--is-ancestor"]:
+            raise subprocess.CalledProcessError(1, command, stderr="behind")
+        if command[0:3] == ["git", "rev-parse", "origin/main"]:
+            return "base-2"
+        if command[0:3] == ["git", "merge", "origin/main"]:
+            return ""
+        if command[0:3] == ["git", "rev-parse", "HEAD"]:
+            return "h2"
+        if command[0:2] == ["git", "push"]:
+            return ""
+        if command[0:3] == ["git", "rev-parse", "origin/h"]:
+            return remote_head
+        return ""
+    return fake_run
+
+
+def _absorb_pr_state(head, mergeable="MERGEABLE"):
+    return {"state": "OPEN", "mergeable": mergeable, "headRefOid": head,
+            "statusCheckRollup": []}
+
+
+def test_absorb_fake_dispatch_covers_command_results():
+    fake = _absorb_merge_command_fake([_absorb_pr_state("h1")])
+    assert json.loads(fake(["gh", "pr", "view"]))["headRefOid"] == "h1"
+    with pytest.raises(subprocess.CalledProcessError):
+        fake(["git", "merge-base", "--is-ancestor"])
+    assert fake(["git", "rev-parse", "origin/main"]) == "base-2"
+    assert fake(["git", "merge", "origin/main"]) == ""
+    assert fake(["git", "rev-parse", "HEAD"]) == "h2"
+    assert fake(["git", "push"]) == ""
+    assert fake(["git", "rev-parse", "origin/h"]) == "h2"
+    assert fake(["git", "status"]) == ""
+
+
+def test_merge_gate_absorb_remote_head_mismatch_is_fail_fast(monkeypatch, tmp_path):
+    monkeypatch.setattr("orbi.runner.fetch_base_ref", lambda *args, **kwargs: None)
+    monkeypatch.setattr("orbi.runner.assess_base_freshness",
+                        lambda _w, _b, *, head, **_k:
+                        runner.BaseFreshness.ABSORBABLE if head == "h1"
+                        else runner.BaseFreshness.FRESH)
+    monkeypatch.setattr(seam, "run_command",
+                        _absorb_merge_command_fake([_absorb_pr_state("h1")],
+                                                    remote_head="other"))
+    with pytest.raises(RuntimeError, match="does not match absorbed head"):
+        runner.merge_gate(tmp_path, {"number": 4, "head_oid": "h1",
+                                     "head_ref": "h", "base_oid": "b1"},
+                          "main", repo_dir=tmp_path)
+
+
+def test_merge_gate_absorb_detects_head_moved_after_push(monkeypatch, tmp_path):
+    monkeypatch.setattr("orbi.runner.fetch_base_ref", lambda *args, **kwargs: None)
+    monkeypatch.setattr("orbi.runner.assess_base_freshness",
+                        lambda _w, _b, *, head, **_k:
+                        runner.BaseFreshness.ABSORBABLE if head == "h1"
+                        else runner.BaseFreshness.FRESH)
+    monkeypatch.setattr(seam, "run_command",
+                        _absorb_merge_command_fake([
+                            _absorb_pr_state("h1"), _absorb_pr_state("other"),
+                        ]))
+    with pytest.raises(RuntimeError, match="head moved after base absorb"):
+        runner.merge_gate(tmp_path, {"number": 4, "head_oid": "h1",
+                                     "head_ref": "h", "base_oid": "b1"},
+                          "main", repo_dir=tmp_path)
+
+
+def test_merge_gate_absorb_rejects_newly_dirty_pr(monkeypatch, tmp_path):
+    monkeypatch.setattr("orbi.runner.fetch_base_ref", lambda *args, **kwargs: None)
+    monkeypatch.setattr("orbi.runner.assess_base_freshness",
+                        lambda _w, _b, *, head, **_k:
+                        runner.BaseFreshness.ABSORBABLE if head == "h1"
+                        else runner.BaseFreshness.FRESH)
+    monkeypatch.setattr(seam, "run_command",
+                        _absorb_merge_command_fake([
+                            _absorb_pr_state("h1"),
+                            _absorb_pr_state("h2", mergeable="DIRTY"),
+                        ]))
+    with pytest.raises(runner.RecoverableMergeGateError, match="not mergeable"):
+        runner.merge_gate(tmp_path, {"number": 4, "head_oid": "h1",
+                                     "head_ref": "h", "base_oid": "b1"},
+                          "main", repo_dir=tmp_path)
 
 
 def test_merge_gate_without_ci_proceeds_to_mergeable_gate(monkeypatch, tmp_path):
@@ -910,6 +999,11 @@ def test_merge_gate_reraises_merge_base_errors(monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
         if command[:3] == ["git", "merge-base", "--is-ancestor"]:
             raise subprocess.CalledProcessError(128, command, stderr="bad ref")
+        if command[0] == "gh" and command[1] == "pr" and "view" in command:
+            return json.dumps({
+                "state": "OPEN", "mergeable": "MERGEABLE",
+                "headRefOid": "h1", "statusCheckRollup": [],
+            })
         return ""
 
     monkeypatch.setattr(seam, "run_command", fake_run)
@@ -921,44 +1015,26 @@ def test_merge_gate_reraises_merge_base_errors(monkeypatch, tmp_path):
     assert excinfo.value.returncode == 128
 
 
-def test_merge_gate_rejects_head_behind_latest_base(monkeypatch, tmp_path, caplog):
+def test_merge_gate_behind_conflicted_pr_remains_recoverable(
+        monkeypatch, tmp_path, caplog):
     def fake_run(command, **kwargs):
         if command[:3] == ["git", "merge-base", "--is-ancestor"]:
             raise subprocess.CalledProcessError(1, command, stderr="not ancestor")
+        if command[0] == "gh" and command[1] == "pr" and "view" in command:
+            return json.dumps({
+                "state": "OPEN", "mergeable": "DIRTY", "headRefOid": "h1",
+                "statusCheckRollup": [],
+            })
         return ""
     monkeypatch.setattr(seam, "run_command", fake_run)
     with caplog.at_level("ERROR"), pytest.raises(
-        runner.RecoverableMergeGateError, match="behind latest remote base",
+        runner.RecoverableMergeGateError, match="not mergeable",
     ):
         runner.merge_gate(tmp_path, {"number": 4, "url": "u", "base_ref": "main",
                                      "base_oid": "b1", "head_ref": "h",
                                      "head_oid": "h1"}, "main",
                           repo_dir=tmp_path)
-    assert "base_branch=main" in caplog.text
-
-
-def test_merge_gate_rechecks_base_after_pr_read(monkeypatch, tmp_path):
-    """A base update between the initial probe and PR read must not merge."""
-    answers = iter([True, False])
-
-    def fake_run(command, **kwargs):
-        if (command[0] == "git" and command[1] == "merge-base"
-                and command[2] == "--is-ancestor"):
-            if next(answers):
-                return ""
-            raise subprocess.CalledProcessError(1, command, stderr="behind")
-        if (command[0] == "git" and command[1] == "rev-parse"
-                and command[2] == "origin/main"):
-            return "base-2"
-        return _merge_gate_fake()(command, **kwargs)
-
-    monkeypatch.setattr(seam, "run_command", fake_run)
-    with pytest.raises(runner.RecoverableMergeGateError, match="behind latest remote base"):
-        runner.merge_gate(
-            tmp_path, {"number": 4, "url": "u", "base_ref": "main",
-                       "base_oid": "b1", "head_ref": "h", "head_oid": "h1"},
-            "main", repo_dir=tmp_path,
-        )
+    assert "merge_gate_not_mergeable" in caplog.text
 
 
 def test_merge_gate_defers_when_ci_pending(monkeypatch, tmp_path, caplog):
@@ -1016,7 +1092,7 @@ def test_merge_gate_rejects_head_that_moved_since_review(monkeypatch, tmp_path):
 
 def test_confirm_merged_accepts_merged_pr_on_origin_main(monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
-        if command[:2] == ["gh", "pr"] and "view" in command:
+        if command[0] == "gh" and command[1] == "pr" and "view" in command:
             return json.dumps({
                 "number": 4, "url": "u", "state": "MERGED",
                 "mergedAt": "2026-08-25T00:00:00Z",
@@ -1060,7 +1136,7 @@ def test_confirm_merged_fetches_under_the_base_sync_lock(
     def fake_run(command, **kwargs):
         if command[:3] == ["git", "fetch", "origin"]:
             return spy(command, **kwargs)
-        if command[:2] == ["gh", "pr"] and "view" in command:
+        if command[0] == "gh" and command[1] == "pr" and "view" in command:
             return json.dumps({
                 "number": 4, "url": "u", "state": "MERGED",
                 "mergedAt": "2026-08-25T00:00:00Z",
@@ -1098,7 +1174,7 @@ def test_confirm_merged_rejects_merge_commit_missing_from_origin_main(
     def fake_run(command, **kwargs):
         if command[:3] == ["git", "merge-base", "--is-ancestor"]:
             raise subprocess.CalledProcessError(1, command, stderr="not ancestor")
-        if command[:2] == ["gh", "pr"] and "view" in command:
+        if command[0] == "gh" and command[1] == "pr" and "view" in command:
             return json.dumps({
                 "number": 4, "url": "u", "state": "MERGED",
                 "mergedAt": "2026-08-25T00:00:00Z",
