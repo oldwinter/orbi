@@ -155,6 +155,9 @@ def test_ci_workflow_checkout_fetches_all_tags_without_full_history():
     assert re.search(r"\btimeout\s+\d+\s+git fetch\b", tag_fetches[0]), (
         "the tag fetch must be bounded"
     )
+    assert "refs/heads/main:refs/remotes/origin/main" in tag_fetches[0], (
+        "the diff coverage gate requires the origin/main base ref"
+    )
 
 
 def test_workflows_use_node_24_compatible_actions():

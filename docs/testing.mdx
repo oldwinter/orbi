@@ -63,8 +63,9 @@ declares its own environment — the CI toolchain belongs to ci.yml, not
 to the repository (Issue #569).
 
 The checkout keeps the default shallow clone and adds `fetch-tags: true`,
-then explicitly fetches `+refs/tags/*:refs/tags/*` with a bounded command
-(all tag refs, even at fetch-depth 1): the release docs tests
+then explicitly fetches the base ref and
+`+refs/tags/*:refs/tags/*` with a bounded command (all tag refs, even at
+fetch-depth 1): the release docs tests
 (`tests/test_docs_releases.py`) verify every released tag's docs page
 against the real tag objects with `git rev-parse` / `git cat-file`,
 which the default `--no-tags` fetch would hide (Issue #126). The
