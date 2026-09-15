@@ -865,6 +865,19 @@ def _absorb_pr_state(head, mergeable="MERGEABLE"):
             "statusCheckRollup": []}
 
 
+def test_absorb_fake_dispatch_covers_command_results():
+    fake = _absorb_merge_command_fake([_absorb_pr_state("h1")])
+    assert json.loads(fake(["gh", "pr", "view"]))["headRefOid"] == "h1"
+    with pytest.raises(subprocess.CalledProcessError):
+        fake(["git", "merge-base", "--is-ancestor"])
+    assert fake(["git", "rev-parse", "origin/main"]) == "base-2"
+    assert fake(["git", "merge", "origin/main"]) == ""
+    assert fake(["git", "rev-parse", "HEAD"]) == "h2"
+    assert fake(["git", "push"]) == ""
+    assert fake(["git", "rev-parse", "origin/h"]) == "h2"
+    assert fake(["git", "status"]) == ""
+
+
 def test_merge_gate_absorb_remote_head_mismatch_is_fail_fast(monkeypatch, tmp_path):
     monkeypatch.setattr("orbi.runner.fetch_base_ref", lambda *args, **kwargs: None)
     monkeypatch.setattr("orbi.runner.assess_base_freshness",
