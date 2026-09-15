@@ -33,12 +33,12 @@ uv tool install --force --reinstall --editable --python python3 .  # 兼容的�
 ```
 
 只想要 CLI 本体？它已发布到 PyPI：[`orbi-cli`](https://pypi.org/project/orbi-cli/)
-（当前版本 0.5.6，要求 Python ≥ 3.14；安装后的命令仍是 `orbi`）：
+（当前版本 0.5.7，要求 Python ≥ 3.14；安装后的命令仍是 `orbi`）：
 
 ```bash
 uv tool install orbi-cli  # 隔离的 tool 安装；系统 Python 过旧时（如 Ubuntu 24.04 的 3.12）加 --python 3.14，让 uv 自动供应兼容解释器
 pip install orbi-cli      # 或在已激活的 Python >= 3.14 环境里
-orbi --version            # → orbi 0.5.6
+orbi --version            # → orbi 0.5.7
 ```
 
 卸载用 `uv tool uninstall orbi-cli`。要运行 Orbi 本身（而不仅是 CLI），用
