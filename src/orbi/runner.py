@@ -6492,7 +6492,10 @@ def review_and_merge_if_clean(worktree: Path, branch: str, base_branch: str,
         # use the delivery checkout for the next tick; same-checkout
         # configs retain the existing engine-channel guard below.
         if (
-            config.deploy_home is not None
+            # ``Path(".")`` is the placeholder on hand-built partial
+            # configs; only load_config's resolved path represents an
+            # explicitly configured split deployment.
+            config.deploy_home != Path(".")
             and config.repo_dir != config.deploy_home
         ):
             # The delivery checkout is not the engine source in a split
