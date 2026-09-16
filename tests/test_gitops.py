@@ -177,6 +177,7 @@ def test_create_worktree_fork_takeover_fetches_pull_head_ref(
         "git", "fetch", "origin",
         "+refs/pull/592/head:refs/remotes/origin/fix/outer",
     ]
+    assert len(commands[0]) == 4
     assert commands[-1][-1] == "origin/fix/outer"
 
 
