@@ -25,15 +25,22 @@ from orbi.journal import JOURNAL_EVENTS, event
 # runner.py is too large to land here. Snapshot-read failures are
 # best-effort prose, not a kind token, so the #21 wrap would otherwise
 # treat the English word ``activity`` as the live high-frequency kind.
-# Map those exact format strings onto the registered kind that
-# progress.py already emits.
+# Failure-comment publishes are the same shape: spaced prose for a
+# registered kind the wrap would otherwise miss. Map those exact
+# format strings onto the kinds progress.py / this module register.
 JOURNAL_EVENTS.setdefault(
     "activity_snapshot_failed",
     "reading the live Pi activity snapshot failed (best-effort; the task continues)",
 )
+JOURNAL_EVENTS.setdefault(
+    "failure_reporting_failed",
+    "publishing the delivery failure comment failed (the original failure still stands)",
+)
 _PROSE_TO_KIND = {
     "stop scene activity snapshot failed": "activity_snapshot_failed",
     "issue=%s activity scene failed": "activity_snapshot_failed",
+    "issue=%s failure reporting failed": "failure_reporting_failed",
+    "issue=%s ticket-only failure reporting failed": "failure_reporting_failed",
 }
 
 
@@ -75,11 +82,12 @@ def registered_kind_and_fields(msg: object, args: tuple) -> tuple[str, dict] | N
     """Return ``(kind, fields)`` when ``msg`` carries a registered kind.
 
     Exact prose aliases in ``_PROSE_TO_KIND`` (stop-scene and failure-
-    scene snapshot reads in ``runner.py``) map onto a registered kind
-    first, so the English word ``activity`` is not treated as the live
-    snapshot kind. Remaining prose (``issue=%s failed``, ``failure
-    history read failed``) has no registered kind as a whole token
-    and is left alone.
+    scene snapshot reads, plus failure-comment publishes, in
+    ``runner.py``) map onto a registered kind first, so the English
+    word ``activity`` is not treated as the live snapshot kind.
+    Remaining prose (``issue=%s failed``, ``failure history read
+    failed`` — the latter already emits through ``event()``) has no
+    registered kind as a whole token and is left alone.
     """
     if not isinstance(msg, str):
         return None
