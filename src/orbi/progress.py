@@ -749,7 +749,10 @@ def _safe_publish(*, run_id: str, issue: int, source_repo: str,
     try:
         action()
     except Exception:
-        LOGGER.exception(
-            "progress_publish_failed run=%s issue=%s role=%s",
-            run_id, issue_context(source_repo, issue), role,
+        event(
+            "progress_publish_failed",
+            level=logging.ERROR,
+            run=run_id,
+            issue=issue_context(source_repo, issue),
+            role=role,
         )
