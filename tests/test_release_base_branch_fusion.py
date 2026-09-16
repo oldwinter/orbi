@@ -338,6 +338,51 @@ def test_process_issue_preserves_already_applied_policy_overlay(monkeypatch):
     assert seen["base"] == "release"
 
 
+def test_process_release_skips_policy_fetch(monkeypatch):
+    """Release tickets go ``process_issue`` then ``process_release``.
+    ``main()`` already loaded the policy; a missing file must not pay
+    a second contents API 404."""
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        source_base, "_orig_process_release",
+        lambda issue, config, source_repo: seen.setdefault(
+            "release", (config.base_branch, config.repositories),
+        ),
+    )
+    source_base.process_release({}, config, "o/r")
+    assert seen["release"] == ("develop", ())
+
+
+def test_process_release_preserves_already_applied_policy_overlay(monkeypatch):
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    policy = repo_config.RepoPolicy(base_branch="release")
+    fused = runner.apply_repo_policy(config, "o/r", policy)
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        source_base, "_orig_process_release",
+        lambda issue, config, source_repo: seen.setdefault(
+            "release", config.base_branch,
+        ),
+    )
+    source_base.process_release({}, fused, "o/r")
+    assert seen["release"] == "release"
+
+
 def test_fuse_treats_a_policy_load_failure_as_no_policy(monkeypatch):
     monkeypatch.setattr(
         runner, "load_repo_policy",
