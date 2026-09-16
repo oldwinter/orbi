@@ -244,13 +244,47 @@ def test_prose_without_kind_token_does_not_emit_event(caplog):
             raise RuntimeError("boom")
         except RuntimeError:
             journal.LOGGER.exception("issue=%s failed", 7)
+    assert not _event_records(caplog, "failed")
+    assert "issue=7 failed" in caplog.text
+
+
+def test_failure_history_prose_emits_registered_kind(caplog):
+    with caplog.at_level("ERROR", logger="orbi.bootstrap"):
+        try:
+            raise RuntimeError("comments 404")
+        except RuntimeError:
             journal.LOGGER.exception(
                 "issue=%s failure history read failed", 18,
             )
-    assert not _event_records(caplog, "failed")
-    assert not _event_records(caplog, "failure_history_read_failed")
-    assert "issue=7 failed" in caplog.text
-    assert "failure history read failed" in caplog.text
+    events = _event_records(caplog, "failure_history_read_failed")
+    assert len(events) == 1, caplog.text
+    assert events[0].levelno == logging.ERROR
+    assert "issue=18" in events[0].message
+    assert 'error="comments 404"' in events[0].message
+    orig = [
+        record for record in caplog.records
+        if record.message.startswith("issue=18 failure history read failed")
+    ]
+    assert orig, caplog.text
+    assert orig[0].exc_info and orig[0].exc_info[1] is not None
+
+
+def test_runner_failure_history_still_uses_the_mapped_prose():
+    from pathlib import Path
+    runner = (
+        Path(__file__).resolve().parent.parent / "src" / "orbi" / "runner.py"
+    )
+    source = runner.read_text(encoding="utf-8")
+    assert source.count(
+        'LOGGER.exception("issue=%s failure history read failed", number)'
+    ) == 1
+    assert 'event(\n                "failure_history_read_failed"' in source
+    assert (
+        exception_events._PROSE_TO_KIND[
+            "issue=%s failure history read failed"
+        ]
+        == "failure_history_read_failed"
+    )
 
 
 def test_advance_failed_emits_once_with_fields(caplog):
