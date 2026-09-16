@@ -16,7 +16,12 @@ from pathlib import Path
 import pytest
 
 import orbi.runner as runner
+from orbi.milestone_toml import install as install_milestone_toml
 from seam import seam
+
+# Issue #930: the TOML serializer rebinds runner.rewrite_active_milestone_line
+# so bootstrap tests (and idle auto-advance) cannot write a poisoned config.
+install_milestone_toml()
 
 
 def git(repo: Path, *args: str) -> str:
@@ -58,7 +63,7 @@ def pytest_collection_modifyitems(config, items):
 @pytest.fixture(autouse=True)
 def _default_cli_install_preflight(monkeypatch):
     """Default: the editable CLI install refresh (Issue #158) is a
-    no-op that reports "unchanged" — the in-process dispatch tests use
+    no-op that reports unchanged — the in-process dispatch tests use
     tmp repo_dirs that carry no tool env, and the real `uv tool
     install` must never run in them. The refresh's own tests and the
     wiring tests stub or exercise it explicitly (a ``monkeypatch``

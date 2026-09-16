@@ -44,6 +44,8 @@ from orbi.delivery_labels import (
 )
 
 from orbi.github import list_milestones
+from orbi.milestone_toml import install as install_milestone_toml
+from orbi.milestone_toml import rewrite_active_milestone_line
 from orbi.runner import (
     RunIdFilter,
     RunnerConfig,
@@ -51,7 +53,6 @@ from orbi.runner import (
     list_issues,
     load_config,
     log_format,
-    rewrite_active_milestone_line,
     run_command,
     validate_config,
     validate_execution_source_repos,
@@ -59,6 +60,11 @@ from orbi.runner import (
 from orbi import pilot_setup
 from orbi.pilot_slots import slot_occupancy
 from orbi.pi_activity import activity_snapshot
+
+# Idle auto-advance looks up rewrite_active_milestone_line on the runner
+# module. Install the TOML serializer before any tick so a Milestone
+# title containing `"` or `\` cannot poison orbi.toml (Issue #930).
+install_milestone_toml()
 
 LOGGER = logging.getLogger("orbi.cli")
 # Same run correlation mechanism as the runner: when a run id is
@@ -652,8 +658,11 @@ def milestone_set(config: RunnerConfig, config_path: Path,
         )
     try:
         milestones = list_milestones(repo, timeout=30)
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").strip() or str(exc)
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        # The docstring promises one structured line for EVERY failure:
+        # a hung gh raises TimeoutExpired, a missing gh raises OSError,
+        # a malformed payload raises ValueError — same collapse.
+        detail = (getattr(exc, "stderr", "") or "").strip() or str(exc)
         raise MilestoneSetError(
             f"milestone_set_failed reason=milestone lookup failed: {detail}; "
             "fix=check `gh auth status` and Milestone read access to "
