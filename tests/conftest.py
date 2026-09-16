@@ -17,11 +17,15 @@ import pytest
 
 import orbi.runner as runner
 from orbi.milestone_toml import install as install_milestone_toml
+from orbi.source_base import install as install_source_base
 from seam import seam
 
 # Issue #930: the TOML serializer rebinds runner.rewrite_active_milestone_line
 # so bootstrap tests (and idle auto-advance) cannot write a poisoned config.
 install_milestone_toml()
+# Issue #931: fuse [[repositories]] base_branch with .github/orbi.toml
+# so release and the dev path cannot resolve different branches.
+install_source_base()
 
 
 def git(repo: Path, *args: str) -> str:
