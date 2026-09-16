@@ -109,6 +109,11 @@ engine_source_track = "release"
 # milestone set` refuses while this is true (the default): the next
 # idle tick would overwrite the value the command just wrote.
 # auto_next_milestone = true
+# After a release closes the active Milestone, the idle tick can emit
+# a structured `active_milestone_dangling` warning so an empty queue is
+# greppable. Default false: unset matches today's journal. Host-only,
+# like `auto_next_milestone`. Invalid values fail the config load fast.
+# warn_on_dangling_milestone = false
 # Hung-model-request threshold: seconds of silence in
 # `model_wait` (the newest COMPLETE Pi session event is a tool result
 # and no new event arrives) after which the Runner declares the model
