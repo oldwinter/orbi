@@ -1,1 +1,1 @@
-/tmp/mcp_content_only.txt
+file:///tmp/mcp_content_only.txt
