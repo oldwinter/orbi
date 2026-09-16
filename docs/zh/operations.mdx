@@ -1,1 +1,863 @@
-PLACEHOLDER_REPLACE_WITH_FULL_FILE
+# 运维
+
+正常运行完全自动：timer 触发 tick，tick 最多做一件事，进度自己发布到
+journal 和 GitHub。正常路径永远不需要 status 命令、轮询或督工——下面的
+命令只用于首次验证、排查和恢复。
+
+## Timers
+
+timer 模板 `systemd/orbi@.timer` 部署为 **N 个实例**：
+`orbi@1.timer` 到 `orbi@N.timer`（N = `max_concurrency`，上限
+`MAX_RUNNER_INSTANCES = 5`——Issue #827）。每个实例每 5 分钟触发
+一次，全天 24 小时（`OnCalendar=*-*-* *:00/5`、`AccuracySec=30s`、
+`Persistent=false`——错过的 tick 被丢弃，从不排队），并各自启动自己的
+service 实例（`orbi@1.timer` → `orbi@1.service`，
+`orbi@2.timer` → `orbi@2.service`，……），所以可以同时运行
+N 个独立的 Runner 实例。每个 tick 的 service 实例：
+
+1. **先同步 engine source**（`ExecStartPre`，在 Runner 进程外）。两个
+   步骤，都包在一个短生命周期的 `flock`（共享状态目录下的
+   `base-sync.lock`，Python 侧同步取同一把锁）里；两个实例可能在同一
+   tick 运行 `ExecStartPre`，并且自 Issue #171 起，所有更新共享
+   remote-tracking ref 的 fetch 都走同一把锁：Runner 侧的
+   `freeze_base` / `verify_pr` / `merge_gate` / `confirm_merged` fetch
+   统一经 `fetch_base_ref`（先取锁 → fetch → 释放，锁或 fetch 出错即
+   fail fast），implement/review 两个 prompt 指示 Pi 用
+   `flock <BASE_SYNC_LOCK> git fetch origin <base_branch>` 执行 base
+   新鲜度 fetch（锁路径从配置的 `repo_dir` 渲染进两个 prompt）。两个
+   并发 Runner（或 Runner 与 Pi 会话）因此不再争抢共享 ref（不会出现
+   `cannot lock ref ... is at <X> but expected <Y>` 失败）。两个步骤
+   作用的 checkout 都是**部署 home**——`{{ORBI_REPO_DIR}}` 占位符在
+   安装时渲染的是 `deploy_home` 路径（缺省 `repo_dir`），所以外部单仓
+   库模式（Issue #330）下同步、锁和 CLI 自愈全部作用于 orbi 源码
+   checkout，绝不作用于交付 checkout（用户仓库 X）。
+
+   - **步骤 1 —— CLI 自愈**（Issue #248）：探测已安装的 console
+     script（`orbi --version` 当且仅当包可导入时成功），探测失败时在
+     同一把 `base-sync.lock` flock 下执行精确的 editable 强制重装
+     （`uv tool install --force --reinstall --editable --python
+     <interpreter> <repo_dir>`——`<interpreter>` 遵循兼容选取规则：
+     系统 Python 满足 `>= 3.14` 下限时为 `python3`，否则为 uv 自动
+     供应的 `3.14`，与 `orbi setup` 同一规则，Issue #861）。这是
+     console script 连
+     `import orbi` 都失败时唯一能动手的地方——#248 现场：#168 的
+     src 布局迁移让已安装的 editable finder 过期，而 #158 的 Runner
+     内刷新（在 Runner **内部**运行）根本不可达。它排在同步**之前**，
+     因为同步子命令需要可用的 CLI。健康的 CLI 退出 0，其余什么都不做
+     （不逐 tick 重装）；重装失败则 preflight 失败、service 不启动
+     （fail fast，无回退）。
+   - **步骤 2 —— engine source 同步**（Issue #535）：`orbi
+     sync-engine-source` 把部署 home 带到配置的 engine source 更新
+     通道。通道是 deploy home `orbi.toml` 里的 host/deploy-only 配置
+     键 **`engine_source_track`**（仓库的 `.github/orbi.toml` 永远
+     不允许携带它；模式与失败行见下文
+     [engine source 更新通道](#engine-source-更新通道)）。缺省 `main`
+     通道保持 #535 之前的精确行为：`git fetch --no-auto-maintenance
+     origin main && git merge --ff-only origin/main`——fast-forward 到
+     `origin/main`。每次 fetch 都带 `--no-auto-maintenance`，避免 Git
+     子进程脱离 preflight 和共享锁的生命周期。checkout 不干净、fetch
+     失败、tag/SHA/branch 缺失、无法 fast-forward、或任何无法对照解析
+     结果验证的状态都会让 preflight 失败：service 不启动，原因写入
+     systemd journal（fail closed）。每种失败各写一条结构化、可操作的
+     行（`deploy_home_dirty files=... fix=...`、
+     `engine_source_unresolved reason=...`、
+     `engine_source_not_fast_forwardable ...`）；成功时同步写一条结构化
+     `engine_source_synced engine_source_track=... resolved=... head=...`
+     行。通道不是缺省的 `main`（`branch:`/`release`/`tag:`/`sha:`）时，
+     Runner 也会跳过 merge 之后对部署 checkout 的 fast-forward：通道
+     拥有该 checkout，下一个 tick 的步骤 2 会重新施加它。
+
+   正在运行的长任务从不被热更新或杀掉——一个 service 实例 active 时
+   systemd 忽略对**该实例**的后续 start 请求，下一次真正启动取到通道
+   跟踪的代码。
+2. **运行一个 tick**：恢复一个已打开的 PR（review/fix/merge 步骤），或
+   领取一个 `ai-ready` Issue，然后退出。一个 tick 至多执行一步交付，绝不
+   sleep 等待 GitHub（Issue #788）：implement tick 在 PR 打开后结束并释放
+   槽位；review tick 是唯一在 Pi 运行期间持有槽位的阶段；CI pending 或
+   mergeable UNKNOWN 记一行 journal 即返回——下一 tick 重读（waiting
+   原语）。在任何 slot 或领取之前，tick 还
+   运行启动前 **git transport 检查**（Issue #114、#580）：部署 checkout
+   的 `origin` remote 必须匹配配置的传输方式（orbi.toml
+   `git_transport`：`ssh`——默认，`git@github.com:owner/repo.git`；或
+   `https`——`https://github.com/<repo>.git`，凭据走 `gh` credential
+   helper），且对第一个配置 source repo 的 `git ls-remote
+   <expected-url>` 退出 0（传输可达且已认证）。
+   传输损坏记录结构化 `transport_check_failed ... reason=...` 行并让
+   启动失败——不取 slot、不领取、不改标签，**没有回退**（GitHub
+   API 操作永远留在 `gh` token 上）。同样在任何 slot 或领取之前，tick
+   运行 **runner 执行代码新鲜度门禁**（Issue #525）：证明本进程执行
+   的代码与配置的 engine source 通道一致（Issue #535：
+   `engine_source_track`，缺省 `origin/main`——绝不是交付目标的
+   `base_branch`）——见下文
+   [Runner 执行代码新鲜度与防线分层](#runner-执行代码新鲜度与防线分层)。
+
+```bash
+systemctl --user list-timers 'orbi@*.timer'
+systemctl --user status 'orbi@*.service'
+```
+
+## engine source 更新通道
+
+Issue #535 用一条显式通道取代了硬编码的"永远跟随 `origin/main`"。
+host/deploy-only 配置键 `engine_source_track` 位于 deploy home 的
+`orbi.toml`——仓库的 `.github/orbi.toml` 里绝不允许出现（runner 在那里
+按 host-only 键拒绝它）：
+
+| `engine_source_track` | 下一次启动时部署 home 跟随的源 |
+| --- | --- |
+| 缺省 / `main` | `origin/main`，fast-forward——#535 之前 dogfood 的精确行为 |
+| `branch:<name>` | `origin/<name>`，fast-forward（会 checkout 该分支） |
+| `release`（别名 `stable`） | 最新的正式 semver tag（`vX.Y.Z`；`vX.Y.Z-rc.1` 之类的 pre-release 和非 semver tag 被排除），detached checkout |
+| `tag:<name>` | 精确锁定该 tag（annotated tag 解引用到其 commit），detached checkout |
+| `sha:<40-hex>` | 精确锁定该 commit，detached checkout |
+
+- **`release` 与 `tag:`——跟随与锁定**：`release`（别名 `stable`）跟随
+  最新已发布版本，新 tag 发布后自动跟进——只在发版时变化（`main` 每次
+  提交都变）。`tag:<name>` 锁死一个精确版本，不改值就永不移动——版本
+  变更永远是一次有意操作；要求部署保持可复现时用它锁定，回滚就是把
+  上一个 tag 改回去。
+- **安装与更新**：`install.sh` 新安装复制 `src/orbi/example_config.toml`，其中
+  携带 `engine_source_track = "release"`——新部署跟随最新 release，而
+  不是 main 的中间态。Orbi 自有 dogfood 部署显式固定 `main` 通道。
+  通道值在下一次 service 启动时生效（ExecStartPre 同步施加它）；没有
+  守护进程，也不会重启正在运行的 Runner。
+- **回滚**就是把 track 改回旧的 `tag:`/`sha:` 值（或
+  `release`/`main`）——git 状态是唯一的存储，没有别的状态要清理。
+- **fail closed**（service 不启动，每行都带 `fix=`）：
+  - `deploy_home_dirty files=... fix=...`——tracked 本地编辑会阻塞
+    同步；用 `git -C <deploy_home> stash && systemctl --user start
+    orbi@1.service` 保存后重试（之后 `stash pop`），或用
+    `git -C <deploy_home> checkout -- .` 丢弃。
+  - `engine_source_unresolved reason=tag_not_found|tag_conflict|sha_not_found|branch_ref_missing|no_official_release_tag`——
+    通道无法解析（先 fetch、核对名字，或发布 release tag）。
+  - `engine_source_not_fast_forwardable`——分支在本地已分叉（部署
+    home 永远不应携带本地 commit）。
+  - `engine_source_unverified`——HEAD 无法证明等于解析出的 commit。
+- **成功证据**：每次启动一条结构化
+  `engine_source_synced engine_source_track=... resolved=... head=...`
+  journal 行。
+- **doctor** 只读上报通道：`engine_source: track=... resolved=...
+  head=...`（通道本地无法解析时输出带同样 reason 的 `FAILED` 行）。
+- GitHub 拒绝按未广播的 SHA fetch（`not our ref`），所以 `sha:` 通道
+  一次性 fetch 全部已广播 ref，再在本地验证 commit；只能从未合并的
+  PR 分支可达的 SHA 因此 fail closed——请锁定 tag/release。
+- 交付目标不受影响：`base_branch` 继续管辖任务 worktree 与交付 PR
+  （engine/delivery 的语义隔离是 Issue #543 的主题）。
+
+## Runner 执行代码新鲜度与防线分层
+
+2026-09-07 事故：editable install 解析到了一个旧 issue 的 worktree，而
+`ExecStartPre` preflight 一直把部署 home 同步得很好——Runner 执行着旧
+代码，每笔交付看起来却都是新的（base_sha 新鲜、引擎陈旧），一个早已
+修复的 bug 在生产复现。"checkout 被同步了"和"进程执行的是那个
+checkout"是两个不同的事实，所以 tick 在任何 slot 或领取之前必须证明
+第二件（Issue #525）：
+
+- **editable 安装**（官方部署形态）：门禁解析**运行中进程**的 import
+  源（`orbi.__file__` → `src/orbi` 包目录，绝不是 WorkingDirectory），
+  用 `git rev-parse --show-toplevel` 定位其所在 checkout，并要求该
+  checkout 的 `HEAD` 等于配置的 engine source 通道的期望 commit：
+  `main`/`branch:` 通道取已 fetch 的 `refs/remotes/origin/<branch>`
+  头，`release`/`tag:` 通道取解析出的 release/tag commit，`sha:` 通道
+  取精确 SHA。worktree 与部署 home 共享 refs，所以事故场景（install
+  绑到旧 worktree）在这里被拒绝。
+- **非 editable 安装**（uv tool / PyPI 拷贝）：安装的发行版本
+  （`importlib.metadata`）不得旧于通道对应的 release tag——跟踪分支
+  ref 上可达的最新 tag，或锁定的 `release`/`tag:` 版本本身。`sha:`
+  锁无法映射到版本，按不可验证 fail closed。相等或更新即通过。
+- 全部是**本地 git 读**（`rev-parse` / `describe` / `tag --list`）：
+  已 fetch refs/tags 的新鲜度由 `ExecStartPre` 同步供给，checkout 一
+  致时零网络请求。任何**无法证明新鲜**的状态（origin ref 缺失、无
+  release tag、import 源无法定位）都以同样方式失败并带 `reason=`
+  字段——绝不静默放行。
+- 落后或无法证明时输出结构化
+  `runner_source_stale install=... source=... engine_source_track=...
+  head=... origin_main=... allowed=false fix=...` 行并 fail fast：不取
+  slot、不领取、不改标签。`fix` 是对 deploy home 的精确 editable 强制
+  重装命令。`allow_stale_runner: true`（getting-started）把同一行降级
+  为告警，供离线/受限网络机器使用——绝不跳过检查。
+
+**自举边界（为什么需要分层）。** runner 内的自检只能保护**包含**自检
+的 runner 版本：旧到没有自检的 runner 无法自检，而 in-runner 的
+`unit_drift` 对比恰恰运行在可能被冻结的进程里。因此分层是严格的，
+从外到内：
+
+1. **`ExecStartPre` preflight**（CLI probe 自愈 + engine source 同步，
+   Issue #535）是最外层防线：由 systemd 在 Runner 进程存在**之前**
+   执行——probe 步骤是包裹已安装 console script 的纯 shell，探测失败
+   就从 checkout 重装它，因此连 `import orbi` 都失败的 CLI 也会先在
+   这里被修复。保持已安装 unit 跟上模板（`install-units` 与启动前检查
+   的 `unit_drift` 自愈），这道 preflight 就永远存在。
+2. **runner 执行代码新鲜度门禁**（本节，Issue #525）是 in-runner
+   不变量：从它发布的版本起，代码陈旧的 runner 拒绝领取任务，而不是
+   无声地失败。
+
+## 暂停、迁移或移除部署
+
+部署不只有 editable `uv` tool：用户级 systemd unit 会继续从配置的
+`deploy_home` 启动 timer。迁移 checkout 时，必须**先停止旧部署，再安装
+新部署**。`deploy_home` 应放在持久目录（例如 home 目录下），不要放在
+`/tmp` 或其他重启后可能消失的临时目录。
+
+### 暂停部署
+
+只想暂停 Orbi、保留所有文件时，先停用并停止 setup 可能启用的每个 timer
+实例：
+
+```bash
+systemctl --user disable --now orbi@1.timer
+# 对每个启用的实例 @2..@N（N = max_concurrency）重复执行：
+systemctl --user disable --now orbi@2.timer
+```
+
+如果改动前已有 service 在运行，先检查它：
+
+```bash
+systemctl --user status 'orbi@*.service'
+```
+
+上面的命令不会删除 checkout、任务 worktree、`orbi.toml` 或
+`<repo_dir>/.orbi/` 状态。要恢复同一套部署，保留已安装的 unit，重新启用
+需要的 timer（或执行 `orbi setup --config <deploy_home>/orbi.toml`）。
+
+### 迁移到新的 deploy home
+
+1. 在旧部署上执行上面的暂停命令。必须先做这一步，再删除或改名旧目录；
+   否则启用中的 timer 会继续唤醒并持续记录失败日志。
+2. 确认新的 `deploy_home` 是持久目录，在那里 clone 或移动 Orbi checkout，
+   并更新其中的 `orbi.toml`。保留 `repo_dir` 指向交付 checkout；改变
+   `deploy_home` 不应移动或删除该 checkout、它的 worktree 或 `.orbi/` 状态。
+3. 在新的 deploy home 安装 unit 并启用所需数量的 timer：
+
+   ```bash
+   cd <new-deploy-home>
+   orbi setup --config orbi.toml
+   ```
+
+   `max_concurrency = 1` 会启用 `orbi@1.timer`；`max_concurrency = 2` 还会
+   启用 `orbi@2.timer`。用下面的命令确认结果：
+   `systemctl --user list-timers 'orbi@*.timer'`。
+4. 如果新部署使用与旧部署相同的 `unit_name`，setup 已经替换了 unit
+   文件；**不要**再删除它们，否则也会删除新部署的 unit。如果明确改用了
+   新的 `unit_name`，只有在新部署验证正常后才能删除旧 unit。先按上面的
+   步骤停用旧 timer，再执行 `systemctl --user daemon-reload`。除非已经
+   单独确认数据可以丢弃，否则不要把 repo、worktree 或 `.orbi/` 目录作为
+   unit 清理的一部分删除。
+
+如果配置了 `unit_name`，把下面命令中的 `orbi@1/2` 换成对应名称（例如
+`orbi-website@1/2`）。
+
+### 完全移除本机上的 Orbi
+
+先暂停部署。默认 unit 名称下，只有在所有可能的 timer（@1..@N，
+N = max_concurrency）都停用后，才删除已安装的模板：
+
+```bash
+systemctl --user disable --now orbi@1.timer
+# 对每个启用的实例 @2..@N 重复执行：
+systemctl --user disable --now orbi@2.timer
+rm ~/.config/systemd/user/orbi@.service ~/.config/systemd/user/orbi@.timer
+systemctl --user daemon-reload
+```
+
+删除前检查路径，确认只删除用户 systemd unit 文件。这些清理命令**不会**删除
+Orbi checkout、配置的 `repo_dir`、任务 worktree、`orbi.toml` 或
+`<repo_dir>/.orbi/`；这些内容只有在确认不再需要后才另行删除。如果本机以后
+完全不再使用 Orbi CLI，再把卸载 editable tool 作为单独的最后一步（可选）：
+
+```bash
+uv tool uninstall orbi-cli
+```
+
+`uv tool uninstall orbi-cli`（tool 名跟随 PyPI 发布包名 `orbi-cli`，
+Issue #874）不属于暂停或迁移步骤，也不会清理 systemd unit 或
+仓库状态。没有 `orbi uninstall` 或 `orbi teardown` 命令。
+
+## Unit 模板变更后（Issue #131、#142）
+
+unit 模板（`systemd/orbi@.service` 和 `systemd/orbi@.timer`）
+是部署配置，不是普通代码——但模板变更合并后**不需要任何人工步骤**。模板
+位于部署 home（`deploy_home`，缺省 `repo_dir`——Issue #330），漂移检查
+对比的是**这些**模板与已安装 unit。下一次 timer 触发时 `ExecStartPre`
+同步部署 home checkout，启动前
+`unit_drift` 检查自动自愈：用同一个幂等安装（把两个模板复制到用户
+unit 目录、daemon-reload、按 `max_concurrency` enable 或 disable timer
+实例——从不启动、停止或重启运行中的 Runner）、再用同一个哈希检查复核，tick 继续，每个 unit
+记录一行结构化 `unit_drift result=auto_synced`（before/after sha256、部署
+commit）。不再出现“每 5 分钟重复同一个 `unit_drift` 错误直到人工
+介入”的循环（#131/#140 实例：每次启动都因 `unit_drift` 失败，直到
+人工运行同步命令）。同一个安装还会**一次性迁移** #149 之前的非模板
+unit（`orbi.service` / `orbi.timer`）：停掉旧 timer（停
+的是 timer，绝不停 service）并删除旧文件，旧单实例调度不会再拉起旧
+service。
+
+`orbi install-units --config orbi.toml` 保留为手工入口
+（首次 setup、需要立即同步时）。自愈后仍漂移（安装步骤失败、模板
+缺失、复核前 unit 再次漂移）时，启动仍然 fail fast（结构化
+`unit_drift` 行、非零退出、不取 slot、不领取 Issue）：哈希校验和
+哨兵边界不变。
+
+## 日志（journal）
+
+journal 是本地记录。一个 run 的每行都以 run id 前缀 `[<run_id>]` 开头，
+一条 grep 还原完整时间线：
+
+```bash
+journalctl --user -u orbi@1.service -u orbi@2.service -f
+journalctl --user -u orbi@1.service -u orbi@2.service | grep e07383c2
+```
+
+你会看到的稳定 `key=value` 行：
+
+- `run_start` / `run_end` — 开始时的完整现场（branch、worktree、
+  session 文件），结束时的结果（PR URL、commit）；
+- `activity` / `heartbeat` / `model_wait` / `resumed` — session 运行
+  期间的实时 Pi 活动（phase、最近动作、elapsed、idle）。首个响应到达
+  前 `phase` 是启动子阶段：`session_pending`（Pi 已启动但还没创建
+  session 文件）和 `request_pending`（session 已存在、首个响应还没
+  到）；首个响应到达后按原规则用工具 phase（`test`、`pr`、`bash`…）；
+- `process_spawned` / `provider_config_loaded` / `session_created` /
+  `first_request_started` / `first_response_received` — 启动阶段行
+  （Issue #176）：每个阶段一行、按顺序，每行带 issue、role、Pi 实际
+  选择的 provider/model（session 的 `model_change` 记录出现前为
+  `-`）、距 spawn 的 elapsed（`process_spawned` 另带 pid）。
+  `provider_config_loaded` 由 Runner 在 spawn 前记录（provider 文件已
+  加载并物化；未配置时用 Pi 自己的 agent dir）；其余四行由 streamer
+  在 session JSONL 跨过每个里程碑时记录（session 记录、第一条 user
+  消息——首个请求发出——第一条 assistant 消息——首个响应到达）。卡在
+  `starting` 的 run 只靠这些行加 progress 评论的 `phase` 就能定位到
+  启动阶段；只记录标识符——从不记录 key、prompt 或模型输出；
+- `startup_failed` — run 在首个响应之前失败时的一行（Issue #176）：
+  说明启动卡在哪（`session_created=true|false`、
+  `first_request=true|false`）加可区分的 `reason=`——
+  `session_not_created`（Pi 退出前没创建 session 文件）、
+  `no_first_request`（session 存在但没有首个请求）、
+  `provider_rate_limited`（provider 429——Issue #321）、
+  `auth_failure` / `network_timeout`（从 Pi 的 stderr 分类——只记类别、
+  从不记文本）、`pi_exit_<N>`（提前退出码）、`timeout`（run deadline）、
+  `first_response_timeout`（冻结的 `model_wait` 在响应前被杀——挂死的
+  首个请求）、`model_wait_swallowed` 和 `idle_recovery_stale`
+  （既有 kill 路径）。既有的 `run_failed` 现场行和抛出的失败不变——
+  `startup_failed` 是额外的可观测性，不是新的失败路径；
+- `resume_continue` — 恢复的 run 继续中断的工作（Issue #219）时的一次
+  INFO：worktree 的 run state 文件（`.orbi/run-state.json`）
+  验证了同一个 run（issue 编号 + 仓库名——仓库改名后 slug 变了也能
+  找到旧 worktree），且 worktree 带有未提交改动或之前的 session；
+  行带 worktree、`changed_files`（未提交路径）、`reused_runs`
+  （之前的 session 文件数）和 `previous_session`（session id 或 `-`）；
+  新 session 在 prompt 里收到 resume context（继续既有工作——从不
+  重做、从不丢弃）。同一个 run 无法验证（state 文件缺失或损坏）时
+  行是 `resume_continue_failed`：fail fast，Issue 进入 `ai-blocked`
+  并带原因——从不静默 fresh 重做；
+- `pi_idle` — 超过 300 秒（`PI_IDLE_WARN_SECONDS=300`）没有
+  model/session 活动且模型不期望回复时的一次 WARNING；活跃的慢模型
+  （`model_wait`）从不告警；
+- `model_wait_swallowed` — 冻结的 `model_wait` 被 `/slots` 探针确认
+  吞请求（Issue #233）时的一次 WARNING + 杀掉 Pi 会话：
+  `model_wait_probe_url` 端点报告**所有** slot 持续
+  `model_wait_probe_seconds` 宽限（默认 60 秒）都空闲
+  （`is_processing=false`）——请求被上游接受但从未被调度进 slot，
+  模型进程活着、连接 ESTABLISHED，但没有东西在生成（#231 现场）；
+  行带 issue、role、idle 秒数、探针宽限、`action=kill_pi`、session、
+  run id、`upstream_alive=true|false` 和
+  `reason=swallowed_model_request`。它快速触发（远早于
+  `model_wait_dead_seconds`），吞请求约 1 分钟就能恢复而不是约 30
+  分钟。探针是纯旁路（Issue #79）：探测失败视为无证据（无此行，
+  `model_wait_dead` 兜底仍生效），有 slot 在处理会重置空闲窗口（慢
+  模型不是吞请求）；未设置 `model_wait_probe_url` 时禁用；
+- `model_wait_dead` — 冻结的 `model_wait`（最近一条事件是 tool
+  result，无新事件）超过配置的 `model_wait_dead_seconds`（默认
+  1800 秒，`PI_MODEL_WAIT_DEAD_SECONDS`，Issue #228）时的一次 WARNING
+  + 杀掉 Pi 会话：模型请求挂死——连接还活着、模型服务进程还活着都
+  只是行上的证据（`upstream_alive=true|false`），不是豁免（进程活着
+  ≠ 在回话，Issue #218）；行带 issue、role、idle 秒数、实际配置的
+  阈值、`action=kill_pi`、session、run id 和 `reason=hung_model_request`。
+  阈值度量的是**完整** session 事件之间的静默（Pi 不向 JSONL 写
+  token 级进度），不是 token 级模型进度——持续追加事件的慢生成永不
+  触发（慢本地模型，如 27B Q4 GGUF 配 llama-server、请求超时 1200
+  秒：RX 7900 XTX 全层上 GPU 时 12K 上下文约 57 tokens/s，部分上
+  GPU 或纯 CPU 时远低于 20 tokens/s；默认配置下慢端也能存活超过
+  10 分钟的完整消息）；
+- `pi_idle_wait` — idle-stall 恢复的宽限行（Issue #181）：仍在
+  deadline 内的 coreutils `timeout <seconds> ...` 包裹是合法的长命令，
+  不是 hang。Runner 每次 stall 记一条 `pi_idle_wait` 行（run id、
+  pid、cmdline、deadline），并在 progress 评论里报告 `recovery=wait`；
+  先过一个完整 idle 窗口的宽限再升级，之后每个窗口重新评估；
+- `pi_retry_429` — provider 限流重试每次一次 WARNING（Issue #321）：
+  Pi 非零退出且 stderr 带 429 标记（`429` / `quota` /
+  `RESOURCE_EXHAUSTED` / `retry in`）——这是瞬时限流，不是任务失败。
+  同一个 Pi 会话在同一个 run 里退避后重新拉起：优先用 429 响应自带的
+  重试提示（`retry in Ns` / `retryDelay: Ns`），没有就默认递增
+  （30 秒翻倍），两者都封顶 5 分钟。行带 run id、issue、role、
+  `attempt`、`next_retry_in`、重试上限 `limit`（5）和 session；
+  等待期间持有 slot（本 run 等待时不认领新 Issue）。`attempt` 计数是
+  RUN 的，不是进程的（Issue #698）：它持久化在工作树的 `.orbi/`
+  运行目录里，跨 runner 重启持续累加，上限才能真正触达终态。5 次退避
+  重试仍以 429 退出（连续 6 次 429 退出）之后，交付在每个阶段都是
+  终态——`ai-blocked`，绝不走可恢复续跑——失败评论带累计次数与修复
+  动作（配额窗口恢复后把 Issue 重新标为 `ai-ready`；终态会清掉持久化
+  计数，重排的尝试从全新预算开始），`run_failed` 现场标记
+  `reason=provider_rate_limited`。长期额度耗尽不在这里处理
+  （#313 的轮换语义接管）；
+- `run_failed` — 完整现场加原因（`pi_exit_N`、`timeout_...s`，或
+  `model_wait_swallowed_idle_...s`——`/slots` 探针确认所有 slot 持续
+  空闲（Issue #233）Runner 快速杀掉 Pi，`model_wait_dead_stale_...s`
+  ——冻结的 `model_wait` 超过配置的 `model_wait_dead_seconds`（默认
+  1800 秒，Issue #228）判定模型请求挂死，Runner 杀掉 Pi，
+  `idle_recovery_stale_...s`——session 连续 `PI_IDLE_RECOVERY_CYCLES`
+  （默认 3）个 idle 窗口保持空闲、Runner 杀掉 Pi，或
+  `provider_rate_limited`——provider 429 在本轮全部退避重试后仍失败
+  （Issue #321））。
+
+### 事件参考
+
+每个结构化 journal 事件都经由唯一发射点 `src/orbi/journal.py` 的
+`journal.event()` 发出；事件名即该文件中的 `JOURNAL_EVENTS` 注册表。
+本表与注册表完全一致——双向强制（名字只出现在代码或只出现在文档都会
+让 `tests/test_journal_events.py` 变红），Prometheus exporter 的
+`KNOWN_KINDS` 是它的子集：
+
+| 事件 | 含义 |
+| --- | --- |
+| `run_start` | 一个 Pi run 已启动（完整现场） |
+| `run_end` | 一次交付结束（结果、PR、commit） |
+| `run_failed` | 一次 Pi run 失败（完整现场 + 原因） |
+| `run_stopping` | SIGTERM 到达时仍有交付在途 |
+| `run_stopped` | Runner 已停止（空闲，或上面的中断现场） |
+| `picked` | 一个 Issue 已被领取给本 run |
+| `fresh_claim_route` | 产出本次领取的就绪扫描路线 |
+| `claim_yield` | 领取让位给并发的领取者 |
+| `blocked_by` | 跳过该 Issue：存在未关闭的 blockedBy 依赖 |
+| `blocked_by_check_failed` | blockedBy 查询失败（fail open） |
+| `capacity_full` | 所有 slot 均被占用；本 tick 不领取 |
+| `resuming_run` | 被中断的交付以同一 run 恢复 |
+| `resume_continue` | 恢复的 run 继续既有工作 |
+| `resume_continue_failed` | 恢复现场无法验证（fail fast） |
+| `activity` | Pi 实时活动快照（高频） |
+| `heartbeat` | 周期性的 Pi 实时进度行 |
+| `model_wait` | 模型请求在途（无完整 session 事件） |
+| `resumed` | model_wait 之后模型已回复 |
+| `process_spawned` | Pi 进程已拉起（启动里程碑） |
+| `provider_config_loaded` | provider 配置已物化（启动里程碑） |
+| `session_created` | Pi 已创建 session 文件（启动里程碑） |
+| `first_request_started` | 首个模型请求已发出（启动里程碑） |
+| `first_response_received` | 首个模型响应已到达（启动里程碑） |
+| `startup_failed` | run 在首个响应之前失败（已分类原因） |
+| `pi_resumed` | 恢复的 session 重新绑定到其 run |
+| `pi_drain_abandoned` | 输出排空提前放弃：管道写端比 Pi 活得更久 |
+| `pi_idle` | session 空闲超过告警窗口（模型本不应回复） |
+| `pi_idle_wait` | 空闲升级暂停：有界 timeout 包装器仍在自己的期限内 |
+| `pi_idle_term` | 向挂起的空闲后代进程发送 SIGTERM |
+| `pi_idle_kill` | 向 TERM 后仍存活的进程发送 SIGKILL |
+| `model_wait_dead` | 冻结的 model_wait 越过死亡阈值；已杀死 Pi session |
+| `model_wait_swallowed` | /slots 探针证实模型请求被吞；已杀死 Pi session |
+| `pi_retry_429` | provider 429 触发 run 内退避重试 |
+| `pi_429_attempts_reset` | 持久化的 429 重试计数被重置 |
+| `pi_429_attempts_write_failed` | 持久化 429 重试计数失败 |
+| `pi_429_attempts_clear_failed` | 清除 429 重试计数失败 |
+| `progress_publish_failed` | 进度评论发布失败（纯旁路） |
+| `empty_next_step` | 终态进度评论的 next step 为空 |
+| `config_invalid` | runner 配置校验失败（不启动） |
+| `transport` | 启动前 git transport 检查通过 |
+| `transport_check_failed` | 启动前 git transport 检查失败（不启动） |
+| `runner_source` | runner 源新鲜度门通过 |
+| `runner_source_stale` | runner 源新鲜度门失败（过期或无法验证） |
+| `engine_source_synced` | 部署 checkout 已同步到 engine 源通道 |
+| `deploy_home_dirty` | 本地有跟踪文件改动，阻塞 engine 源同步（fail closed） |
+| `engine_source_unresolved` | engine 源通道无法解析（fail closed） |
+| `engine_source_not_fast_forwardable` | engine 分支本地分叉（fail closed） |
+| `engine_source_unverified` | checkout head 无法对照解析提交验证（fail closed） |
+| `base_sync_lock_timeout` | 共享 base-sync 锁超时 |
+| `check_failed` | `orbi check` 在首个缺失前置条件处停止 |
+| `cli_source_drift` | 已安装 CLI 的导入源非预期 |
+| `unit_drift` | 已安装单元 vs 仓库模板：clean、已自愈或漂移 |
+| `unit_conflict` | 已安装单元文件与本次部署冲突 |
+| `units_installed` | systemd user 单元已安装或刷新 |
+| `legacy_units_migrated` | pre-#149 非模板单元已被移除 |
+| `health_check_skipped` | 本 tick 跳过周期健康检查 |
+| `health_check_queue_empty` | 健康检查确认队列实际为空 |
+| `health_check_failed` | 周期健康检查崩溃（旁路；从不使交付失败） |
+| `health_degraded` | 一个服务实例呈现事故模式劣化 |
+| `health_alert_repo_undetermined` | 健康告警无法归属到源仓库 |
+| `health_state_unreadable` | 持久化健康状态不可读 |
+| `health_pickup_record_failed` | 记录健康领取现场失败（旁路） |
+| `health_success_record_failed` | 向健康状态记录交付成功失败（旁路） |
+| `health_failure_record_failed` | 向健康状态记录交付失败失败（旁路） |
+| `delivery_takeover` | 接管既有 PR 交付进行评审 |
+| `delivery_awaiting` | 交付等待其 PR 变为可合并 |
+| `delivery_ci` | 观察到 PR CI 状态 |
+| `delivery_auto_merged` | PR 已自动合并（content-only 或琐碎） |
+| `delivery_merged` | PR 已合并；slot 释放 |
+| `delivery_closed_unmerged` | PR 未合并即关闭；Issue 置为 ai-blocked |
+| `delivery_label_inconsistent` | 交付标签与 PR 状态互相矛盾 |
+| `delivery_label_repaired` | 不一致的交付标签已修复 |
+| `delivery_label_repair_failed` | 交付标签修复失败 |
+| `delivery_behind_base` | 任务分支落后于 base 分支 |
+| `delivery_no_commit` | 任务 worktree 没有可交付的提交 |
+| `delivery_uncommitted_changes` | 任务 worktree 存在未提交改动 |
+| `delivery_issue_closed` | 源 Issue 在交付中途被关闭 |
+| `delivery_ci_evidence_publish_failed` | CI 证据评论发布失败（旁路） |
+| `delivery_ci_triage_lookup_failed` | CI 失败分诊 Issue 查询失败 |
+| `delivery_review_failed` | 评审 session 失败 |
+| `failure_comment_deduplicated` | 同一失败重复发生，原评论计数器原位+1；不再发新评论 |
+| `failure_streak_escalated` | 同一失败达到连续上限；Issue 转为 ai-blocked |
+| `failure_history_read_failed` | 死循环守卫的失败历史读取失败（fail-open） |
+| `external_takeover` | 外部 PR 被接管评审 |
+| `external_takeover_skipped` | 外部 PR 不满足接管条件 |
+| `external_takeover_closed` | 外部 PR 未合并被关闭；Issue 重新入队 |
+| `external_takeover_close_failed` | 关闭接管分诊 Issue 失败 |
+| `external_takeover_triage` | 外部评审通过；票停在 ai-blocked 等维护者裁定（Issue #842 D2，不自动合并） |
+| `external_pr_already_merged` | 被分诊的外部 PR 已经合并 |
+| `external_pr_routed_takeover` | 分诊 Issue 转投外部 PR 接管评审 |
+| `external_pr_state_probe_failed` | 外部 PR 状态探测失败 |
+| `pr_created` | 交付 PR 已创建 |
+| `pr_base_mismatch` | PR base 分支与配置的 base 不一致 |
+| `pr_head_diverged` | PR head 与被评审 head 分叉 |
+| `pr_repo_mismatch` | PR 属于另一个仓库 |
+| `pr_fixes_missing` | PR body 缺少 Fixes #N 关键字 |
+| `pr_run_marker_missing` | PR body 缺少 orbi run 标记 |
+| `pr_url_mismatch` | 记录的 PR URL 与实际 PR 不一致 |
+| `remote_head_mismatch` | 远端任务分支 head 被移动 |
+| `local_head_ahead_of_pr_head` | 本地提交尚未推送到 PR head |
+| `resume_pr_closed` | 被恢复交付的 PR 已关闭 |
+| `resume_pr_handled` | 被恢复交付的 PR 现场已处理 |
+| `resume_pr_missing` | 被恢复交付未找到 PR |
+| `resume_pr_multiple_open` | 同一 Issue 存在多个打开的 PR |
+| `resume_pr_verification_failed` | 被恢复交付未通过 PR 验证 |
+| `resume_scene_pr_state_lookup_failed` | 恢复现场的 PR 状态查询失败 |
+| `review` | 独立评审 session 结束（裁决） |
+| `delivery_ci_pending` | PR head 的 CI 仍在 pending；交付顺延到下一 tick |
+| `review_head_advanced` | 评审 session 推送了修复后的 head |
+| `pushed_head_recorded` | 回合开始的采纳记录了一个引擎推送 head（Issue #833） |
+| `pushed_head_unrecorded` | 引擎推送历史无法记录；合并账本退化为 unknown（Issue #833） |
+| `review_budget_recovered` | 过期的评审轮次预算已恢复 |
+| `review_rounds_exhausted` | 评审轮次预算耗尽（fail fast） |
+| `review_rounds_exhausted_expected_terminal` | 预算耗尽的终止状态已被记录 |
+| `review_human_decision_required` | 独立评审到达人工决策终点（不是 Runner 缺陷） |
+| `review_findings_unfixed` | 评审发现未修复；Issue 转入 ai-fix-needed |
+| `review_absorb_abandoned` | 落后 base 的一轮发出 pass 却未合并 base、也未上报放弃合并（Issue #877） |
+| `review_merge_deferred` | 合并门把合并顺延到下一 tick |
+| `review_recovery_ci_status` | 观察到用于评审恢复的 CI 状态 |
+| `review_recovery_ci_status_failed` | 评审恢复所需的 CI 状态读取失败 |
+| `merge_gate_ci_pending` | 合并门发现 CI pending；合并顺延到下一 tick |
+| `merge_gate_mergeable_unknown` | GitHub 可合并状态仍为 UNKNOWN；合并顺延到下一 tick |
+| `merge_gate_behind_base` | 合并门发现 PR 落后于 base |
+| `merge_gate_head_moved` | PR head 在评审之后被移动 |
+| `merge_gate_not_mergeable` | PR 不可合并（冲突或检查失败） |
+| `merged` | PR 合并精确落在被评审的 head 上 |
+| `confirm_merged_missing_on_base` | 合并提交不在 base 分支上 |
+| `confirm_merged_not_merged` | PR 声称已合并但 GitHub 状态矛盾 |
+| `human_review_waiting` | 交付等待人工评审标签 |
+| `human_review_checklist_failed` | 人工评审清单发布失败（旁路） |
+| `human_review_diff_read_failed` | 人工评审 diff 读取失败 |
+| `base_absorbed` | 前进的 base 分支已被合入任务分支 |
+| `base_merge_conflict` | base 合并冲突；已中止且不自动解决 |
+| `base_checkout_synced` | repo_dir base checkout 已快进到远端 base |
+| `base_checkout_sync_skipped` | base checkout 同步被跳过（已最新） |
+| `base_checkout_sync_failed` | base checkout 同步失败 |
+| `base_checkout_not_fast_forwardable` | base checkout 与远端 base 分叉 |
+| `worktree_cleaned` | 一个任务 worktree 已被清理 |
+| `worktree_cleanup_failed` | 一个任务 worktree 清理失败 |
+| `worktree_recreated` | 恢复交付时缺失的 worktree 已从远端分支重建 |
+| `worktree_reclaimed` | 批量回收了已释放的任务 worktree |
+| `worktree_reclaim_failed` | worktree 回收的一步失败（旁路；扫描继续） |
+| `worktrees_exclude_added` | 一个 worktrees 路径已加入本地 git exclude |
+| `runner_runtime_exclude_skipped` | 运行时 exclude 修复被跳过（已正确） |
+| `runner_runtime_exclude_repaired` | 运行时 exclude 已修复 |
+| `repo_config_invalid` | 仓库配置校验失败 |
+| `repo_config_read_failed` | 仓库配置读取失败 |
+| `repo_config_previous_read_failed` | 上一版仓库配置快照读取失败 |
+| `repo_config_previous_lookup_failed` | 上一版仓库配置快照查询失败 |
+| `repo_config_failure_report_failed` | 报告仓库配置失败时再次失败 |
+| `epic_not_claimed` | ai-epic Issue 被领取扫描跳过 |
+| `epic_kept_open` | Epic 保持打开：完成条件未满足 |
+| `epic_closed` | 完成条件全部满足；Epic Issue 已关闭 |
+| `epic_reconcile_failed` | Epic 对账扫描崩溃（旁路） |
+| `milestone_kept_open` | 发布 Milestone 保持打开（条件未满足） |
+| `milestone_closed` | 发布 Milestone 已关闭 |
+| `milestone_reconcile_failed` | Milestone 对账扫描崩溃（旁路） |
+| `orphan_pr_reported` | 孤儿 PR（源 Issue 已关闭）已上报 |
+| `orphan_pr_reconcile_failed` | 孤儿 PR 对账扫描崩溃（旁路） |
+| `stale_milestone_issue_closed` | 过期的 milestone 确认 Issue 已关闭 |
+| `stale_milestone_issue_close_failed` | 关闭过期 milestone 确认 Issue 失败 |
+| `pending_milestone_issue_failed` | 待确认 milestone Issue 状态未能应用 |
+| `active_milestone_advanced` | active Milestone 已推进到下一个待定版本 |
+| `active_milestone_advance_none` | 没有可推进的待定 Milestone |
+| `active_milestone_advance_pending` | 存在待定的 Milestone 候选在等待 |
+| `active_milestone_advance_failed` | 推进 active Milestone 失败 |
+| `active_milestone_dangling` | 配置的 active Milestone 在 idle 时已关闭或不存在 |
+| `active_milestone_variable_removed` | active_milestone 仓库变量已被移除 |
+| `active_milestone_variable_unchanged` | active_milestone 仓库变量与配置一致 |
+| `active_milestone_variable_updated` | active_milestone 仓库变量已更新 |
+| `active_milestone_variable_absent` | active_milestone 仓库变量不存在 |
+| `active_milestone_variable_created` | active_milestone 仓库变量已创建 |
+| `active_milestone_variable_sync_failed` | active_milestone 仓库变量同步失败 |
+| `release_not_claimed` | 发布状态机未领取该发布 Issue |
+| `release_task` | 发布状态机推进（步骤报告） |
+| `release_resuming_run` | 发布继续被中断的 run |
+| `release_tag_exists` | 发布 tag 已存在 |
+| `release_tag_pushed` | 发布 tag 已推送 |
+| `release_base_advanced_past_tag` | base 已前进越过发布 tag |
+| `release_waiting_deliveries` | 发布等待打开的交付 PR |
+| `release_waiting_deliveries_returned` | 等待中的交付在预算内返回 |
+| `release_waiting_ci` | 发布等待 tag 提交上的 CI |
+| `release_milestone_open_items` | 发布 Milestone 仍有未关闭条目 |
+| `release_milestone_check_failed` | 发布 Milestone 检查失败 |
+| `release_milestone_incomplete` | 发布 Milestone 未达到发布完备条件 |
+| `release_ticket_armed` | 发布 Issue 进入发布状态机 |
+| `release_ticket_arm_failed` | 发布 Issue 武装失败 |
+| `release_ticket_created` | idle tick 为已完成的 Milestone 创建了发布 Issue |
+| `release_ticket_create_skipped` | idle 自动建票跳过（已有票，或无法推断 version_file） |
+| `release_ticket_create_failed` | idle 自动创建发布 Issue 失败（旁路） |
+| `release_failed` | 发布状态机失败（ai-blocked） |
+| `release_publish_closeout_failed` | 发布收尾失败 |
+| `release_milestone_evidence_failed` | 发布 Milestone 证据发布失败 |
+| `release_success_comment_failed` | 发布成功评论失败（旁路） |
+| `release_changelog_issue_excluded` | 一个 Issue 被排除出发布 changelog |
+| `release_changelog_contributor_skipped` | 一个 changelog 贡献者条目被跳过 |
+| `release_changelog_pr_link_dropped` | 一个 changelog PR 链接被丢弃（未合并 PR） |
+| `command_failed` | 外部命令以非零退出（fail fast） |
+| `command_timeout` | 外部命令超时（fail fast） |
+| `command_spawn_failed` | 外部命令无法启动 |
+| `git_network_retry` | git fetch/push 瞬时网络失败，退避重试 |
+| `gh_read_retry` | `gh` 只读命令瞬时失败，退避重试 |
+| `gh_write_retry` | `gh` 写命令瞬时失败，退避重试 |
+
+idle 告警和模型请求挂死 kill 是日志/健康阈值——它们不是每 5 分钟
+调度，也不是业务任务 timeout。
+
+## CLI（`orbi`）
+
+正式入口是安装后的 `orbi` console script，以 **editable**
+`uv tool` 安装——为什么必须 editable（`ExecStartPre` checkout 同步、
+免重装的源码变更、打包输入刷新）定义在[快速开始](/zh/getting-started)
+第 2 步。`orbi doctor` 报告一致性（`cli_source: clean` 或
+`cli_source: DRIFT` + 结构化 `cli_source_drift` 行：实际导入路径、
+期望 deploy_home、精确的 editable 重装命令），`orbi setup` 校验或
+重装。期望来源是**部署 home**（`deploy_home`，缺省 `repo_dir`，
+Issue #330）：外部单仓库模式下 `cli_source` clean 表示 editable 安装从 orbi
+checkout 导入，即使交付 checkout 是外部仓库 X。checkout 根目录**没有** `orbi.py`（与 package 同名的 flat
+文件会遮蔽已安装 package）；直接执行入口 `python3 -m orbi.cli`
+运行与 console script 完全相同的代码，保留为开发/兼容路径。
+
+```bash
+# 在配置的 source repo 创建 Issue 并加 ai-ready 标签
+orbi add "task title" --body "task body" --config orbi.toml
+orbi add "task title" --repo OWNER/BACKLOG-REPO --config orbi.toml
+
+# 只读队列视图：当前（ai-in-progress）任务带实时 Pi 活动、下一个 ready
+# Issue、每个 source repo 的最近结果（ai-pr-opened / ai-fix-needed /
+# ai-merged / ai-blocked）
+orbi status --config orbi.toml
+
+# 只读部署/健康报告：repo commit、unit drift、CLI 源码（cli_source:
+# clean / DRIFT + 结构化 cli_source_drift 行）、git transport（配置的
+# origin URL、protocol、配置的 git_transport 的期望 URL、可达性探测——传输失败报告为
+# `transport: FAILED ...`，不抛出）、timer/service 实例状态、slots、
+# Pi session、当前 Issue、最近 journal
+orbi doctor --config orbi.toml
+
+# 只读前置条件门禁（Issue #163）：Python 版本、必需命令
+# （git/gh/uv/orbi）、systemd user bus、gh auth、pi CLI、配置文件
+# （存在、解析、校验）、每个 source repo 的访问 + 写权限、git
+# transport（只读，从不迁移）、模型 provider（无密钥值的状态）。
+# 第一个缺失的前提即快速失败，输出一行结构化结果：
+# check_failed check=<步骤> reason=... fix=... docs=<官方链接>
+# （`orbi check` 从不创建配置，也从不做任何变更）
+orbi check --config orbi.toml
+
+# 一次性、幂等初始化（新机器/新仓库）：gh auth + 仓库权限、平台 labels、
+# systemd user units、checkout 检查（含 git transport：处于相反传输的
+# `origin` 迁移为配置的 `git_transport` 的 URL（HTTPS->SSH 或
+# SSH->HTTPS；人工授权的迁移路径；Runner 本身从不改写 remote），并探测
+# 传输连通性（fail fast，没有回退））
+orbi setup --config orbi.toml
+
+# 把 active milestone 推进到一个 exact 的 GitHub Milestone 标题
+# （auto_next_milestone=false 确认流程背后的人工命令；只有
+# active_milestone 这一行会变化）
+orbi milestone set v0.6.0 --config orbi.toml
+
+# 打印当前 run 的 Pi session JSONL 路径（没有 session 时 fail fast）
+orbi session --config orbi.toml
+orbi session --follow --config orbi.toml   # tail -f
+orbi session --pretty --config orbi.toml   # 一行摘要
+```
+
+所有命令通过 `--config` 或 `ORBI_CONFIG` 环境变量接收配置
+（默认 `orbi.toml`）。`status` 和 `session` 是调试附件——
+journal 和 GitHub 仍是正常可观测路径。
+
+### 人工推进 active milestone
+
+`orbi milestone set <title>`（Issue #895）是 milestone 生命周期中的
+人工命令：当 `auto_next_milestone = false` 让推进进入待确认状态
+（确认 Issue 中给出的就是这条命令），或任何一次版本切换应当是运维的
+明确动作时，它把本地 `orbi.toml` 的 `active_milestone` 改为给定的
+GitHub Milestone 标题——不再手工编辑文件。该标题必须在唯一配置的
+source repo 上恰好对应一个 Milestone（GitHub Milestone 标题不唯一，
+exact title 重名是硬错误）。只有 `active_milestone` 这一行会被重写：
+注释、空行和其他所有字段保持逐字节不变。
+
+```bash
+orbi milestone set v0.6.0 --config orbi.toml
+# active_milestone: v0.5.6 -> v0.6.0
+# repo: orbi-build/orbi
+# config: /path/to/orbi.toml
+# next: the Runner's next tick claims Issues from Milestone "v0.6.0" and
+# syncs the ORBI_ACTIVE_MILESTONE variable (verify: gh api
+# repos/orbi-build/orbi/actions/variables/ORBI_ACTIVE_MILESTONE --jq .value)
+```
+
+命令本身从不写 GitHub——Milestone 列表读取是它唯一的网络调用。
+`ORBI_ACTIVE_MILESTONE` Actions variable 由 Runner 下一 tick 的
+preflight 发布（bypass 契约），因此命令成功不代表 variable 已同步：
+用输出里给出的 `gh api` 探针验证。所有失败都以非零退出，在 stderr
+输出一行结构化 `milestone_set_failed reason=... fix=...`，配置保持
+原样——目标不存在、exact title 重名、GitHub API 或权限失败、配置
+没有 `active_milestone` 行（该字段从不被隐式创建）、文件不可写，
+全部带实际原因快速失败：
+
+```bash
+orbi milestone set v0.9.9 --config orbi.toml
+# milestone_set_failed reason=milestone_not_found title='v0.9.9'
+#   repo=orbi-build/orbi open milestones: v0.6.0(3); fix=use one exact
+#   title from `gh api repos/orbi-build/orbi/milestones?state=open --jq '.[].title'`
+```
+
+## 公开表面
+
+以下接口和持久化命名都是公开表面。任何变更都必须在 release notes
+中声明，以便下游自动化有计划地迁移：
+
+- **CLI：**裸 `orbi` tick，以及 `add`、`status`、`doctor`、`setup`、
+  `install-units`、`session`、`milestone set` 子命令，包括
+  `--config` 和 `ORBI_CONFIG` 环境变量。
+- **配置：**`orbi.toml` 字段（`source_repos`、`repo_dir`、`deploy_home`、
+  `workspace_root`、`prompt`、`prompt_review`、`base_branch`、
+  `git_transport`、`active_milestone`、`max_concurrency`、
+  `allow_stale_runner`、`model_wait_dead_seconds`、`model_wait_probe_url`、
+  `model_wait_probe_seconds`、`skills`、`context_files`、`pi_provider`、
+  `pi_model`、`pi_thinking`、`pi_providers`），以及由 systemd
+  `EnvironmentFile` 加载的 gitignored `.orbi/env` 文件。
+- **部署：**`systemd/orbi@.service` 和 `systemd/orbi@.timer` 模板，及其
+  `orbi@1`/`orbi@2` 实例。
+- **标签和生命周期：**`labels.toml` 与 `src/orbi/delivery_labels.py`，
+  以及 `ai-ready`、`ai-in-progress`、`ai-pr-opened`、`ai-fix-needed`、
+  `ai-merged`、`ai-blocked` 状态机。
+- **可观测性：**journal 每行以 `[run_id]` 开头，并使用
+  `run_start`、`run_end`、`activity`、`heartbeat`、`resumed`、`run_failed`
+  等稳定事件名，以及[日志（journal）](#日志journal)中记录的启动/恢复事件。
+  Pi 实时记录位于 `<worktree>/.pi-session/*.jsonl`。
+- **交付命名和标记：**稳定的任务分支是
+  `orbi/<owner>-<repo>-issue-<N>`；带 run 的 worktree 目录是
+  `.worktrees/orbi-<owner>-<repo>-issue-<N>-<run_id>`。Issue/PR 评论和
+  PR body 使用 `<!-- orbi:run=<run_id> -->` 及可见的
+  `run_id=<run_id>`；PR body 还必须包含 `Fixes #<N>`。
+
+## Worktree 与 base 新鲜度
+
+每次领取先 fetch 并冻结 `origin/<base_branch>`，任务 worktree 和按
+Issue 稳定命名的 feature branch 都从那个精确 SHA 创建——绝不来自主
+工作区当前 HEAD。分支在重试之间保持稳定；worktree、Pi session 目录和
+run 产物带 run id，所以重试的 Issue 得到新的独立 run，旧现场保留。
+`.worktrees/` 已 gitignore。
+
+任务 worktree 继承部署 checkout 的单一 `origin` remote，所以 git
+transport 只配置一次、所有 worktree 继承（Issue #114——双通道边界与
+启动前检查：见上文 Timers 第 2 条；凭据：[安全](/zh/security)）。
+
+agent 在提交的交付处停止；PR 前的 base 新鲜度是 Runner 的确定性收口
+（Issue #186，`deliver_pr`）：Runner 在 base-sync 锁下重新 fetch
+`origin/<base_branch>`，用普通 `git merge` 吸收前进的 base（冲突时
+中止，PR 在 agent 的 head 上打开——已有的审查会话在会话内吸收
+base），然后推送 task branch 并创建 PR。创建 PR 之前 Runner 会直读
+源票的 state：交付期间被人工关闭的票在此收口——已推送的分支保留工作
+产物，关掉的票上留一条说明评论，不开 PR（Issue #746）。「PR 开出后票
+才被关」的相反时序由每 tick 的孤儿 PR 扫描兜底（见[工作流](/zh/workflow)），
+报告出来由人决定。
+
+### 任务 worktree 回收（Issue #760）
+
+worktree 过去只增不减：每次交付都会留下
+`repo_dir/.worktrees/orbi-{slug}-issue-{N}-{run_id}` 目录，没有任何
+机制删除它。现在每个 tick 开头——与启动前检查并列、在任何 slot 或
+领取之前——Runner 跑一次有界、幂等的回收（`reclaim_released_worktrees`）：
+只考虑 `repo_dir/.worktrees` 下、目录名匹配 orbi 命名且 slug 属于已
+配置 source repo 的**已注册** worktree，当以下条件全部成立时用
+`git worktree remove --force` 移除：Issue 已关闭（每个涉及的 repo
+一次批量 `gh issue list --state closed`）、其 `closedAt` 距今至少
+`worktree_retain_hours`（部署 home 的 `orbi.toml`，默认 72）小时，且
+不携带任何在途标签（`ai-in-progress`、`ai-pr-opened`、
+`ai-fix-needed`——人工关闭在途 Issue 时标签还在，现场因此保留）。
+本进程绑定 run 的 worktree（按 run id 或 stop-scene 路径）永远不是
+候选，而已关闭的 Issue 永远不会被恢复扫描选中，所以被回收的现场是
+不可达的垃圾，绝不是恢复状态。移除按关闭时间从旧到新排序、每 tick
+最多 25 个，积压在多个 tick 内消化，单个 tick 不会无限耗时。整个
+回收是纯旁路：GitHub 读取失败记录
+`worktree_reclaim_failed reason=...` 且一个都不删，单个移除失败记录
+`worktree_reclaim_failed path=... reason=...` 后继续，有移除的 tick
+记录结构化 `worktree_reclaimed count=N freed=<bytes>` 行。
+
+## 故障恢复
+
+| 状态 | 发生了什么 | 怎么办 |
+|---|---|---|
+| `ai-blocked` | 只用于 AI 无法安全判断或修复的外部前置条件（Issue #50：现场无法恢复、base 分支变更、审查超轮、PR 未合并被关闭、交付分支已从远端删除）——comment 写明为什么不能自动恢复 | 读 Issue 评论（现场 + 原因）和 journal。修环境或修任务，然后把同一 PR 路径重新标为 `ai-fix-needed`（同一 run 继续），或移除标签重新派发为全新 `ai-ready`（新 run）。它从不自动恢复。 |
+| `ai-fix-needed` | PR head 尚不可合并（review finding、base 冲突），或已有 run/PR 的可恢复失败（Issue #50：Pi 执行失败、验证失败、未推送本地 commit） | 什么都不用做——下一 tick 在同一 run_id、branch、worktree、PR 上启动下一个审查会话，会话内吸收最新 base。worktree 缺失不是失败：resume 会从远端交付分支重建它（Issue #807）。 |
+| 被杀后残留的 `ai-in-progress` | Runner 在任务中途被 SIGKILL | 下一 tick 的重启扫描接回（仅当没有其他 Runner 活着时）：同一 run id、同一 worktree、同一条进度评论——不新建 run。 |
+
+run 产物（plan、test log、session JSONL）留在任务 worktree 作为本地
+记录；GitHub 承载交付记录。
+
+## Run 卡在 `session_pending`：首个模型请求发出前挂死（Issue #311）
+
+**症状。** Runner 拉起 Pi 后，会话始终不创建 session 文件、也不发出
+首个模型请求。Run 停在 `session_pending`，15 分钟后被 idle-stall 恢复
+杀掉（`idle_recovery_stale_15m`），Issue 落到 `ai-blocked`——每次失败
+白烧 15 分钟 slot，且需人工重新派活。在线 provider 会中招（z.ai 与
+google gemini 均复现）；127.0.0.1 的本地模型不受影响。特征：session
+JSONL 路径为空，而 pi 进程还活着。
+
+**30 秒取证**（对卡死的 run）：
+
+```bash
+PID=<journal `process_spawned` 行里的 pid，或 `pgrep -f pi`>
+
+# 1. 活着但空闲：state S、~0% CPU、epoll 空转
+ps -o pid,stat,%cpu,wchan:32 -p "$PID"
+
+# 2. 没有任何到模型 API 的 TCP 连接——请求从未发出
+ss -tnp | grep "$PID"                    # 空
+
+# 3. 唯一的 socket 是 D-Bus
+ls -l /proc/"$PID"/fd | grep socket      # unix socket -> /run/user/1000/bus
+
+# 4. session 文件从未创建
+ls -la <任务 worktree>/.pi-session/      # 空
+```
+
+**根因。** per-run agent dir 物化机制（Issue #303）让 Runner 的 Pi 加载
+`~/.pi/agent/settings.json` `packages` 里声明的用户级插件。
+`pi-mcp-adapter` 插件启动时初始化 `@napi-rs/keyring` → Secret Service
+（`org.freedesktop.secrets` / `kwalletd6`）D-Bus 调用；在 systemd
+`--user` 服务上下文该调用偶发永不返回，node 在发出任何模型请求前就挂
+在 `poll_schedule_timeout`。
+
+**修复。** 从 `~/.pi/agent/settings.json` `packages` 移除
+`pi-mcp-adapter`（已验证：同一 run resume 后 15 秒内 `session_created`
++ `first_response`）。永久修复是 Issue #249——orbi 自声明 extensions
+（`[[pi_extensions]]`）并以 `--no-extensions` 启动 Pi，用户级插件从此
+无法泄漏进无人值守会话。上游：向 pi-mcp-adapter 报 bug（无 MCP server
+配置时不应硬初始化 keyring，或改惰性初始化）。
+
+## 并发
+
+`max_concurrency`（默认 1）限定本机并发交付数。slot 是
+`<repo_dir>/.orbi/slots/slot-N` 上的排他 `flock(2)` 锁，在任何
+领取之前取得，整个交付生命周期（implement → review → merge）持有；
+进程无论如何退出，内核都会释放它。拿不到 slot 的 Runner 记录
+`capacity_full` 后退出，不领取 Issue。`max_concurrency = 2` 时两个 timer
+实例可能在同一 tick 启动两个 Runner 实例；为 `1` 时只启用 `@1.timer`。
+它们竞争同一组 slot——容量和启用的 timer 数都由 `max_concurrency` 决定
+（固定模板只允许 `1` 或 `2`）。
