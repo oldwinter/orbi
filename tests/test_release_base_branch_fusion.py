@@ -151,6 +151,31 @@ def test_fuse_returns_mock_config_when_replace_is_impossible():
     assert source_base._fuse(config, "o/r", None) is config
 
 
+def test_fuse_returns_a_dict_config_without_repositories():
+    """CLOSED-unmerged tests (and several bootstrap paths) pass ``{}``.
+    Fusion used to AttributeError on ``config.repositories`` before
+    the original delivery_step could mark the Issue ai-blocked."""
+    config = {}
+    assert source_base._fuse(config, "o/r", None) is config
+
+
+def test_fuse_returns_a_config_class_unchanged():
+    assert source_base._fuse(runner.RunnerConfig, "o/r", None) is (
+        runner.RunnerConfig
+    )
+
+
+def test_fuse_returns_a_dataclass_without_repositories():
+    from dataclasses import dataclass
+
+    @dataclass
+    class Bare:
+        base_branch: str = "main"
+
+    config = Bare()
+    assert source_base._fuse(config, "o/r", None) is config
+
+
 def test_dispatch_wrappers_fuse_then_call_the_original(monkeypatch):
     seen = {}
     config = runner.RunnerConfig(
@@ -225,6 +250,21 @@ def test_install_skips_while_runner_is_still_loading(monkeypatch):
     monkeypatch.delattr(runner, "process_issue")
     source_base.install()
     assert source_base._installed is False
+
+
+def test_fuse_uses_an_explicit_policy_without_reloading(monkeypatch):
+    """A caller that already loaded the policy must not hit GitHub
+    again; ``_fuse(..., policy)`` skips ``load_repo_policy`."""
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("reloaded")),
+    )
+    policy = repo_config.RepoPolicy(base_branch="release")
+    assert source_base._fuse(config, "o/r", policy).base_branch == "release"
 
 
 def test_fuse_treats_a_policy_load_failure_as_no_policy(monkeypatch):
