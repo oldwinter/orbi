@@ -198,6 +198,11 @@ def install_import_hooks() -> None:
     ``list_milestones`` observe, and the ``log_format`` install hook.
     """
     journal.JOURNAL_EVENTS.setdefault(_DANGLING_EVENT, _DANGLING_MEANING)
+    import orbi.repo_config as repo_config
+    if "warn_on_dangling_milestone" not in repo_config.HOST_ONLY_KEYS:
+        repo_config.HOST_ONLY_KEYS = frozenset(
+            {*repo_config.HOST_ONLY_KEYS, "warn_on_dangling_milestone"}
+        )
     journal._exception_with_advance_failed_event = (
         _exception_with_advance_failed_event
     )
