@@ -92,6 +92,57 @@ def test_create_worktree_from_pull_head_makes_origin_branch_rev_parse(
     assert git(path, "branch", "--show-current") == "fix/outer"
 
 
+def test_two_arg_pull_fetch_fails_like_real_git_and_does_not_write_dest(
+    tmp_path,
+):
+    """Issue #963: dest as a second source arg 128s; dest is not created."""
+    _origin, clone, _head = _init_origin_with_pull_ref(tmp_path)
+    result = subprocess.run(
+        [
+            "git", "fetch", "origin", "pull/592/head",
+            "refs/remotes/origin/fix/outer",
+        ],
+        cwd=clone, capture_output=True, text=True,
+    )
+    assert result.returncode == 128
+    assert "couldn't find remote ref" in result.stderr
+    missing = subprocess.run(
+        ["git", "rev-parse", "origin/fix/outer"],
+        cwd=clone, capture_output=True, text=True,
+    )
+    assert missing.returncode == 128
+
+
+def test_second_fork_takeover_force_updates_a_non_ff_tracking_ref(tmp_path):
+    """Issue #963: a contributor rebase must still overwrite origin/<head>.
+
+    PR #3 already emits ``+src:dst``. This locks that the force prefix
+    is what makes a second takeover succeed when dest is not a
+    fast-forward of the previous pull head.
+    """
+    _origin, clone, first_head = _init_origin_with_pull_ref(tmp_path)
+    gitops.create_worktree(
+        clone, "o/r", 3, "run1", "base",
+        existing_branch=True, branch="fix/outer", pr_number=592,
+    )
+    assert git(clone, "rev-parse", "origin/fix/outer") == first_head
+
+    seed = tmp_path / "seed"
+    git(seed, "checkout", "main")
+    git(seed, "checkout", "-b", "rebased")
+    (seed / "other.txt").write_text("rebased\n", encoding="utf-8")
+    git(seed, "add", ".")
+    git(seed, "commit", "-m", "rebased head")
+    second_head = git(seed, "rev-parse", "HEAD")
+    git(seed, "push", "--force", "origin", "HEAD:refs/pull/592/head")
+
+    gitops.create_worktree(
+        clone, "o/r", 3, "run2", "base",
+        existing_branch=True, branch="fix/outer", pr_number=592,
+    )
+    assert git(clone, "rev-parse", "origin/fix/outer") == second_head
+
+
 def test_verify_resumed_pr_external_scene_fetches_pull_head(
     monkeypatch, tmp_path,
 ):
