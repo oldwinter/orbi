@@ -17,18 +17,22 @@ import pytest
 
 import orbi.runner as runner
 from orbi.milestone_toml import install as install_milestone_toml
+from orbi.source_base import install as install_source_base
 from seam import seam
 
 # Issue #930: the TOML serializer rebinds runner.rewrite_active_milestone_line
 # so bootstrap tests (and idle auto-advance) cannot write a poisoned config.
 install_milestone_toml()
+# Issue #931: fuse [[repositories]] base_branch with .github/orbi.toml
+# so release and the dev path cannot resolve different branches.
+install_source_base()
 
 
 def git(repo: Path, *args: str) -> str:
     """The one fail-fast git scaffold for the smoke/e2e suites (Issue
     #908): a non-zero exit is an AssertionError carrying the rc, stdout
     and stderr, never a silent pass. Guarded by
-    ``tests/test_suite_hygiene.py``."""
+    ``tests/test_suite_hygiene.py`."""
     result = subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True,
         timeout=30,
