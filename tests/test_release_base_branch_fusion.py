@@ -124,6 +124,7 @@ def test_install_rebinds_dispatch_consumers():
     assert runner.process_issue.__module__ == "orbi.source_base"
     assert runner.verify_resumed_pr.__module__ == "orbi.source_base"
     assert runner.delivery_step.__module__ == "orbi.source_base"
+    assert runner.apply_repo_policy.__module__ == "orbi.source_base"
     assert release.resolve_release_declaration.__module__ == "orbi.source_base"
     assert release.process_release.__module__ == "orbi.source_base"
 
@@ -277,6 +278,115 @@ def test_fuse_treats_a_policy_load_failure_as_no_policy(monkeypatch):
         repositories=({"github": "o/r", "base_branch": "develop"},),
     )
     assert source_base._fuse(config, "o/r").base_branch == "develop"
+
+
+def test_delivery_and_verify_skip_policy_fetch(monkeypatch):
+    """``delivery_step`` / ``verify_resumed_pr`` must not hit GitHub
+    for ``.github/orbi.toml``. Production ``main()`` already loaded the
+    policy once; the wrappers only apply the local ``[[repositories]]``
+    entry."""
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        source_base, "_orig_verify_resumed_pr",
+        lambda scene, issue, config, source_repo: seen.setdefault(
+            "verify", config.base_branch,
+        ),
+    )
+    monkeypatch.setattr(
+        source_base, "_orig_delivery_step",
+        lambda pr_url, issue, config, source_repo, **kwargs: seen.setdefault(
+            "delivery", config.base_branch,
+        ),
+    )
+    source_base.verify_resumed_pr({}, {}, config, "o/r")
+    source_base.delivery_step("url", {}, config, "o/r")
+    assert seen == {"verify": "develop", "delivery": "develop"}
+
+
+def test_delivery_preserves_already_applied_policy_overlay(monkeypatch):
+    """``main()`` fuses via ``apply_repo_policy`` before
+    ``delivery_step``. Re-applying the raw ``[[repositories]]`` entry
+    would drop orbi.toml ``release`` back onto ``develop``."""
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    policy = repo_config.RepoPolicy(base_branch="release")
+    fused = runner.apply_repo_policy(config, "o/r", policy)
+    assert fused.base_branch == "release"
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        source_base, "_orig_delivery_step",
+        lambda pr_url, issue, config, source_repo, **kwargs: seen.setdefault(
+            "base", config.base_branch,
+        ),
+    )
+    monkeypatch.setattr(
+        source_base, "_orig_verify_resumed_pr",
+        lambda scene, issue, config, source_repo: seen.setdefault(
+            "verify", config.base_branch,
+        ),
+    )
+    source_base.delivery_step("url", {}, fused, "o/r")
+    source_base.verify_resumed_pr({}, {}, fused, "o/r")
+    assert seen == {"base": "release", "verify": "release"}
+
+
+def test_fuse_skips_reload_when_already_fused(monkeypatch):
+    """A config ``apply_repo_policy`` already stamped must not hit
+    GitHub again, even through the default ``_fuse`` path."""
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    policy = repo_config.RepoPolicy(base_branch="release")
+    fused = runner.apply_repo_policy(config, "o/r", policy)
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    assert source_base._fuse(fused, "o/r") is fused
+    assert fused.base_branch == "release"
+
+
+def test_fuse_marks_an_explicit_policy_overlay(monkeypatch):
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    policy = repo_config.RepoPolicy(base_branch="release")
+    fused = source_base._fuse(config, "o/r", policy)
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    assert source_base._fuse(fused, "o/r", fetch_policy=False).base_branch == (
+        "release"
+    )
+
+
+def test_mark_fused_skips_a_slots_dataclass_without_the_attr():
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True, slots=True)
+    class NoDict:
+        base_branch: str = "main"
+
+    config = NoDict()
+    assert source_base._mark_fused(config) is config
+    assert not hasattr(config, source_base._FUSED_ATTR)
 
 
 def test_source_base_slot_hook_is_idempotent():
