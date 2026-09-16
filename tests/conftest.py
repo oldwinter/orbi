@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import orbi.runner as runner
+from orbi.milestone_idle import install as install_milestone_idle
 from orbi.milestone_toml import install as install_milestone_toml
 from orbi.source_base import install as install_source_base
 from seam import seam
@@ -26,6 +27,8 @@ install_milestone_toml()
 # Issue #931: fuse [[repositories]] base_branch with .github/orbi.toml
 # so release and the dev path cannot resolve different branches.
 install_source_base()
+# Issue #855: wrap load_config so warn_on_dangling_milestone is typed.
+install_milestone_idle()
 
 
 def git(repo: Path, *args: str) -> str:

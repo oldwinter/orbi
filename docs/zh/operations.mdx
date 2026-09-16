@@ -584,6 +584,7 @@ journalctl --user -u orbi@1.service -u orbi@2.service | grep e07383c2
 | `active_milestone_advance_none` | 没有可推进的待定 Milestone |
 | `active_milestone_advance_pending` | 存在待定的 Milestone 候选在等待 |
 | `active_milestone_advance_failed` | 推进 active Milestone 失败 |
+| `active_milestone_dangling` | 配置的 active Milestone 在 idle 时已关闭或不存在 |
 | `active_milestone_variable_removed` | active_milestone 仓库变量已被移除 |
 | `active_milestone_variable_unchanged` | active_milestone 仓库变量与配置一致 |
 | `active_milestone_variable_updated` | active_milestone 仓库变量已更新 |
