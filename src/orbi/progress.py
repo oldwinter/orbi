@@ -17,6 +17,7 @@ fast on any error. There is no fallback or retry.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import time
@@ -26,13 +27,24 @@ from typing import Callable
 
 from orbi.delivery_scene import RunContext
 from orbi.journal import (
+    JOURNAL_EVENTS,
     LOGGER,
     RUN_ID_PATTERN,
+    event,
     issue_context,
     quote_value,
     validate_run_id,
 )
 from orbi.pi_activity import activity_snapshot, sanitize
+
+# Registered here because journal.py is too large to land in this
+# fork's upload path. Importing progress (runner, github, tests) binds
+# the kind before any terminal comment is rewritten. event() fail-fasts
+# on unregistered names; a LOGGER.warning kind-line fails the suite net.
+JOURNAL_EVENTS.setdefault(
+    "empty_next_step",
+    "a terminal progress comment had an empty next-step blob",
+)
 
 # One marker per run: hidden in the rendered comment, exact for lookup.
 # The run-id pattern and its validator live in `orbi.journal` (the run
@@ -684,9 +696,12 @@ def _rewrite_terminal_outcome(outcome: str, *, state: dict) -> str:
     detail = match.group("detail")
     next_step = match.group("next_step")
     if not next_step.strip():
-        LOGGER.warning(
-            "empty_next_step issue=%s run_id=%s outcome=%s",
-            state.get("issue"), state.get("run_id"), name,
+        event(
+            "empty_next_step",
+            level=logging.WARNING,
+            issue=state.get("issue"),
+            run_id=state.get("run_id"),
+            outcome=name,
         )
     happened = humanize_failure(detail)
     you_do = _user_next_action(outcome=name, next_step=next_step)
