@@ -17,6 +17,7 @@ import pytest
 
 import orbi.runner as runner
 from orbi.auto_release_ticket import install as install_auto_release_ticket
+from orbi.exception_events import install as install_exception_events
 from orbi.milestone_idle import install as install_milestone_idle
 from orbi.milestone_toml import install as install_milestone_toml
 from orbi.source_base import install as install_source_base
@@ -33,6 +34,10 @@ install_milestone_idle()
 # Issue #856: wrap arm_release_ticket so a finished Milestone can mint
 # one ai-release ticket when the host flag is true.
 install_auto_release_ticket()
+# Issue #791: wrap LOGGER.exception so remaining registered kinds in
+# runner/release emit through journal.event() (those files are too
+# large to land in this fork's upload path).
+install_exception_events()
 
 
 def git(repo: Path, *args: str) -> str:

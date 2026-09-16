@@ -19,3 +19,12 @@ the checkout root on sys.path. The direct-execution compatibility entry
 is `python3 -m orbi.cli` (development path only).
 """
 __version__ = "0.5.7"
+
+
+def _install_exception_events() -> None:
+    """Issue #791: wrap registered LOGGER.exception kinds through event()."""
+    from orbi.exception_events import install
+    install()
+
+
+_install_exception_events()
