@@ -57,3 +57,568 @@ Orbi 本体，用上方的一键安装或下面第 2 步的 editable checkout
 安装——Orbi 部署驱动的是 editable 安装，CLI 跟随同步后的 checkout。
 
 ## 前提
+
+这些前提由**你自己安装**——`orbi setup` 只**检查**它们（校验
+`git`、`gh`、`uv` 和调度器 user session——Linux 为 systemd，macOS
+为 launchd）；它从不自动安装
+系统包、从不安装 `gh`、也不执行 `gh auth login`（你先登录，setup 只
+验证登录状态）。`orbi check` 是覆盖同一清单的只读前置条件门禁，另外校验
+Python 版本、`pi` CLI、配置文件、各仓库访问权限、git transport 和模型
+provider——失败即快速退出，并给出原因、修复动作和官方文档链接。
+
+| 要求 | 用途 | 检查 |
+|---|---|---|
+| Python 3.14 | Runner 和测试契约（CI 固定同一 minor 版本） | 由 `uv` 提供 |
+| [uv](https://docs.astral.sh/uv/) | 把 `orbi` CLI 装进隔离的 tool 环境（setup 的 CLI editable 步骤会调 `uv tool install`） | `uv --version` |
+| [Pi](https://github.com/earendil-works/pi) CLI | 开发 agent；每个任务一个完整 session | `pi --version` |
+| Git | worktree、分支、base 新鲜度 | `git --version` |
+| [GitHub CLI（`gh`）≥ 2.94](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) | Issue、标签、PR、merge | `gh --version`，再 `gh auth status` |
+| systemd user session（Linux） | 每 5 分钟触发一个 tick 的用户级 timer | `systemctl --user status` |
+| launchd（macOS） | 每 5 分钟触发一个 tick 的用户级 agent——尚未在真机验证，欢迎回报 | `launchctl print gui/$(id -u)` |
+| 可用的模型 provider | Pi 能真正使用的模型——Pi 自身配置的 provider，或指向 OpenAI-compatible endpoint（本地 `llama.cpp` server 或任意兼容 API）的 `pi_providers` 文件 | 一次真实 `pi --print` 调用（见下）；第 4 步给出两条路径 |
+
+用官方安装器安装 `uv`（已对照
+[uv 官方文档](https://docs.astral.sh/uv/getting-started/installation/)）：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+从 GitHub CLI 官方仓库安装 `gh`——最低已验证版本为 **2.94.0**：Runner 的
+队列扫描用到 `gh api --paginate --slurp`（gh 2.48.0 引入）和原生的
+`blockedBy` 依赖字段（gh 2.94.0 引入）。过旧的包会让 `orbi setup` 通过，
+但每个 tick 都以 `unknown flag: --slurp` /
+`Unknown JSON field: "blockedBy"` 失败，永远领不到 Issue——Ubuntu 24.04
+的发行版包（2.45.0）正是这种情况；Fedora（2.97.0）与 Arch（2.100.0）
+当前原生满足最低版本。在 Ubuntu/Debian 上，用官方 apt 仓库安装或修复
+（[官方 Linux 安装说明](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)）：
+
+```bash
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+  && sudo mkdir -p -m 755 /etc/apt/keyrings \
+  && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+  && sudo apt update \
+  && sudo apt install gh -y
+```
+
+用 `gh --version` 验证。
+
+Pi 必须配置一个能稳定服务 coding agent 的 provider（system prompt +
+tool schemas + 长 session）。派活之前先用一次真实调用验证 endpoint——
+不要假设 key 或模型服务可用：
+
+```bash
+pi --print "reply with the single word: ok"
+```
+
+如果失败，先修模型 endpoint；否则 Runner 会在每个任务上 fail fast。
+
+<Note>
+`local-llm-kv-cache` proxy 是**可选**增强（本地 llama.cpp 模型更快的
+prefix 复用），不是核心前提——见[可选组件](/zh/optional-kv-cache)。
+</Note>
+
+## 1. Clone 仓库
+
+```bash
+git clone https://github.com/orbi-build/orbi.git
+cd orbi
+```
+
+## 2. 安装 CLI
+
+正式使用方式是安装后的 `orbi` console script（`pyproject.toml`
+的 PEP 621 打包把 `orbi = orbi:main` 映射为可执行文件），
+以 **editable** `uv tool` 安装——这是官方本地部署方式（Issue #152）。
+在 clone 目录里安装，`--python` 传一个**兼容**的解释器（Issue #861）：
+系统 Python 是 3.14 或更新（Fedora 43、当前 Arch 自带）时直接用
+`python3`，否则传 `3.14` 让 uv 自动供应或选择——Ubuntu 24.04 系统自带
+Python 3.12，用精确路径把安装钉死到该系统解释器会因依赖解析失败而退出
+1；而 `python3`、`3.14` 这类宽泛写法会让 uv 选取或供应一个满足要求的
+解释器（在这类宿主机上即托管安装的 CPython 3.14）：
+
+```bash
+# 系统 Python >= 3.14（Fedora 43、当前 Arch）：
+uv tool install --force --reinstall --editable --python python3 .
+# 更老的系统 Python（如 Ubuntu 24.04 自带 3.12）——uv 自动供应 3.14：
+uv tool install --force --reinstall --editable --python 3.14 .
+# 然后验证：
+orbi --help
+```
+
+`uv tool` 把 CLI 装进隔离的 tool 环境，可执行文件落在 `~/.local/bin`
+（调度器 unit 的 PATH 已包含该目录）。
+
+**两种部署模式**（Issue #330，PR #334）：安装命令两者完全相同——orbi
+永远从 orbi clone **安装一次**——区别在配置。**自举模式**（本页默认）：
+`repo_dir` 就是 orbi checkout 自身，部署 home 和交付 checkout 是同一
+个目录。**外部单仓库模式**：`deploy_home` 指向 orbi checkout，
+`repo_dir` 指向外部用户仓库 X——orbi 安装一次后指向 X，X 里开
+`ai-ready` issue 即被开发，且绝不会从 X 重装 CLI。配置差异见第 3 步
+和下面的「外部单仓库模式（deploy_home）」一节。
+
+**为什么必须 `--editable`**：非 editable 安装会把源码复制进 tool
+环境的 site-packages；service 的 `ExecStartPre` 每次启动前把 checkout
+快进到最新 `main`——源码被复制后 CLI 仍在执行旧副本（启动死锁：
+Issue #152）。editable 安装下 tool 环境直接从 clone 目录导入
+`orbi`，下一个 CLI 进程（下一个 timer 启动的 Runner）自动取到
+merge 后的代码：**普通 Python 源码与 systemd 模板/迁移代码变更不需要
+任何重装或升级命令**。
+自 src layout（Issue #168）起，editable finder 映射**整个**
+`src/orbi/` package 目录——新增 package 模块**不需要重装**
+（#158 的 stale 模块清单问题已在根上修复）。当其余**打包输入**变化
+（`pyproject.toml` 的依赖、入口点、包名、构建后端或 Python 版本）时，
+Runner 每次启动（在任何 slot/claim 之前）自动刷新安装——刷新失败会
+fail fast（结构化 `cli_install_failed` 行：原因 + 精确修复命令）。这个
+Runner 内刷新在 console script 连 `import orbi` 都失败时不可达
+（#248 现场：#168 的 src 布局迁移让已安装的 editable finder 过期，Runner
+在 import 阶段就死了，刷新根本没机会运行）——这类损坏由 service 的第一个
+`ExecStartPre` 步骤在 Python 进程外自愈：它探测 `orbi --version`，
+探测失败时执行同一条 editable 强制重装——排在第二步（`orbi
+sync-engine-source`，Issue #535）之前，因为第二步需要可用的 CLI
+（完整机制见[运维](/zh/operations)）。
+`orbi doctor` 报告一致性
+（`cli_source: clean` 或 `cli_source: DRIFT` + 结构化 `cli_source_drift`
+行），`orbi setup` 幂等地校验或重装。发布包不携带第三方运行时
+依赖、token 或用户目录——配置文件和用户 systemd 目录保持机器本地。
+checkout 根目录**没有** `orbi.py`（与 package 同名的 flat 文件
+会遮蔽 checkout 根目录在 sys.path 上的一切进程的已安装 package）；
+直接执行入口 `python3 -m orbi.cli` 运行与 console script 完全
+相同的代码，保留为开发/兼容路径。
+
+## 3. 创建配置
+
+仓库带一份提交的 example；真实配置是本地状态（gitignored）。复制并编辑：
+
+`orbi setup` 会在配置缺失时自动创建 `orbi.toml`。
+
+全部字段（TOML，相对路径相对配置文件所在目录解析）：
+
+| 字段 | 必填 | 默认 | 含义 |
+|---|---|---|---|
+| `source_repos` | 是 | — | 每个 tick 扫描的一个 `owner/repo` 任务池。多个条目会因当前执行层只有一个 checkout 而 fail fast；多仓库 workspace 尚未提供（Issue #133） |
+| `repo_dir` | 否 | `.` | 交付 checkout：Runner 交付 Issue 的仓库。任务 worktree 从它冻结的 `origin/<base_branch>` SHA 创建，PR 对它打开，slot 锁在 `<repo_dir>/.orbi/slots/`。自举模式下它就是 orbi checkout 自身；外部单仓库模式（Issue #330）下是外部用户仓库 X |
+| `deploy_home` | 否 | `repo_dir` | orbi **源码** checkout（Issue #330）：editable CLI 安装来源（自更新）、`systemd/` unit 模板、`labels.toml`、prompt 默认（`prompts/prompt.md`、`prompts/prompt_review.md` 未设置时）。缺省 = `repo_dir`（自举模式，行为不变）。`repo_dir` 是外部仓库 X 时把它设为 orbi checkout。必须是非空字符串；目录不存在会启动 fail fast |
+| `worktree_retain_hours` | 否 | `72` | tick 开头任务 worktree 回收的保留窗口（Issue #760，仅宿主/部署侧——仓库的 `.github/orbi.toml` 不可携带）：已关闭超过该小时数的任务 worktree 会被自动移除（OPEN 的票和有活跃 run 的现场绝不触碰）。机制与 `worktree_reclaimed` journal 行：[运维](/zh/operations)。必须是有限正数小时，否则启动 fail fast |
+| `workspace_root` | 否 | `..` | 包含任务 worktree 和 agent 可修改仓库的目录 |
+| `prompt` | 否 | `prompts/prompt.md` | 实现者 prompt 模板（`{{SOURCE_REPO}}` 等占位符由 Runner 渲染） |
+| `prompt_review` | 否 | `prompts/prompt_review.md` | PR 后独立审查 session 的 review prompt 模板 |
+| `issue_comments_limit` | 否 | `20` | 受信任评论注入上限（Issue #745，仅宿主/部署侧——仓库的 `.github/orbi.toml` 不可携带）：`{{ISSUE_COMMENTS}}` 占位符注入多少条受信任评论（OWNER/MAINTAINER/MEMBER/COLLABORATOR 或 runner 自己的 App——与恢复现场同一套 `authorAssociation` 信任判据），按时间正序、保留最新。超出上限时丢弃更早的，并在注入内容里标明省略条数——绝不静默截断。模板不含该占位符时不发起任何评论读取（#745 之前的行为）。必须是正整数，否则启动 fail fast |
+| `base_branch` | 否 | `main` | 交付 base 分支；每个任务 worktree 都从冻结的 `origin/<base_branch>` SHA 创建 |
+| `git_transport` | 否 | `ssh` | 交付 checkout 的传输方式（Issue #580）。`ssh`（默认）：git 数据操作走 `git@github.com:owner/repo.git`，用机器的 SSH key；setup 会把 HTTPS origin 迁移过去。`https`：origin 保持 `https://github.com/<repo>.git`，`git ls-remote`/fetch/push 的凭据走 `gh` credential helper（`gh auth login --with-token`）——无 SSH 私钥的纯 token sandbox 路线。其他值直接让配置加载失败 |
+| `engine_source_track` | 否 | `main`（`install.sh` 新安装为 `release`） | engine source 更新通道（Issue #535，host/deploy-only——仓库的 `.github/orbi.toml` 永远不允许携带）：每次 service 启动时 deploy home checkout 跟随的源。缺省/`main`：fast-forward `origin/main`（#535 之前 dogfood 的行为）——开发主线，每次提交都变。`branch:<name>`：fast-forward `origin/<name>`。`release`（别名 `stable`）：最新正式 semver tag（排除 pre-release），detached——跟随最新已发布版本，只在发版时变化。`tag:<name>`/`sha:<40-hex>`：精确锁定，detached——不改值就永不移动，版本变更永远是一次有意操作（要求可复现的部署用它锁定）；回滚就是把值改回去。checkout 脏、tag/SHA 缺失或任何不可验证状态都会以结构化行让启动失败（见[运维](/zh/operations)） |
+| `active_milestone` | 否 | 未设置 | 新领取扫描的领取范围（Issue #139）：当前活跃的 GitHub Milestone 标题（如 `v0.2.0`）。设置后 p0/bug/普通三个 ready 扫描只领取该 Milestone 的 Issue（`milestone:"<title>"` 限定词直接进 gh 搜索查询——其他 Milestone 或无 Milestone 的 Issue 永远进不了队列）；`ai-ready` 仍是执行开关，领取顺序（p0 → bug → 普通）不变，P0 不跨 Milestone，恢复态（已开 PR、在途重启）不受 Milestone 限制。唯一例外是外部接管扫描（Issue #842 决策 D1）：第五条、排最后的 ready 扫描不带 Milestone 限定，带正文标记 `<!-- orbi:external-pr:N -->` 的外部 triage 票始终可被认领——外部贡献不属于任何版本的范围，绝不能阻塞发版门禁。未设置 = 所有 `ai-ready` Issue 都可领取（#139 之前的行为）。用 `orbi milestone set <title>` 推进（见[运维](/zh/operations)；Runner 下一 tick 发布 `ORBI_ACTIVE_MILESTONE` variable） |
+| `auto_next_milestone` | 否 | `true` | 当前 Milestone 关闭且队列为空时是否自动推进。`false` 保持 `active_milestone` 不变，记录待确认告警并创建一个不带 `ai-ready` 或 `p0`、不会被领取的确认 Issue；人工推进后旧通知会自动关闭。`orbi milestone set` 在此为 true 时拒绝执行（Issue #933）：下个空闲 tick 会改写刚写入的值。非法值立即失败 |
+| `max_concurrency` | 否 | `1` | 本机并发 Orbi 任务数和启用的 Runner timer 数（`1`..`5`，即 `MAX_RUNNER_INSTANCES` 声明上限——Issue #827；实际能稳定跑几条取决于 CPU/内存峰值，调高前先实测） |
+| `allow_stale_runner` | 否 | `false` | Runner 执行代码新鲜度门禁的离线逃生口（Issue #525）：领取任何 Issue 之前，Runner 必须证明自己执行的代码与配置的 engine source 通道一致——即 `engine_source_track`（Issue #535），缺省 `origin/main`，绝不是交付 `base_branch`（editable 安装看 import 所在 checkout 的 `HEAD`；非 editable 看安装版本与最新 release tag——全部是本地 git 读操作）。落后或无法证明时输出结构化 `runner_source_stale` 行（事实 + 修复命令）并 fail fast。`true` 把同一行降级为告警放行，供离线/受限网络机器继续运行——绝不跳过检查。非法值立即失败 |
+| `human_review_gate` | 否 | `false` | 人工验收门禁（Issue #763，仅宿主/部署侧——仓库的 `.github/orbi.toml` 不可携带）：`true` 时每个交付在 PR 打开时向 Issue 发一条验收清单（栏一：本次 run 已验证的证据——真实测试结果与覆盖层；栏二：按改动路径生成的机器验不了的最小集合——业务意图、UI 视觉与文案、外部环境、证据缺失）。栏二非空时评审轮次在任何 Pi session 之前短路：票回 `ai-ready`（opened-PR 标签保留作 resume 锚）、槽位释放，此后每个 tick 只花一次 label 读——等待绝不消耗评审轮次预算。人用只有人能打的 `ai-human-review` 标签确认清单，下一 tick 照常评审/合并（`--match-head-commit` 零改动）。栏二为空是目标状态：清单明写无需人工介入，交付不要求标签直接通过。默认关闭：关闭时交付/评审/merge/release 与之前逐字节一致。必须是布尔值，否则配置加载立即失败 |
+| `model_wait_dead_seconds` | 否 | `1800` | 模型请求挂死阈值（Issue #228）：`model_wait` 静默多少秒后 Runner 杀掉 Pi 会话并 fail fast。字段语义（完整事件之间的静默、慢生成边界）：[运维](/zh/operations) 的 `model_wait_dead` journal 行。必须是有限正数，否则启动 fail fast |
+| `model_wait_probe_url` | 否 | 未设置 | 模型吞请求探针（Issue #233）：模型的 `/slots` 端点（如 `http://127.0.0.1:18082/slots`，agent 面向的端口——local-llm-kv-cache 代理从 llama.cpp 透传该端点）。Pi 冻结在 `model_wait` 时 Runner 探测它，所有 slot 持续 `model_wait_probe_seconds` 宽限空闲时快速杀掉 Pi 会话。字段语义（吞请求现场、旁路边界）：[运维](/zh/operations) 的 `model_wait_swallowed` journal 行。未设置 = 探针禁用（#233 之前的行为）。必须是非空 `http://`/`https://` URL，否则启动 fail fast |
+| `model_wait_probe_seconds` | 否 | `60` | 吞请求探针的持续空闲宽限（Issue #233）：`model_wait` 期间“所有 slot 空闲”状态需持续多少秒才判定请求被吞并杀掉 Pi。必须是有限正数，否则启动 fail fast |
+| `release_ci_wait_seconds` | 否 | `1800` | release 门禁 CI 上限（Issue #268）：release 状态机在 tick 内等待 release commit 上 pending（queued/in_progress）检查的最长时间，超时以独立原因失败——它只是 release 机的纯上限保护，绝不是交付等待机制（Issue #788 已移除交付路径的 CI 等待：pending 检查把交付顺延到下一 tick）。等待期间以 `release_waiting_ci` journal 行和进度评论更新可见；最终结论说了算。必须是有限正数，否则启动 fail fast |
+| `skills` | 否 | `[]` | 可选 Pi skill 路径（绝对、`~`，或相对配置文件） |
+| `context_files` | 否 | `[]` | 可选 Markdown 上下文文件，以路径形式注入 prompt |
+| `pi_providers` | 否 | 未设置 | 指向 Pi `models.json` 形状 JSON 文件的路径，为每个 run 向 Pi 目录添加或覆盖 provider（Issue #157）。未设置 = Pi 原样使用自己的 agent 目录（第 4 步） |
+| `pi_provider` | 否 | 未设置 | 每个 run 选用的 provider id（Issue #119）——以 `--provider` 传给 Pi；设置 `pi_providers` 文件时必须已在其中定义 |
+| `pi_model` | 否 | 未设置 | 选中 provider 内的 model id——以 `--model` 传给 Pi；必须存在于该 provider 的 `models` 列表 |
+| `pi_thinking` | 否 | 未设置 | 以 `--thinking` 传给 Pi 的思考级别（`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`） |
+| `review_pi_provider` | 否 | 未设置 | 评审会话的 provider 覆盖；未设置时回落到 `pi_provider` |
+| `review_pi_model` | 否 | 未设置 | 评审会话的模型覆盖；未设置时回落到 `pi_model` |
+| `review_pi_thinking` | 否 | 未设置 | 评审会话的思考级别覆盖；未设置时回落到 `pi_thinking` |
+| `pi_extensions` | 否 | `[]` | 可重复的 extension 表：`source` 必须是锁定版本的 `npm:`/git 来源或配置文件相对的现有本地路径；`enabled` 默认开启，`env` 只注入当前 Pi 子进程。每次运行都传入 `--no-extensions`，不会发现全局 Pi extension。 |
+
+最小示例：
+
+```toml
+# 在多仓库 workspace 提供之前（Issue #133）只能配置一个 source 仓库：
+# 多个条目会在启动时 fail fast。
+source_repos = [
+  "OWNER/PILOT-REPO",
+]
+
+repo_dir = "."
+workspace_root = ".."
+prompt = "prompts/prompt.md"
+prompt_review = "prompts/prompt_review.md"
+base_branch = "main"
+engine_source_track = "release"  # Issue #535：engine source 通道（见运维）
+max_concurrency = 1
+skills = []
+context_files = []
+```
+
+### 外部单仓库模式（deploy_home）
+
+Issue #330（PR #334）把 orbi 的部署 home 与交付 checkout 解耦：orbi
+从 orbi 仓库**安装一次**后，可以指向任意用户仓库 X——在 X 里开
+`ai-ready` Issue，会被领取、在 X 的 worktree 里实现、对 X 开 PR。
+
+- **自举模式（默认）**：`repo_dir` 就是 orbi checkout 自身——部署 home
+  和交付 checkout 是同一个目录（`deploy_home` 缺省，取 `repo_dir`）。
+  本页第 1–8 步描述的就是这个模式。
+- **外部单仓库模式**：`repo_dir` 是用户仓库 X，`deploy_home` 是 orbi
+  checkout。两个 checkout 各司其职：
+  - `deploy_home`（orbi checkout）——CLI 自更新来源（editable `uv tool`
+    安装、`ExecStartPre` fast-forward 与 CLI 自愈）、`systemd/` unit
+    模板（`{{ORBI_REPO_DIR}}` 占位符渲染的是**这个**路径）、
+    `labels.toml`、prompt 默认；
+  - `repo_dir`（用户仓库 X）——交付 checkout：Issue 从 X 领取，任务
+    worktree 从 X 冻结的 `origin/<base_branch>` 创建，PR 对 X 打开，
+    slot 锁在 `<repo_dir>/.orbi/slots/`。
+
+先安装一次（上面第 2 步，从 orbi clone），然后把配置文件放进部署 home
+——已安装 systemd unit 从 `<deploy_home>/orbi.toml` 读配置
+（`{{ORBI_REPO_DIR}}` 占位符渲染的是 deploy home 路径），所以
+`orbi.toml` 和可选的 `.orbi/env` 放在 orbi checkout，而不是 X：
+
+```toml
+# <deploy_home>/orbi.toml — orbi checkout，不是用户仓库 X
+source_repos = [
+  "OWNER/USER-REPO-X",
+]
+
+repo_dir = "/path/to/user-repo-x"
+deploy_home = "/path/to/orbi"
+workspace_root = "/path/to"
+base_branch = "main"
+engine_source_track = "release"  # Issue #535：engine source 通道（见运维）
+max_concurrency = 1
+skills = []
+context_files = []
+```
+
+（任务 worktree 落在交付 checkout 的 `<repo_dir>/.worktrees/`；
+`workspace_root` 是告诉实现者 agent「可修改仓库所在目录」的路径
+（`{{WORKSPACE_ROOT}}` prompt 占位符）；未设置的 `prompt` /
+`prompt_review` 相对 `deploy_home` 解析。）
+
+其余一切——第 4–8 步（模型 provider、`orbi setup`、手工 tick、smoke
+walkthrough、timers）——不变：`orbi setup` 从 `deploy_home` 读标签、
+CLI 安装和 unit 模板，检查交付 checkout `repo_dir`（见[一次性
+setup](/zh/setup)）。
+
+### 一台机器跑多个部署（Issue #747）
+
+一台机器可以承载多个相互独立的 Orbi 部署——各自的 checkout、各自的
+`orbi.toml`、各自的 timer 组。每个部署的 config 必须声明一个互不相同的
+`unit_name`：
+
+```toml
+# <checkout>/orbi.toml —— 名为 "core" 的部署
+unit_name = "core"
+```
+
+此后 `orbi setup` / `orbi install-units` 管理的正是这个部署的单元
+（`orbi-core@1/2.service` 和 `orbi-core@1/2.timer`）；第二个部署配
+`unit_name = "website"`，在同一台机器上管理 `orbi-website@1/2.*`。
+一台机器上只允许一个部署不设 `unit_name`——它独占共享的 `orbi@1/2`
+命名。
+
+不要手工编写 systemd unit 文件。每个 tick 的漂移自愈只比对当前
+`unit_name` 对应的已装模板单元，手工写的 `orbi-core.service` 对
+所有部署都不可见：模板更新永远到不了它，也没有任何地方报这个缺口。
+`orbi doctor` 让这种绕过可见——它把这些文件列在 `unmanaged_units`
+下，并带出各自指向的 `ORBI_CONFIG`：
+
+```text
+unmanaged_units: 2
+  orbi-core.service (ORBI_CONFIG=/path/to/deployments/core/orbi.toml)
+  orbi-core.timer (ORBI_CONFIG=-)
+  fix: set unit_name in each deployment config and run `orbi install-units`
+```
+
+修复就是 fix 行：给部署配好 `unit_name`，运行 `orbi install-units`
+让受管理的 `@` 单元接管，然后移除手写的单元文件。
+
+## 4. 配置模型 provider
+
+Runner 从不启动或管理模型进程——它启动 Pi，而 Pi 需要一个能真正
+使用的 provider。有两条路径，只需要其中一条：
+
+### 路径 A：Pi 自己的 provider（不配置 Orbi）
+
+`pi_providers` 不设，Runner 就和你手工运行 Pi 完全一样地启动它——
+Pi 用自己的 agent 目录和你在那里配置的 provider。派活之前先用 Pi
+自己的检查确认 provider 就绪：
+
+```bash
+pi auth check --provider <provider-id>
+pi --print "reply with the single word: ok"
+```
+
+### 路径 B：`pi_providers` 文件（由 Orbi 管理选择）
+
+把 `pi_providers` 指向一个 Pi 自己的 `models.json` 形状的 JSON 文件。
+每个 run 开始时 Runner 会物化一个 per-run agent 目录
+（`<worktree>/.orbi/pi-agent/`，gitignored），其 `models.json`
+把你的用户 provider 与文件的 provider 合并（id 冲突时文件胜）——你
+已有的 provider 继续可用，文件只做添加或覆盖——并为该 run 选中配置
+的 provider/model。物化出的副本会把 `apiKey` 中的 `$VAR` /
+`${VAR}` 引用解析成真实环境变量值（Issue #303），使选中的 provider
+具备可用凭证；你的文件本身绝不被修改，未解析的引用（仅非选中
+provider）保持原样，解析出的值只存在于 gitignored 的 per-run 目录内。
+
+一个 OpenAI-compatible 远程 endpoint（key 不进文件——引用环境变量）：
+
+```json
+{
+  "providers": {
+    "groq": {
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "api": "openai-completions",
+      "apiKey": "$GROQ_API_KEY",
+      "models": [
+        {
+          "id": "groq/compound",
+          "name": "Groq Compound",
+          "contextWindow": 131072,
+          "maxTokens": 8192
+        }
+      ]
+    }
+  }
+}
+```
+
+一个本地 `llama.cpp` server（OpenAI-compatible 路由在 `/v1`，默认
+`127.0.0.1:8080`；`--alias` 设置 API 报告的模型名，所以下面 `id`
+必须与它一致）：
+
+```bash
+./llama-server -m /path/to/model.gguf --alias Qwen3.8-27B
+```
+
+```json
+{
+  "providers": {
+    "local": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "local",
+      "models": [
+        {
+          "id": "Qwen3.8-27B",
+          "name": "Qwen 3.8 27B (local)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        }
+      ]
+    }
+  }
+}
+```
+
+然后在 `orbi.toml` 里选择 provider 和 model（Runner 会以
+`--provider groq --model groq/compound` 传给 Pi；设置
+`pi_thinking` 时再传 `--thinking <level>`）：
+
+```toml
+pi_providers = ".orbi/pi-providers.json"
+pi_provider = "groq"
+pi_model = "groq/compound"
+```
+
+#### 为什么选 `groq/compound` 而不是 `qwen/qwen3.8-27b`
+
+两个模型都在 Groq 免费档上，`qwen/qwen3.8-27b` 的请求数配额甚至更高
+（1K RPD 对 250 RPD）——但对交付量级的工作，起决定作用的是 token
+配额，不是请求数。按 Groq 账号页面的限流数据（用户于 2026-09-12
+提供，不是 Orbi 实测——依赖前请重新核对
+[官方限流表](https://console.groq.com/docs/rate-limits)），
+`groq/compound` 是 **70K TPM、无日 token 上限**，`qwen/qwen3.8-27b`
+是 **8K TPM / 200K TPD**。
+
+在本仓库的交付量级下，这是性质之别，不是程度之别：本仓库自身交付的
+中位数约为每次交付 220 万 token（implement 与 review
+合计；来源是一个带 CI、有 Issue 规范的 Python 仓库——对其他仓库
+未验证），所以 200K TPD 连一天一次的中位交付都覆盖不了，8K TPM
+本身就意味着数小时的限流等待。token 墙先于请求墙到来，这正是更高
+的 RPD 在这里不起作用的原因。因此模板、
+[provider 指南](/zh/providers)与本指南统一钉在 `groq/compound`
+上——它的 TPM 同样偏低，仍然只适合短小、边界清晰的 coding Issue，
+不适合长上下文仓库分析。这些是账号限额，不是 Orbi 承诺；真实的
+Groq 请求、usage 计量与 429 响应在本文中仍未实测。
+```
+
+#### 让 API key 不进仓库、不进文档
+
+文件里 key 以环境变量引用（`"$GROQ_API_KEY"`）；真实值放在
+gitignored 状态目录的 env 文件里，由 systemd unit 在 service 启动时
+加载：
+
+```bash
+mkdir -p .orbi
+cat > .orbi/env <<'EOF'
+GROQ_API_KEY=<your key value>
+EOF
+chmod 600 .orbi/env
+```
+
+提交的 unit 模板带
+`EnvironmentFile=-{{ORBI_REPO_DIR}}/.orbi/env`（Issue #172）；
+`{{ORBI_REPO_DIR}}` 占位符在安装时被替换为你的 checkout 路径
+（Issue #262），所以已安装 unit 的 `EnvironmentFile` 自动指向
+**你的** `.orbi/env`——无需手工编辑。无 key 的本地 server 完全
+不需要 env 文件（上面的 `"local"` 字面量占位即可通过形状检查）。
+
+#### Runner 校验什么（fail fast，在任何 slot/claim 之前）
+
+- 文件存在且是合法 JSON，`providers` 对象非空；
+- 每个列出 models 的 provider 都有非空 `baseUrl` 和 `api`（provider
+  级或 model 级）；
+- 选中的 `pi_provider` 和 `pi_model` 在文件里有定义；
+- 选中 provider 的 `apiKey` 环境变量引用能解析出非空值——变量缺失
+  或为空会让启动失败，错误里只报变量**名**（绝不报 key 值）。
+
+#### provider 边界
+
+文档化且经过测试的路径是 **OpenAI-compatible** endpoint
+（`api: "openai-completions"`）——本地 `llama.cpp` server 或任意
+兼容 API。文件原样传给 Pi，所以 Pi 目录里的其他 catalog 条目继续
+可用；Orbi 不测试、也不保证该边界之外的逐 provider 集成。
+
+## 5. 运行一次性 setup
+
+setup 入口用一条命令完成全部初始化：校验你安装好的前提（git、gh、
+python3、uv、systemd user session——缺失会 fail fast 并给出可执行的
+安装指引）、校验或重装 editable CLI 安装（Issue #152——运行中的 CLI
+必须从部署 checkout 导入）、验证 `gh auth status` 和仓库权限、从仓库
+管理的 `labels.toml`（标签名/颜色/描述的唯一事实源——commit 从不创建
+标签，缺标签会让扫描静默漏掉对应状态）声明式对齐平台标签、安装
+systemd user units 并 enable timer、检查 checkout、报告可选模型 proxy：
+
+```bash
+orbi setup
+```
+
+它幂等（重复运行从不创建重复的标签、units 或 timer）且 fail-fast（仓库
+错误、权限不足、checkout 不干净或缺 systemd user bus 都会带具体原因
+停下）。完整输出契约、成功和失败示例见[一次性 setup](/zh/setup)。
+
+## 6. 手工运行一个 tick
+
+手工命令只用于首次验证和排查——正常运行由 timer 调度（第 8 步）：
+
+```bash
+PYTHONPATH=src python3 -m orbi.runner --config orbi.toml
+```
+
+（`PYTHONPATH=src` 把 checkout 的 `src/` layout 放进 import 路径；
+`-m` 运行 Runner package 模块——已安装的 `orbi` console script
+运行的是同一个 tick。）
+
+一个 tick 最多做一件事：恢复一个已打开的 PR（review/fix/merge），或
+领取一个 `ai-ready` Issue（带 `p0` 标签的 Issue 最先被领取，然后是
+`bug` 标签的，最后是普通 feature；设置 `active_milestone` 后只领取该
+Milestone 的 Issue——Issue #139），然后退出。ready 队列为空时干净
+退出，不领取任何东西。
+
+## 7. Smoke walkthrough（从零）
+
+验证环境可用的最小端到端证明。在第 1 步的 clone 目录里运行；每条命令
+都相对该目录。
+
+```bash
+# a. 向第一个配置的 source repo 派一个极小任务。
+#    `add` 一步完成创建 Issue 并加 ai-ready 标签。
+orbi add "Docs: verify smoke walkthrough" \
+  --body "Read README.md and confirm the smoke walkthrough commands exist." \
+  --config orbi.toml
+
+# b. 看队列：新 Issue 已 ready。
+orbi status --config orbi.toml
+
+# c. 跑一个 tick：Runner 领取 Issue，在全新 worktree 里启动 Pi，
+#    朝 PR 推进。
+PYTHONPATH=src python3 -m orbi.runner --config orbi.toml
+
+# d. tick 运行期间跟实时活动（第二个终端）：
+journalctl --user -u orbi@1.service -u orbi@2.service -f
+# 或者对手工 tick 直接跟 session JSONL：
+orbi session --follow --config orbi.toml
+
+# e. PR 打开后，Issue 带 ai-pr-opened，交付在后续 tick 继续
+#    （独立审查、会话内修复、merge）。在 GitHub 上看 Issue 和 PR。
+gh issue list --repo OWNER/PILOT-REPO --label ai-pr-opened
+```
+
+### 验证完整链路
+
+交付不止于 PR——同一个 run（同一 run id、分支、worktree、PR）在后续
+tick（手工或 timer）里继续走独立审查和 merge。每个阶段都有具体、可
+检查的成功标准：
+
+| 阶段 | 成功标准 | 在哪里检查 |
+|---|---|---|
+| 被领取 | Issue 标签 `ai-ready → ai-in-progress`；任务 worktree 和分支存在（都带 run id） | `gh issue view <n> --json labels`；journal `run_start run=<run_id> ...` |
+| 实现并测试 | Pi 在 worktree 里跑 TDD 循环；Issue 上唯一的 progress comment 报告 tests milestone | `orbi session --follow`；Issue 上的 progress comment |
+| PR 打开 | journal `run_end ... result=pr_opened pr=<url> commit=<sha>`；Issue 标签 `ai-pr-opened`；PR body 含 `Fixes #<n>` 和 run marker | `gh pr view <n> --json url,body` |
+| 独立审查 | 下一个 tick 恢复同一个 run；journal `review pr=<n> round=1 verdict=pass blockers=0 majors=0` | journal；PR |
+| 合并 | journal `merged pr=<n> head=<sha>`；PR 为 `MERGED` 且有 merge commit；Issue 标签 `ai-merged`，Issue 上有 `Orbi merged PR: ...` 评论 | `gh pr view <n> --json state,mergedAt,mergeCommit`；`gh issue view <n> --json state,labels` |
+
+```bash
+# 终态的两个只读检查：
+gh pr view <n> --json state,mergedAt,mergeCommit
+gh issue view <n> --json state,labels
+```
+
+完成标志：Issue 走完 `ai-ready → ai-in-progress → ai-pr-opened →
+ai-merged`，PR 已合并且 body 带 `Fixes #<n>`（GitHub 在 merge 时原生
+关闭 Issue），journal 显示 `run_end ... result=pr_opened`、
+`review ... verdict=pass` 和 `merged pr=...`。任何一步失败，Issue 会
+被**单独**标记 `ai-blocked` 并留下现场（run id、分支、worktree、
+session、phase、last activity、具体错误），journal 显示
+`run_failed ... reason=...`——恢复方法见[运维](/zh/operations)。
+
+## 故障排查
+
+真实失败现场、证据在哪里、怎么修。它们全部 fail fast——没有静默重试。
+
+| 症状 | 证据 | 修复 |
+|---|---|---|
+| 启动在任何 slot/claim 前失败 | journal `API key for provider ... references missing environment variable GROQ_API_KEY`（只报变量**名**） | 把 key 值放进你的 `.orbi/env`（第 4 步），并确认已安装 unit 的 `EnvironmentFile` 指向它；手工 tick 则在 shell 里 export 该变量 |
+| 启动在 provider 文件上失败 | journal `pi_providers file ... is not valid JSON` / `is missing baseUrl` / `pi_provider ... is not defined` | 修 JSON（第 4 步契约：`providers` 对象、`baseUrl`、`api`、`models[].id`），重跑 `orbi setup` |
+| Pi 起来了但模型一直不响应 | session JSONL 停在 `model_wait`；死寂窗口（`model_wait_dead_seconds`，默认 1800 秒）后 journal 出现 `model_wait_dead` 行和 `run_failed ... reason=model_wait_dead_stale_...`（字段语义：[运维](/zh/operations)） | 模型请求挂死——模型 server/proxy 挂了、连接断了，或进程还活着但请求被挂住——用一次真实 `pi --print` 调用检查 endpoint，重启后重新派活（Issue 带现场 `ai-blocked`）；仍在生成的慢本地模型会存活过窗口（只有模型确实需要超过 30 分钟完整事件静默时才调大 `model_wait_dead_seconds`） |
+| Pi 在首个模型请求前挂死（在线 provider） | Run 卡在 `session_pending`；15 分钟后 journal 出现 `idle_recovery_stale_15m`、Issue `ai-blocked`；session JSONL 从未创建；pi 进程活着但 ~0% CPU，唯一 socket 在 D-Bus（`/run/user/1000/bus`） | 用户级插件 `pi-mcp-adapter` 在 systemd 上下文挂死在 Secret Service D-Bus 调用上——从 `~/.pi/agent/settings.json` `packages` 移除它；完整取证与永久修复（Issue #249）：[运维](/zh/operations) |
+| PR 打开了但一直不 merge | Issue 标签 `ai-fix-needed`；审查 findings 在 Issue 和 PR 上 | 审查发现会话内修不掉的 Blocker/Major findings——下一个审查 session 重试**同一个** PR（上限 5 轮）；读 Issue 和 PR 上的 findings |
+| 审查循环耗尽轮数 | journal `review_rounds_exhausted issue=<n> rounds=5`；Issue **单独** `ai-blocked` | 有界循环是人工决策——读 findings，手工修 PR 或关闭；见[运维](/zh/operations) |
+| PR 落后于最新 base | Issue `ai-fix-needed`，review 评论写明具体闸门失败原因：落后 base 时带 `origin/<base>` 的 SHA，merge 冲突时带 `mergeable` 的实际值（Issue #879） | 自动：下一个审查 session 在会话内把最新 `origin/<base>` merge 进分支、解冲突、重跑全量测试 |
+| 重启后 service 起不来 | `systemctl --user status orbi@1.service`；journal `unit_drift` / `cli_install_failed` / `transport_check_failed` 行 | 按结构化行处理：重跑 `orbi install-units`（unit 漂移）、它打印的精确重装命令（editable 安装过期）、或修 SSH transport（见[运维](/zh/operations)） |
+| journal 出现 `Your local changes ... would be overwritten by merge` | service preflight 的 `deploy_home_dirty files=...` | 用 `git -C <deploy_home> stash && systemctl --user start orbi@1.service` 保留补丁，适当时再 `git -C <deploy_home> stash pop`；或用 `git -C <deploy_home> checkout -- .` 丢弃后重试。本地 tracked 编辑按设计会阻塞 self-update；`orbi doctor` 会报告 `deploy_home: DRIFT` |
+| `orbi doctor` 报告 `cli_source: DRIFT` | 结构化 `cli_source_drift` 行带精确重装命令 | 跑它打印的 `uv tool install --force --reinstall --editable ...` 命令（或 `orbi setup`） |
+
+标签生命周期、journal 字段和恢复规则见[运维](/zh/operations)；
+review/merge 契约见[工作流](/zh/workflow)。
+
+## 8. 验证 timers
+
+setup 已经安装 unit 模板，并按 `max_concurrency` enable timer 实例：
+`N` 时启用 `@1` 到 `@N`（上限 `MAX_RUNNER_INSTANCES = 5`；各自触发自己的 service
+实例——见[运维](/zh/operations)）；验证一下：
+
+```bash
+systemctl --user list-timers 'orbi@*.timer'
+```
+
+setup 输出每个实例一行；启用的实例有 active 状态和下次触发时间，
+多余实例报告 disabled 和 inactive。触发周期、`ExecStartPre`
+fast-forward 和每实例启动语义定义在[运维](/zh/operations)（Timers）。
+容量为 `N` 时 N 个实例可以同时运行；容量和启用的 timer 数都由
+`max_concurrency` 决定，flock slot 仍是最终安全边界。
+
+<Note>
+提交的 unit 模板与机器无关：它们携带 `{{ORBI_REPO_DIR}}` 占位符
+而不是硬编码的 checkout 路径（Issue #262）。`orbi install-units`
+（以及 `orbi setup`）在安装时用**部署 home**（`deploy_home`，缺省
+`repo_dir`）的解析后路径替换它，因此任何位置的 clone 都能干净部署
+——无需手工编辑已安装的 units。外部单仓库模式（Issue #330）下，unit
+的 `WorkingDirectory`、`ORBI_CONFIG`、`EnvironmentFile`、`ExecStartPre`
+fast-forward、`base-sync.lock` 和 CLI 自愈**全部**作用于 orbi 源码
+checkout，绝不作用于交付 checkout X。`ExecStart` 是已安装的 `orbi`
+CLI，保持 home 相对（`%h/.local/bin/orbi`）。仓库模板仍是其余一切的
+唯一事实源——漂移检测见[运维](/zh/operations)。
+</Note>
