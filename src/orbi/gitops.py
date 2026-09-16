@@ -13,6 +13,7 @@ imports no other `orbi` module besides `journal`.
 from __future__ import annotations
 
 import fcntl
+import inspect
 import logging
 import os
 import subprocess
@@ -108,20 +109,80 @@ def _is_ancestor(commit: str, base: str, *, cwd: Path) -> bool:
     return True
 
 
+def _pr_number_from_url(url: object) -> int | None:
+    """Parse the last path segment of a GitHub pull URL."""
+    if not isinstance(url, str) or "/pull/" not in url:
+        return None
+    try:
+        return int(url.rstrip("/").rsplit("/", 1)[-1])
+    except ValueError:
+        return None
+
+
+def _pr_number_from_caller() -> int | None:
+    """Issue #945: runner closeout may omit ``pr_number``.
+
+    ``_dispatch_implementation`` carries ``takeover_pr`` (with ``url``
+    from ``gh pr view``). ``verify_resumed_pr`` carries ``external`` and
+    ``scene['pr_url']``. Walk those frames so a fork PR still fetches
+    ``refs/pull/N/head`` without a 400KB runner.py rewrite.
+    """
+    frame = inspect.currentframe()
+    try:
+        caller = frame.f_back if frame is not None else None
+        while caller is not None:
+            loc = caller.f_locals
+            takeover = loc.get("takeover_pr")
+            if isinstance(takeover, dict):
+                n = takeover.get("number")
+                if isinstance(n, int):
+                    return n
+                parsed = _pr_number_from_url(takeover.get("url"))
+                if parsed is not None:
+                    return parsed
+            scene = loc.get("scene")
+            if loc.get("external") is True and isinstance(scene, dict):
+                parsed = _pr_number_from_url(scene.get("pr_url"))
+                if parsed is not None:
+                    return parsed
+            caller = caller.f_back
+        return None
+    finally:
+        del frame
+
+
 def stable_branch_exists(repo_dir: Path, branch: str) -> bool:
-    """Return whether the stable delivery branch exists on origin."""
+    """Return whether the stable delivery branch exists on origin.
+
+    A fork PR head is not an origin branch (Issue #945). Resume of an
+    external scene still recreates the worktree from ``refs/pull/N/head``,
+    so a missing origin head is not ``ResumeBranchGoneError``.
+    """
     raw = run_command(
         ["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
         cwd=repo_dir, timeout=GIT_NETWORK_TIMEOUT_SECONDS,
     )
-    return bool(raw.strip())
+    if raw.strip():
+        return True
+    frame = inspect.currentframe()
+    try:
+        caller = frame.f_back if frame is not None else None
+        while caller is not None:
+            loc = caller.f_locals
+            if loc.get("external") is True and isinstance(loc.get("scene"), dict):
+                return True
+            caller = caller.f_back
+        return False
+    finally:
+        del frame
 
 
 def create_worktree(repo_dir: Path, source_repo: str, number: int,
                     run_id: str, base_sha: str,
                     existing: Path | None = None,
                     existing_branch: bool = False,
-                    branch: str | None = None) -> Path:
+                    branch: str | None = None,
+                    pr_number: int | None = None) -> Path:
     """Create the task worktree from the frozen base SHA, never HEAD.
 
     An existing path is reused: only a resumed run (same run id after a
@@ -133,8 +194,10 @@ def create_worktree(repo_dir: Path, source_repo: str, number: int,
 
     `branch` overrides the stable delivery branch name: an EXTERNAL
     takeover checks out the contributor's own head branch,
-    the identity the takeover PR is frozen on. With `existing_branch`
-    the named branch is fetched and reused (a local branch is reused
+    the identity the takeover PR is frozen on. `pr_number` makes an
+    external takeover fetch the base repository's pull ref, which also
+    works when the head branch exists only in a fork. With
+    `existing_branch` the named branch is fetched and reused (a local branch is reused
     with `--force`, never a second `-b` — the exit-255 claim failure; a
     missing branch is created from `origin/<branch>` with `--force` so
     the stale missing-but-registered entry a deleted worktree leaves
@@ -156,9 +219,22 @@ def create_worktree(repo_dir: Path, source_repo: str, number: int,
     if existing_branch:
         # The branch is the delivery identity.  Fetch it, then create the
         # run-isolated worktree from its remote HEAD rather than the base.
-        run_git_network_command(
-            ["git", "fetch", "origin", branch], cwd=repo_dir,
-        )
+        # A fork PR head is not on origin: fetch the pull ref into
+        # origin/<branch> (colon dest so a single-branch clone records it).
+        if pr_number is None:
+            pr_number = _pr_number_from_caller()
+        if pr_number is not None:
+            run_git_network_command(
+                [
+                    "git", "fetch", "origin",
+                    f"+refs/pull/{pr_number}/head:refs/remotes/origin/{branch}",
+                ],
+                cwd=repo_dir,
+            )
+        else:
+            run_git_network_command(
+                ["git", "fetch", "origin", branch], cwd=repo_dir,
+            )
         local = run_command(
             ["git", "branch", "--list", branch], cwd=repo_dir,
         )

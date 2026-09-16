@@ -18,6 +18,10 @@ Real git semantics the fake preserves:
   Issue #662 orphan-branch reuse contract);
 - ``git ls-remote`` prints ``<sha>\\trefs/heads/<name>`` only for
   branches that exist on origin;
+- ``git fetch origin A B`` is two source refs (Issue #963): dest
+  belongs in a colon refspec, so the fake 128s looking up ``B``;
+- ``+src:dst`` overwrites an existing tracking dest (a second
+  takeover after a contributor rebase);
 - every dispatched command is recorded in ``calls`` so a test can
   assert which data operations ran.
 """
@@ -39,6 +43,7 @@ class FakeGit:
         self.parents: dict[str, list[str]] = {}
         self.local: dict[str, str] = {}
         self.origin: dict[str, str] = {}
+        self.pull_heads: dict[str, str] = {}
         self.worktrees: dict[str, dict] = {}
         self.calls: list[list[str]] = []
         self.base_branch = base_branch
@@ -103,14 +108,63 @@ class FakeGit:
         return f"  {name}\n" if name in self.local else ""
 
     def _fetch(self, args: list[str], cwd) -> str:
-        if len(args) != 2 or args[0] != "origin":
-            self._unsupported(["git", "fetch", *args])
-        name = args[1]
-        if name not in self.origin:
+        # A destination is part of the same refspec as its source.
+        # `git fetch origin A B` looks up B as another remote source
+        # and must fail like real git (Issue #963).
+        if (len(args) == 3 and args[0] == "origin"
+                and args[1].endswith("/head")
+                and args[2].startswith("refs/remotes/origin/")):
             self._fail(
-                128, f"fatal: couldn't find remote ref refs/heads/{name}"
+                128, f"fatal: couldn't find remote ref {args[2]}"
             )
-        return ""
+        if (len(args) == 2 and args[0] == "origin"
+                and not args[1].startswith("+")
+                and ":" not in args[1]):
+            name = args[1]
+            if name not in self.origin:
+                self._fail(
+                    128, f"fatal: couldn't find remote ref refs/heads/{name}"
+                )
+            return ""
+        if len(args) == 2 and args[0] == "origin":
+            spec = args[1]
+            forced = spec.startswith("+")
+            src, dst = spec.lstrip("+").split(":", 1) if ":" in spec else (
+                spec.lstrip("+"), "",
+            )
+            if (src.startswith("refs/pull/") and src.endswith("/head")
+                    and dst.startswith("refs/remotes/origin/")):
+                pr_number = src.removeprefix("refs/pull/").removesuffix(
+                    "/head",
+                )
+                branch = dst.removeprefix("refs/remotes/origin/")
+                if pr_number in self.pull_heads:
+                    # `+` permits a repeated takeover to replace a
+                    # non-FF tracking ref. Without it, dest already
+                    # existing is a rejection like real git.
+                    if forced or branch not in self.origin:
+                        self.origin[branch] = self.pull_heads[pr_number]
+                        return ""
+                    self._fail(
+                        1,
+                        f" ! [rejected] {src} -> origin/{branch} "
+                        "(non-fast-forward)",
+                    )
+                # Tests that already planted origin/<head> still
+                # recreate the worktree when a pull-head fetch is
+                # inferred from the caller frame.
+                if branch in self.origin:
+                    return ""
+                self._fail(
+                    128, f"fatal: couldn't find remote ref {src}",
+                )
+            name = spec
+            if name not in self.origin:
+                self._fail(
+                    128, f"fatal: couldn't find remote ref refs/heads/{name}"
+                )
+            return ""
+        self._unsupported(["git", "fetch", *args])
 
     def _rev_parse(self, args: list[str], cwd) -> str:
         if args == ["HEAD"]:

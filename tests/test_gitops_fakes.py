@@ -38,6 +38,51 @@ def test_stable_branch_exists_reads_the_remote_head(fake_git):
     ) is False
 
 
+def test_fake_git_rejects_invalid_pull_fetches(fake_git):
+    with pytest.raises(subprocess.CalledProcessError):
+        fake_git([
+            "git", "fetch", "origin",
+            "+refs/pull/592/head:refs/remotes/origin/fix/outer",
+        ])
+    with pytest.raises(subprocess.CalledProcessError):
+        fake_git(["git", "fetch", "origin"])
+    assert gitops.stable_branch_exists(
+        fake_git.repo_dir, "orbi/owner-repo-issue-8"
+    ) is False
+
+
+def test_fake_git_rejects_two_arg_pull_fetch_like_real_git(fake_git):
+    """Issue #963: dest as a second source argument must 128.
+
+    The pull head exists; real git still looks up the dest ref as
+    another source and never writes origin/<branch>.
+    """
+    head = fake_git.commit([fake_git.base_sha])
+    fake_git.pull_heads["592"] = head
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        fake_git([
+            "git", "fetch", "origin", "pull/592/head",
+            "refs/remotes/origin/fix/outer",
+        ])
+    assert excinfo.value.returncode == 128
+    assert excinfo.value.stderr == (
+        "fatal: couldn't find remote ref refs/remotes/origin/fix/outer"
+    )
+    assert "fix/outer" not in fake_git.origin
+
+
+def test_fake_git_pull_fetch_is_noop_when_origin_head_already_seeded(fake_git):
+    """Issue #945: inspect may fetch refs/pull/N/head after a test
+    already planted origin/<head> (the pre-#945 resume scene)."""
+    head = fake_git.commit([fake_git.base_sha])
+    fake_git.origin["fix/outer"] = head
+    fake_git([
+        "git", "fetch", "origin",
+        "+refs/pull/592/head:refs/remotes/origin/fix/outer",
+    ])
+    assert fake_git.origin["fix/outer"] == head
+
+
 def test_create_worktree_creates_the_branch_from_the_frozen_base(fake_git):
     base = fake_git.base_sha
     path = gitops.create_worktree(
@@ -95,6 +140,55 @@ def test_create_worktree_takes_over_an_external_branch(fake_git):
     assert any(
         command[:2] == ["git", "fetch"] for command in fake_git.calls
     )
+
+
+def test_create_worktree_second_fork_takeover_force_updates_dest(fake_git):
+    """Issue #963: dest tracking ref already exists; ``+`` still replaces it."""
+    head_branch = "fix/outer"
+    first_head = fake_git.commit([fake_git.base_sha])
+    second_head = fake_git.commit([fake_git.base_sha])
+    fake_git.pull_heads["592"] = first_head
+    gitops.create_worktree(
+        fake_git.repo_dir, "owner/repo", 7, "first", fake_git.base_sha,
+        existing_branch=True, branch=head_branch, pr_number=592,
+    )
+    assert fake_git.origin[head_branch] == first_head
+    fake_git.pull_heads["592"] = second_head
+    gitops.create_worktree(
+        fake_git.repo_dir, "owner/repo", 7, "second", fake_git.base_sha,
+        existing_branch=True, branch=head_branch, pr_number=592,
+    )
+    fetches = [
+        call for call in fake_git.calls if call[:2] == ["git", "fetch"]
+    ]
+    assert fetches == [
+        ["git", "fetch", "origin",
+         "+refs/pull/592/head:refs/remotes/origin/fix/outer"],
+        ["git", "fetch", "origin",
+         "+refs/pull/592/head:refs/remotes/origin/fix/outer"],
+    ]
+    assert fake_git.origin[head_branch] == second_head
+
+
+def test_fake_git_non_forced_pull_refspec_rejects_existing_dest(fake_git):
+    """Without ``+``, an existing dest is a non-fast-forward rejection."""
+    first_head = fake_git.commit([fake_git.base_sha])
+    second_head = fake_git.commit([fake_git.base_sha])
+    fake_git.pull_heads["592"] = second_head
+    fake_git.origin["fix/outer"] = first_head
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        fake_git([
+            "git", "fetch", "origin",
+            "refs/pull/592/head:refs/remotes/origin/fix/outer",
+        ])
+    assert excinfo.value.returncode == 1
+    assert "non-fast-forward" in excinfo.value.stderr
+    assert fake_git.origin["fix/outer"] == first_head
+    fake_git([
+        "git", "fetch", "origin",
+        "+refs/pull/592/head:refs/remotes/origin/fix/outer",
+    ])
+    assert fake_git.origin["fix/outer"] == second_head
 
 
 def test_create_worktree_reuses_a_local_external_branch(fake_git):
