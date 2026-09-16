@@ -393,9 +393,9 @@ def count_crashes(
 def classify_crash(journal_lines: list[str]) -> tuple[str, str]:
     """Classify a crash loop as deployment-config or orbi-bug.
 
-    Returns ``(kind, reason_line)``. ``kind`` is ``"config"`` when the
+    Returns ``(kind, reason_line)``. ``kind`` is ``\"config\"`` when the
     journal carries a fail-fast validation error (CONFIG_CAUSE_RE) — a human
-    must edit the config, no agent can fix it; otherwise ``"bug"`` (an
+    must edit the config, no agent can fix it; otherwise ``\"bug\"`` (an
     orbi-internal defect orbi's own agent can fix). ``reason_line`` is the
     most recent journal line that names the cause (empty when unknown), so
     the receiving agent has the scene.
@@ -686,7 +686,6 @@ def _run_health_check_locked(config: RunnerConfig, *, run_command) -> list[str]:
             )
             if key in state["alerted"]:
                 continue
-            state["alerted"].append(key)
             event(
                 "health_degraded", check="repeated_failure",
                 issue=f"{finding['repo']}#{finding['issue']}",
@@ -703,6 +702,14 @@ def _run_health_check_locked(config: RunnerConfig, *, run_command) -> list[str]:
                 ],
                 timeout=GH_TIMEOUT_SECONDS,
             )
+            # Ship-then-record: the comment is the load-bearing channel.
+            # Recording the dedup key before the ship would let one
+            # failed call (network blip, 5xx) burn the key — the finally
+            # below saves the state unconditionally and the escalation
+            # comment would never be re-sent. The `health_degraded`
+            # journal event stays pre-ship on purpose: a retry repeats
+            # it, preserving the failure scene.
+            state["alerted"].append(key)
             alerts.append(f"repeated_failure:{finding['repo']}#{finding['issue']}")
         # 3. Stale pickup: system stuck vs queue idle.
         if stale_pickup_finding(state):
