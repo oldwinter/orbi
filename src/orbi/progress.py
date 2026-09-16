@@ -28,7 +28,6 @@ from typing import Callable
 from orbi.delivery_scene import RunContext
 from orbi.journal import (
     JOURNAL_EVENTS,
-    LOGGER,
     RUN_ID_PATTERN,
     event,
     issue_context,
@@ -44,6 +43,10 @@ from orbi.pi_activity import activity_snapshot, sanitize
 JOURNAL_EVENTS.setdefault(
     "empty_next_step",
     "a terminal progress comment had an empty next-step blob",
+)
+JOURNAL_EVENTS.setdefault(
+    "activity_snapshot_failed",
+    "reading the live Pi activity snapshot failed (best-effort; the task continues)",
 )
 
 # One marker per run: hidden in the rendered comment, exact for lookup.
@@ -591,8 +594,14 @@ def _progress_state(ctx: RunContext, *, title: str, role: str,
     if activity is None:
         try:
             activity = activity_snapshot(ctx.worktree / ".pi-session")
-        except Exception:
-            LOGGER.exception("issue=%s activity snapshot failed", ctx.issue)
+        except Exception as exc:
+            event(
+                "activity_snapshot_failed",
+                level=logging.ERROR,
+                issue=ctx.issue,
+                run_id=ctx.run_id,
+                error=exc,
+            )
             activity = None
     return {
         "run_id": ctx.run_id,
