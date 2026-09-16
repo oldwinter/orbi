@@ -28,6 +28,7 @@ from orbi.journal import (
     run_command,
     run_git_network_command,
 )
+import orbi.journal as _journal
 
 LOGGER = logging.getLogger("orbi.gitops")
 
@@ -390,6 +391,74 @@ def fetch_base_ref(repo_dir: Path, base_branch: str,
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def fetch_origin_branch(repo_dir: Path, branch: str, *,
+                         cwd: Path | None = None,
+                         command_runner: Callable[[list[str]], str] | None = None,
+                         ) -> None:
+    """Fetch ``origin/<branch>`` even when the clone is single-branch.
+
+    ``git fetch origin <branch>`` only updates FETCH_HEAD when
+    ``remote.origin.fetch`` is ``+refs/heads/<base>:refs/remotes/origin/<base>``.
+    After a successful push of a new delivery branch, ``git rev-parse
+    origin/<branch>`` then exits 128 (Issue #898). The destination
+    refspec is explicit so the clone's default fetchspec cannot drop
+    the remote-tracking ref. Fail-fast: a fetch error raises, no
+    fallback, no retry beyond ``run_git_network_command``.
+    """
+    if command_runner is None:
+        command_runner = run_command
+    run_git_network_command(
+        [
+            "git", "fetch", "origin",
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+        ],
+        cwd=cwd if cwd is not None else repo_dir,
+        command_runner=command_runner,
+    )
+
+
+def _delivery_branch_from_push(command: list[str]) -> str | None:
+    """Return the ``orbi/*`` dest of ``git push origin HEAD:<branch>``."""
+    if command[:3] != ["git", "push", "origin"] or len(command) < 4:
+        return None
+    refspec = command[3]
+    if ":" not in refspec:
+        return None
+    dest = refspec.split(":", 1)[1].removeprefix("refs/heads/")
+    if dest.startswith("orbi/"):
+        return dest
+    return None
+
+
+_PUSH_NETWORK_COMMAND = run_git_network_command
+
+
+def _push_then_fetch_delivery_branch(
+    command: list[str], *, cwd: Path | str | None = None,
+    command_runner: Callable[..., str] | None = None,
+) -> str:
+    """After a successful ``orbi/*`` branch push, fetch origin/<branch>.
+
+    ``deliver_pr`` (and the merge-gate absorb of the same head) push
+    then ``git rev-parse origin/<branch>``. On a single-branch clone
+    that tracking ref does not exist until this fetch (Issue #898).
+    Protected-branch / tag pushes are unchanged.
+    """
+    result = _PUSH_NETWORK_COMMAND(
+        command, cwd=cwd, command_runner=command_runner,
+    )
+    branch = _delivery_branch_from_push(command)
+    if branch is not None:
+        dest = Path(cwd) if cwd is not None else Path(".")
+        fetch_origin_branch(
+            dest, branch, cwd=cwd, command_runner=command_runner,
+        )
+    return result
+
+
+_journal.run_git_network_command = _push_then_fetch_delivery_branch
 
 
 def freeze_base(repo_dir: Path, base_branch: str) -> str:

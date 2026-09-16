@@ -604,12 +604,118 @@ def _progress_state(ctx: RunContext, *, title: str, role: str,
     }
 
 
+# Leading argv tokens from a CalledProcessError repr. The first three
+# (gh issue comment / git fetch origin) name the action; later flags
+# and payloads stay in the folded Raw error block.
+_COMMAND_FAILURE_HEAD_RE = re.compile(
+    r"^Command '\[(?P<head>(?:'[^']*'(?:, )?){1,4})",
+)
+_TERMINAL_OUTCOME_RE = re.compile(
+    r"^\*\*Orbi (?P<outcome>.+)\*\*\n\n"
+    r"failure: (?P<detail>.*)\n"
+    r"next step: (?P<next_step>.*)\Z",
+    re.DOTALL,
+)
+
+
+def humanize_failure(detail: str) -> str:
+    """One-line human description; never a Python exception repr.
+
+    Subprocess failures keep the command verb and stderr. Everything
+    else is collapsed to a single line so a GitHub Issue comment stays
+    readable. The original ``detail`` is preserved under Raw error.
+    """
+    text = detail.strip()
+    if not text:
+        return "An error occurred."
+    head_match = _COMMAND_FAILURE_HEAD_RE.match(text)
+    status_match = re.search(r"returned non-zero exit status (\d+)", text)
+    if head_match is not None and status_match is not None:
+        argv = re.findall(r"'([^']*)'", head_match.group("head"))
+        verb = " ".join(argv[:3])
+        status = status_match.group(1)
+        stderr = ""
+        marker = " stderr="
+        if marker in text:
+            stderr = " ".join(text.split(marker, 1)[1].split())
+        if stderr:
+            return f"{verb} failed (exit {status}): {stderr}"
+        return f"{verb} failed (exit {status})"
+    return " ".join(text.split())
+
+
+def _user_next_action(*, outcome: str, next_step: str) -> str:
+    """What the human must do. Empty next_step is Nothing, never blank."""
+    stripped = next_step.strip()
+    if not stripped:
+        return "Nothing"
+    if outcome == "blocked":
+        return stripped
+    return "Nothing"
+
+
+def _orbi_next_action(*, outcome: str, next_step: str,
+                      pr_url: str | None) -> str:
+    """What Orbi will do next; the open PR URL is required when known."""
+    stripped = next_step.strip()
+    if outcome == "blocked":
+        action = "The Issue stays ai-blocked until a human decides."
+    elif stripped:
+        action = stripped
+    else:
+        action = "The next tick resumes the same run automatically."
+    if pr_url:
+        action = f"{action} Open PR: {pr_url}"
+    return action
+
+
+def _rewrite_terminal_outcome(outcome: str, *, state: dict) -> str:
+    """Turn failure/next-step blobs into three readable sections.
+
+    Callers still pass the compact ``failure:`` / ``next step:``
+    block. The comment a stranger sees is What happened / What you need
+    to do / What Orbi will do next, with the raw detail folded. Hidden
+    run markers in the progress body below are unchanged.
+    """
+    match = _TERMINAL_OUTCOME_RE.match(outcome)
+    if match is None:
+        return outcome
+    name = match.group("outcome")
+    detail = match.group("detail")
+    next_step = match.group("next_step")
+    if not next_step.strip():
+        LOGGER.warning(
+            "empty_next_step issue=%s run_id=%s outcome=%s",
+            state.get("issue"), state.get("run_id"), name,
+        )
+    happened = humanize_failure(detail)
+    you_do = _user_next_action(outcome=name, next_step=next_step)
+    pr_url = state.get("pr")
+    if pr_url in (None, "", "-"):
+        pr_url = None
+    orbi_next = _orbi_next_action(
+        outcome=name, next_step=next_step, pr_url=pr_url,
+    )
+    raw_lines = [f"failure: {detail}"]
+    if next_step.strip():
+        raw_lines.append(f"next step: {next_step.strip()}")
+    return (
+        f"**Orbi {name}**\n\n"
+        f"What happened: {happened}\n"
+        f"What you need to do: {you_do}\n"
+        f"What Orbi will do next: {orbi_next}\n\n"
+        f"<details><summary>Raw error</summary>\n\n"
+        f"{'\n'.join(raw_lines)}\n"
+        f"</details>"
+    )
+
+
 def _progress_body(state: dict, *, outcome: str | None = None) -> str:
     """Render the progress body, optionally with a final outcome header."""
     body = progress_body(state)
     if outcome is None:
         return body
-    return f"{outcome}\n\n{body}"
+    return f"{_rewrite_terminal_outcome(outcome, state=state)}\n\n{body}"
 
 
 def _safe_publish(*, run_id: str, issue: int, source_repo: str,
