@@ -114,6 +114,12 @@ engine_source_track = "release"
 # greppable. Default false: unset matches today's journal. Host-only,
 # like `auto_next_milestone`. Invalid values fail the config load fast.
 # warn_on_dangling_milestone = false
+# When a Milestone is finished (open_issues == 0) and nobody opened
+# an ai-release ticket, the idle tick can mint one from the engine
+# template. Default false: unset matches today (arm existing tickets
+# only). Host-only, like `auto_next_milestone`. Invalid values fail the
+# config load fast.
+# auto_create_release_ticket = false
 # Hung-model-request threshold: seconds of silence in
 # `model_wait` (the newest COMPLETE Pi session event is a tool result
 # and no new event arrives) after which the Runner declares the model
