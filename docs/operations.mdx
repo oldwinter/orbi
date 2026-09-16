@@ -549,6 +549,7 @@ registry — in both directions (a name only in code or only in docs fails
 | `pi_429_attempts_clear_failed` | clearing the 429 attempt counter failed |
 | `progress_publish_failed` | the progress comment could not be published (pure bypass) |
 | `empty_next_step` | a terminal progress comment had an empty next-step blob |
+| `activity_snapshot_failed` | reading the live Pi activity snapshot failed (best-effort; the task continues) |
 | `config_invalid` | the runner config failed validation (no start) |
 | `transport` | the pre-start git transport check passed |
 | `transport_check_failed` | the pre-start git transport check failed (no start) |
@@ -860,7 +861,7 @@ can migrate deliberately:
 - **Labels and lifecycle:** `labels.toml` together with
   `src/orbi/delivery_labels.py`, and the `ai-ready`, `ai-in-progress`,
   `ai-pr-opened`, `ai-fix-needed`, `ai-merged`, and `ai-blocked` state machine.
-- **Observability:** journal lines begin with `[run_id]` and use stable event
+- **Observability:** journal lines begin with `[<run_id>]` and use stable event
   names such as `run_start`, `run_end`, `activity`, `heartbeat`, `resumed`,
   `run_failed`, and the startup/recovery events documented in [Logs (journal)](#logs-journal).
   The live Pi record is `<worktree>/.pi-session/*.jsonl`.
