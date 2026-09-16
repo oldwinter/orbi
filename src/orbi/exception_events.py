@@ -22,17 +22,18 @@ import sys
 import orbi.journal as journal
 from orbi.journal import JOURNAL_EVENTS, event
 
-# runner.py is too large to land here. The stop-scene snapshot
-# read is best-effort prose, not a kind token, so the #21 wrap
-# would otherwise treat the English word ``activity`` as the live
-# high-frequency kind. Map the exact format string onto the
-# registered kind that progress.py already emits.
+# runner.py is too large to land here. Snapshot-read failures are
+# best-effort prose, not a kind token, so the #21 wrap would otherwise
+# treat the English word ``activity`` as the live high-frequency kind.
+# Map those exact format strings onto the registered kind that
+# progress.py already emits.
 JOURNAL_EVENTS.setdefault(
     "activity_snapshot_failed",
     "reading the live Pi activity snapshot failed (best-effort; the task continues)",
 )
 _PROSE_TO_KIND = {
     "stop scene activity snapshot failed": "activity_snapshot_failed",
+    "issue=%s activity scene failed": "activity_snapshot_failed",
 }
 
 
@@ -46,32 +47,10 @@ def _first_token(msg: str) -> str:
     return parts[0].rstrip(".,;:")
 
 
-def registered_kind_and_fields(msg: object, args: tuple) -> tuple[str, dict] | None:
-    """Return ``(kind, fields)`` when ``msg`` carries a registered kind.
-
-    Exact prose aliases in ``_PROSE_TO_KIND`` (the stop-scene snapshot
-    read in ``runner.py``) map onto a registered kind first, so the
-    English word ``activity`` is not treated as the live snapshot kind.
-    Remaining prose (``issue=%s failed``, ``failure history read
-    failed``) has no registered kind as a whole token and is left
-    alone.
-    """
-    if not isinstance(msg, str):
-        return None
-    prose_kind = _PROSE_TO_KIND.get(msg)
-    if prose_kind is not None:
-        error = sys.exc_info()[1]
-        return prose_kind, {
-            "error": error if error is not None else msg,
-        }
-    kind: str | None = None
+def _format_keys(msg: str) -> list[str]:
     keys: list[str] = []
     for token in msg.split():
         bare = token.rstrip(".,;:")
-        if bare in journal.JOURNAL_EVENTS:
-            if kind is None:
-                kind = bare
-            continue
         if "=" not in bare:
             continue
         key, _, rest = bare.partition("=")
@@ -79,15 +58,42 @@ def registered_kind_and_fields(msg: object, args: tuple) -> tuple[str, dict] | N
             continue
         if any(spec in rest for spec in ("%s", "%d", "%r", "%i")):
             keys.append(key)
-    if kind is None:
-        return None
+    return keys
+
+
+def _fields_from(msg: str, args: tuple) -> dict:
     fields: dict = {}
-    for index, key in enumerate(keys):
+    for index, key in enumerate(_format_keys(msg)):
         if index < len(args):
             fields[key] = args[index]
     error = sys.exc_info()[1]
     fields["error"] = error if error is not None else msg
-    return kind, fields
+    return fields
+
+
+def registered_kind_and_fields(msg: object, args: tuple) -> tuple[str, dict] | None:
+    """Return ``(kind, fields)`` when ``msg`` carries a registered kind.
+
+    Exact prose aliases in ``_PROSE_TO_KIND`` (stop-scene and failure-
+    scene snapshot reads in ``runner.py``) map onto a registered kind
+    first, so the English word ``activity`` is not treated as the live
+    snapshot kind. Remaining prose (``issue=%s failed``, ``failure
+    history read failed``) has no registered kind as a whole token
+    and is left alone.
+    """
+    if not isinstance(msg, str):
+        return None
+    prose_kind = _PROSE_TO_KIND.get(msg)
+    if prose_kind is not None:
+        return prose_kind, _fields_from(msg, args)
+    kind: str | None = None
+    for token in msg.split():
+        bare = token.rstrip(".,;:")
+        if bare in journal.JOURNAL_EVENTS and kind is None:
+            kind = bare
+    if kind is None:
+        return None
+    return kind, _fields_from(msg, args)
 
 
 def _exception_with_registered_kind_event(msg, *args, **kwargs):
