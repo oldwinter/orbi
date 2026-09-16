@@ -345,24 +345,44 @@ def test_no_module_outside_journal_and_cli_builds_kind_lines():
     )
 
 
+def _kind_literals(node: ast.AST) -> list[str]:
+    """String constants that can be the kind argument of event().
+
+    Issue #975: runner.py imports ``event`` and passes a ternary
+    (``"review_human_decision_required" if ... else "..."``). A net
+    that only reads ``journal.event('literal')`` lets that leak crash
+    the tick.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.IfExp):
+        return _kind_literals(node.body) + _kind_literals(node.orelse)
+    return []
+
+
+def _is_journal_event_call(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == "event":
+        return True
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "event"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "journal"
+    )
+
+
 def _unregistered_event_calls(source: str) -> list[tuple[int, str]]:
-    """(lineno, kind) of journal.event calls with an unregistered kind."""
-    tree = ast.parse(source)
+    """(lineno, kind) of event() / journal.event calls with an unregistered kind."""
     found: list[tuple[int, str]] = []
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "event"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "journal"):
+    for node in ast.walk(ast.parse(source)):
+        if not _is_journal_event_call(node) or not node.args:
             continue
-        if not node.args:
-            continue
-        kind = node.args[0]
-        if (isinstance(kind, ast.Constant)
-                and isinstance(kind.value, str)
-                and kind.value not in journal.JOURNAL_EVENTS):
-            found.append((node.lineno, kind.value))
+        for kind in _kind_literals(node.args[0]):
+            if kind not in journal.JOURNAL_EVENTS:
+                found.append((node.lineno, kind))
     return found
 
 
@@ -373,8 +393,16 @@ def test_event_call_detector_flags_unregistered_kinds_only():
         "journal.event()\n"
         "journal.event('definitely_not_registered', x=1)\n"
         "other.event('also_unregistered')\n"
+        "event('definitely_not_registered')\n"
+        "event('run_end' if x else 'definitely_not_registered')\n"
+        "event('run_end')\n"
+        "event(12)\n"
     )
-    assert _unregistered_event_calls(source) == [(4, "definitely_not_registered")]
+    assert _unregistered_event_calls(source) == [
+        (4, "definitely_not_registered"),
+        (6, "definitely_not_registered"),
+        (7, "definitely_not_registered"),
+    ]
 
 
 def _unregistered_event_offenders(
