@@ -256,6 +256,36 @@ def test_dangling_state_closed_missing_and_open():
     assert milestone_idle.dangling_state(["ignore"], "v0.6.0") == "missing"
 
 
+def test_github_list_milestones_wrap_observes(monkeypatch):
+    import orbi.github as github
+    seen = []
+    monkeypatch.setattr(
+        milestone_idle, "observe_idle_milestones",
+        lambda repo, milestones: seen.append((repo, milestones)),
+    )
+
+    def orig(repo, *, timeout=None):
+        del timeout
+        return [{"title": "v0.6.0", "state": "closed"}]
+
+    monkeypatch.setattr(github, "list_milestones", orig)
+    milestone_idle._wrap_list_milestones()
+    assert github.list_milestones("o/r") == [{"title": "v0.6.0", "state": "closed"}]
+    assert seen == [("o/r", [{"title": "v0.6.0", "state": "closed"}])]
+    milestone_idle._wrap_list_milestones()
+
+
+def test_wrap_list_milestones_skips_without_github(monkeypatch):
+    monkeypatch.delitem(sys.modules, "orbi.github")
+    milestone_idle._wrap_list_milestones()
+
+
+def test_cli_source_milestone_hook_is_idempotent():
+    from orbi.cli_source import _hook_milestone_idle
+    _hook_milestone_idle()
+    _hook_milestone_idle()
+
+
 def test_install_is_idempotent_and_noop_without_runner(monkeypatch):
     milestone_idle.install()
     milestone_idle.install()
