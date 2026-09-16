@@ -82,6 +82,50 @@ def test_release_failed_key_first_emits_event(caplog):
     assert "error=" in events[0].message
 
 
+def test_stop_scene_prose_emits_activity_snapshot_failed(caplog):
+    with caplog.at_level("ERROR", logger="orbi.bootstrap"):
+        try:
+            raise RuntimeError("unreadable session")
+        except RuntimeError:
+            journal.LOGGER.exception("stop scene activity snapshot failed")
+    events = _event_records(caplog, "activity_snapshot_failed")
+    assert len(events) == 1, caplog.text
+    assert events[0].levelno == logging.ERROR
+    assert 'error="unreadable session"' in events[0].message
+    assert not _event_records(caplog, "activity")
+    orig = [
+        record for record in caplog.records
+        if record.message.startswith("stop scene activity snapshot failed")
+    ]
+    assert orig, caplog.text
+    assert orig[0].exc_info and orig[0].exc_info[1] is not None
+
+
+def test_stop_scene_prose_parser_maps_to_registered_kind():
+    parsed = exception_events.registered_kind_and_fields(
+        "stop scene activity snapshot failed", (),
+    )
+    assert parsed is not None
+    kind, fields = parsed
+    assert kind == "activity_snapshot_failed"
+    assert "error" in fields
+
+
+def test_runner_stop_scene_still_uses_the_mapped_prose():
+    from pathlib import Path
+    runner = (
+        Path(__file__).resolve().parent.parent / "src" / "orbi" / "runner.py"
+    )
+    source = runner.read_text(encoding="utf-8")
+    assert 'LOGGER.exception("stop scene activity snapshot failed")' in source
+    assert (
+        exception_events._PROSE_TO_KIND[
+            "stop scene activity snapshot failed"
+        ]
+        == "activity_snapshot_failed"
+    )
+
+
 def test_prose_without_kind_token_does_not_emit_event(caplog):
     with caplog.at_level("ERROR", logger="orbi.bootstrap"):
         try:
