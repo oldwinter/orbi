@@ -12,9 +12,9 @@ editing, no second state, no guessing:
   (`rewrite_active_milestone_line`);
 - every failure (missing target, duplicate title, GitHub API /
   permission failure, config without the field, missing config,
-  unwritable config) exits non-zero with one structured
-  `milestone_set_failed reason=... fix=...` line on stderr and leaves
-  the config file untouched;
+  unwritable config, `auto_next_milestone` still true) exits non-zero
+  with one structured `milestone_set_failed reason=... fix=...` line
+  on stderr and leaves the config file untouched;
 - the command does NOT sync the `ORBI_ACTIVE_MILESTONE` Actions
   variable itself: the Runner's preflight syncs it on the next tick
   (the bypass contract), and the success output says so.
@@ -39,13 +39,17 @@ from tests.fakes.github import FakeGh
 REPO = "octocat/hello-world"
 
 
-def make_world(tmp_path: Path, *, milestone: str | None = "v0.5.0") -> Path:
+def make_world(tmp_path: Path, *, milestone: str | None = "v0.5.0",
+                 auto_next_milestone: bool | None = False) -> Path:
     """A minimal valid deployment layout; returns the config path.
 
     The same shape `orbi check`'s world uses: an explicit deploy home
     (prompts + provider starter + env file) and a `run/orbi.toml`
     carrying the source repo — plus the `active_milestone` line this
     command advances (omitted for the no-field failure path).
+    Default `auto_next_milestone = false` is the confirmation flow
+    this command is for (Issue #933); pass True or None for the
+    refuse-under-default tests.
     """
     home = tmp_path / "home"
     (home / "prompts").mkdir(parents=True)
@@ -71,6 +75,11 @@ def make_world(tmp_path: Path, *, milestone: str | None = "v0.5.0") -> Path:
     ]
     if milestone is not None:
         lines.append(f'active_milestone = "{milestone}"')
+    if auto_next_milestone is not None:
+        lines.append(
+            "auto_next_milestone = "
+            f"{'true' if auto_next_milestone else 'false'}"
+        )
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return config_path
 

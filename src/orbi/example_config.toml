@@ -105,7 +105,9 @@ engine_source_track = "release"
 # active_milestone = "v0.2.0"
 # When false, a closed active milestone pauses here and creates one
 # ai-ready + p0 confirmation Issue instead of rewriting this file.
-# Missing keeps the existing automatic-advance behavior.
+# Missing keeps the existing automatic-advance behavior. `orbi
+# milestone set` refuses while this is true (the default): the next
+# idle tick would overwrite the value the command just wrote.
 # auto_next_milestone = true
 # Hung-model-request threshold: seconds of silence in
 # `model_wait` (the newest COMPLETE Pi session event is a tool result
