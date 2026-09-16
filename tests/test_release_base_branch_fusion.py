@@ -268,6 +268,76 @@ def test_fuse_uses_an_explicit_policy_without_reloading(monkeypatch):
     assert source_base._fuse(config, "o/r", policy).base_branch == "release"
 
 
+def test_process_issue_skips_policy_fetch_when_policy_is_none(monkeypatch):
+    """``main()`` already called ``load_repo_policy``; passing
+    ``None`` means there is no file. Re-fetching is a wasted 404 on
+    every new claim."""
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        source_base, "_orig_process_issue",
+        lambda issue, config, source_repo, repo_policy=None: seen.setdefault(
+            "issue", (config.base_branch, repo_policy),
+        ),
+    )
+    source_base.process_issue({}, config, "o/r")
+    assert seen["issue"] == ("develop", None)
+
+
+def test_process_issue_applies_an_explicit_policy_without_fetch(monkeypatch):
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    policy = repo_config.RepoPolicy(base_branch="release")
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        source_base, "_orig_process_issue",
+        lambda issue, config, source_repo, repo_policy=None: seen.setdefault(
+            "issue", (config.base_branch, repo_policy),
+        ),
+    )
+    source_base.process_issue({}, config, "o/r", policy)
+    assert seen["issue"] == ("release", policy)
+
+
+def test_process_issue_preserves_already_applied_policy_overlay(monkeypatch):
+    """``main()`` fuses via ``apply_repo_policy`` then calls
+    ``process_issue`` with the same ``repo_policy``. Skip-fetch must
+    keep ``release``, not rewrite the raw entry."""
+    config = runner.RunnerConfig(
+        base_branch="main",
+        repositories=({"github": "o/r", "base_branch": "develop"},),
+    )
+    policy = repo_config.RepoPolicy(base_branch="release")
+    fused = runner.apply_repo_policy(config, "o/r", policy)
+    monkeypatch.setattr(
+        runner, "load_repo_policy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        source_base, "_orig_process_issue",
+        lambda issue, config, source_repo, repo_policy=None: seen.setdefault(
+            "base", config.base_branch,
+        ),
+    )
+    source_base.process_issue({}, fused, "o/r", policy)
+    source_base.process_issue({}, fused, "o/r")
+    assert seen["base"] == "release"
+
+
 def test_fuse_treats_a_policy_load_failure_as_no_policy(monkeypatch):
     monkeypatch.setattr(
         runner, "load_repo_policy",
