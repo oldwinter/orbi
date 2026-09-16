@@ -1,1 +1,1 @@
-PLACEHOLDER
+/tmp/mcp_content_only.txt
