@@ -1,1 +1,1 @@
-TRUNCATED_TEST
+/tmp/upload_content_only.txt
