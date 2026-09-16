@@ -32,7 +32,7 @@ def git(repo: Path, *args: str) -> str:
     """The one fail-fast git scaffold for the smoke/e2e suites (Issue
     #908): a non-zero exit is an AssertionError carrying the rc, stdout
     and stderr, never a silent pass. Guarded by
-    ``tests/test_suite_hygiene.py`."""
+    ``tests/test_suite_hygiene.py``."""
     result = subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True,
         timeout=30,
