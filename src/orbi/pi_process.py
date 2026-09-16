@@ -1395,9 +1395,12 @@ def _stream_pi_once(
                 try:
                     progress(activity)
                 except Exception:
-                    LOGGER.exception(
-                        "progress_publish_failed run=%s issue=%s role=%s",
-                        run_id, issue_ref, role,
+                    event(
+                        "progress_publish_failed",
+                        level=logging.ERROR,
+                        run=run_id,
+                        issue=issue_ref,
+                        role=role,
                     )
             # Swallowed-model-request detection: the model
             # is expected to reply next (model_wait) and the /slots probe
