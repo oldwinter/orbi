@@ -543,7 +543,11 @@ host key: after a release closes the active Milestone, the idle tick
 either rewrites the host `orbi.toml` (`auto_next_milestone = true`) or
 pauses for confirmation (`false`). The warn flag does **not** advance;
 it only emits `active_milestone_dangling` so a stall is greppable.
-Neither flag is repository-writable.
+`auto_create_release_ticket` (default `false`) is the same kind of
+host key on the other side of a release: when the Milestone is still
+open, `open_issues` is 0, and no `ai-release` ticket exists, the idle
+tick can mint one from the engine template. None of these flags is
+repository-writable.
 `dispatch_label` must not be a delivery lifecycle label
 (`ai-in-progress`, `ai-merged`, …): those stay host constants. The block
 lands on the Issue the claim selected; a repository whose
