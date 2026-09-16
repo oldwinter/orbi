@@ -16,7 +16,12 @@ from pathlib import Path
 import pytest
 
 import orbi.runner as runner
+from orbi.source_base import install as install_source_base
 from seam import seam
+
+# Issue #931: fuse [[repositories]] base_branch with .github/orbi.toml
+# so release and the dev path cannot resolve different branches.
+install_source_base()
 
 
 def git(repo: Path, *args: str) -> str:
