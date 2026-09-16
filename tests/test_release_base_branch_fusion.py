@@ -254,7 +254,7 @@ def test_install_skips_while_runner_is_still_loading(monkeypatch):
 
 def test_fuse_uses_an_explicit_policy_without_reloading(monkeypatch):
     """A caller that already loaded the policy must not hit GitHub
-    again; ``_fuse(..., policy)`` skips ``load_repo_policy`."""
+    again; ``_fuse(..., policy)`` skips ``load_repo_policy``."""
     config = runner.RunnerConfig(
         base_branch="main",
         repositories=({"github": "o/r", "base_branch": "develop"},),
