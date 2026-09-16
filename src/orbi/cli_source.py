@@ -387,3 +387,29 @@ def refresh_cli_install(
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def _hook_source_base_on_slot() -> None:
+    """Issue #931: install fusion once the runner module has finished
+    loading. ``cli_source`` is imported before ``process_issue`` exists,
+    so the wrap waits until ``acquire_slot`` (already bound) runs.
+    """
+    import sys
+
+    runner_mod = sys.modules.get("orbi.runner")
+    if runner_mod is None or not hasattr(runner_mod, "acquire_slot"):
+        return
+    orig = runner_mod.acquire_slot
+    if getattr(orig, "_source_base_hooked", False):
+        return
+
+    def acquire_slot(*args, **kwargs):
+        from orbi.source_base import install
+        install()
+        return orig(*args, **kwargs)
+
+    acquire_slot._source_base_hooked = True
+    runner_mod.acquire_slot = acquire_slot
+
+
+_hook_source_base_on_slot()
