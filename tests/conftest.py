@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import orbi.runner as runner
+from orbi.auto_release_ticket import install as install_auto_release_ticket
 from orbi.milestone_idle import install as install_milestone_idle
 from orbi.milestone_toml import install as install_milestone_toml
 from orbi.source_base import install as install_source_base
@@ -29,6 +30,9 @@ install_milestone_toml()
 install_source_base()
 # Issue #855: wrap load_config so warn_on_dangling_milestone is typed.
 install_milestone_idle()
+# Issue #856: wrap arm_release_ticket so a finished Milestone can mint
+# one ai-release ticket when the host flag is true.
+install_auto_release_ticket()
 
 
 def git(repo: Path, *args: str) -> str:
