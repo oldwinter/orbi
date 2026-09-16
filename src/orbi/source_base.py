@@ -10,12 +10,14 @@ only when a policy file existed.
 they all read one fused ``config.base_branch``. ``runner.py`` / ``release.py``
 are not edited.
 
-``delivery_step`` / ``verify_resumed_pr`` must not fetch
-``.github/orbi.toml``: ``runner.main`` already loaded the policy once
-for the whole delivery. Those wrappers only apply the local
-``[[repositories]]`` entry. An already-fused config (policy overlay
-from ``apply_repo_policy``) is returned unchanged so the overlay is not
-overwritten by the raw entry.
+``delivery_step`` / ``verify_resumed_pr`` / ``process_issue`` must not
+fetch ``.github/orbi.toml``: ``runner.main`` already loaded the policy
+once for the whole delivery. Those wrappers only apply the local
+``[[repositories]]`` entry (or an explicit ``repo_policy``). An
+already-fused config (policy overlay from ``apply_repo_policy``) is
+returned unchanged so the overlay is not overwritten by the raw
+entry. ``process_release`` still loads when it has no policy — it is
+the standalone release entry.
 """
 from __future__ import annotations
 
@@ -138,7 +140,9 @@ def process_release(issue, config, source_repo):
 
 def process_issue(issue, config, source_repo, repo_policy=None):
     return _orig_process_issue(
-        issue, _fuse(config, source_repo, repo_policy), source_repo,
+        issue,
+        _fuse(config, source_repo, repo_policy, fetch_policy=False),
+        source_repo,
         repo_policy,
     )
 
