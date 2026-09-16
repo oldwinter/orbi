@@ -42,12 +42,12 @@ def git(repo: Path, *args: str) -> str:
 
 
 def pytest_collection_modifyitems(config, items):
-    """Issue #898 adds a post-push fetch of the delivery branch.
+    """Skip tests replaced by dedicated files after engine changes.
 
-    The pre-#898 closeout test counted every ``git fetch origin`` and
-    required none after push. That assertion is replaced by
-    ``tests/test_fetch_after_push.py``.
+    Issue #898: post-push fetch of the delivery branch.
+    Issue #971: wall-clock idle/run-id case on macOS CI.
     """
+    del config
     for item in items:
         if item.name == (
             "test_deliver_pr_verifies_the_pr_with_the_latest_base_check_skipped"
@@ -57,6 +57,11 @@ def pytest_collection_modifyitems(config, items):
                     "Issue #898 fetches origin/<delivery> after push; "
                     "see tests/test_fetch_after_push.py"
                 ),
+            ))
+        if item.name == "test_stream_pi_idle_lines_carry_run_id_exactly_once":
+            item.add_marker(pytest.mark.skip(
+                reason="Issue #971: wall-clock flake; replaced by "
+                "tests/test_pi_idle_run_id.py",
             ))
 
 
@@ -143,19 +148,3 @@ def systemd_scheduler(monkeypatch):
     monkeypatch.setattr(
         scheduler, "detect", lambda system=None: real_detect("Linux"),
     )
-
-
-def pytest_collection_modifyitems(items):
-    """Issue #971: the bootstrap idle/run-id case sleeps real time
-    between session records. macOS CI scheduling jitter then either
-    fires a second idle window or kills the session before a2
-    arrives, and ``check_release_gates`` blocks the release. The
-    replacement in ``tests/test_pi_idle_run_id.py`` drives the same
-    journal contract off a fake clock.
-    """
-    for item in items:
-        if item.name == "test_stream_pi_idle_lines_carry_run_id_exactly_once":
-            item.add_marker(pytest.mark.skip(
-                reason="Issue #971: wall-clock flake; replaced by "
-                "tests/test_pi_idle_run_id.py",
-            ))
