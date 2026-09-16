@@ -63,7 +63,7 @@ from orbi.pi_activity import activity_snapshot
 
 # Idle auto-advance looks up rewrite_active_milestone_line on the runner
 # module. Install the TOML serializer before any tick so a Milestone
-# title containing `"` or `\\` cannot poison orbi.toml (Issue #930).
+# title containing `"` or `\` cannot poison orbi.toml (Issue #930).
 install_milestone_toml()
 
 LOGGER = logging.getLogger("orbi.cli")
