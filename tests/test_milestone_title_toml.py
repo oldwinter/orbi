@@ -1,20 +1,19 @@
-"""Milestone titles containing ``"`` or ``\\`` must write valid TOML
+"""Milestone titles containing a quote or backslash must write valid TOML
 (Issue #930).
 
-The old ``rewrite_active_milestone_line`` interpolated the raw title
-into a TOML basic string and passed that text to ``re.subn``:
+The old rewrite interpolated the raw title into a TOML basic string
+and passed that text to re.subn:
 
-- a ``"`` in the title wrote ``active_milestone = "say "hi"`` —
-  invalid TOML on disk while the command reported success, so the next
-  tick died in ``load_config``;
-- a ``\\`` travelled into the replacement string as an escape and
-  raised ``re.error``, outside the command's failure contract (a raw
-  traceback instead of one structured ``milestone_set_failed`` line).
+- a quote in the title wrote invalid TOML on disk while the command
+  reported success, so the next tick died in load_config;
+- a backslash travelled into the replacement string as an escape and
+  raised re.error, outside the command's failure contract (a raw
+  traceback instead of one structured milestone_set_failed line).
 
-``json.dumps`` emits a TOML-compatible basic string; a lambda keeps
-the replacement out of the regex escape layer. The same serializer is
-rebound onto ``orbi.runner`` so idle auto-advance cannot write a
-poisoned config either.
+json.dumps emits a TOML-compatible basic string; a lambda keeps the
+replacement out of the regex escape layer. The same serializer is
+rebound onto orbi.runner so idle auto-advance cannot write a poisoned
+config either.
 """
 from __future__ import annotations
 
@@ -32,6 +31,10 @@ from tests.test_cli_milestone import REPO, make_world, run_set, wire
 
 from seam import seam
 
+QUOTE_TITLE = 'say "hi"'
+BACKSLASH_TITLE = "back" + chr(92) + "slash"
+MIXED_TITLE = 'say "hi" ' + chr(92) + " there"
+
 
 def _write_config(tmp_path: Path, line: str) -> Path:
     config = tmp_path / "orbi.toml"
@@ -44,24 +47,24 @@ def _write_config(tmp_path: Path, line: str) -> Path:
 
 def test_quote_title_writes_tomllib_parseable_basic_string(tmp_path):
     config = _write_config(tmp_path, 'active_milestone = "v0.3.0"')
-    rewrite_active_milestone_line(config, 'say "hi"')
+    rewrite_active_milestone_line(config, QUOTE_TITLE)
     parsed = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert parsed["active_milestone"] == 'say "hi"'
+    assert parsed["active_milestone"] == QUOTE_TITLE
     assert parsed["other"] == "x"
 
 
 def test_backslash_title_writes_tomllib_parseable_basic_string(tmp_path):
     config = _write_config(tmp_path, 'active_milestone = "v0.3.0"')
-    rewrite_active_milestone_line(config, r"back\\slash")
+    rewrite_active_milestone_line(config, BACKSLASH_TITLE)
     parsed = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert parsed["active_milestone"] == r"back\\slash"
+    assert parsed["active_milestone"] == BACKSLASH_TITLE
 
 
 def test_quote_and_backslash_title_round_trips(tmp_path):
     config = _write_config(tmp_path, "active_milestone = 'v0.3.0'")
-    rewrite_active_milestone_line(config, r'say "hi" \\ there')
+    rewrite_active_milestone_line(config, MIXED_TITLE)
     parsed = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert parsed["active_milestone"] == r'say "hi" \\ there'
+    assert parsed["active_milestone"] == MIXED_TITLE
 
 
 def test_plain_title_still_matches_existing_byte_contract(tmp_path):
@@ -78,7 +81,7 @@ def test_rewrite_fails_when_active_milestone_line_is_missing(tmp_path):
     config = tmp_path / "orbi.toml"
     config.write_text('source_repos = ["owner/repo"]\n', encoding="utf-8")
     with pytest.raises(RuntimeError, match="active_milestone line not found"):
-        rewrite_active_milestone_line(config, 'say "hi"')
+        rewrite_active_milestone_line(config, QUOTE_TITLE)
 
 
 def test_install_rebinds_runner_so_idle_lookup_escapes(tmp_path, monkeypatch):
@@ -101,9 +104,9 @@ def test_install_rebinds_runner_so_idle_lookup_escapes(tmp_path, monkeypatch):
     )
 
     config = _write_config(tmp_path, 'active_milestone = "v0.3.0"')
-    runner.rewrite_active_milestone_line(config, 'say "hi"')
+    runner.rewrite_active_milestone_line(config, QUOTE_TITLE)
     parsed = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert parsed["active_milestone"] == 'say "hi"'
+    assert parsed["active_milestone"] == QUOTE_TITLE
 
 
 def test_milestone_set_title_with_double_quote_writes_valid_toml(
@@ -111,13 +114,13 @@ def test_milestone_set_title_with_double_quote_writes_valid_toml(
 ):
     config_path = make_world(tmp_path)
     gh = FakeGh(REPO)
-    gh.add_milestone(1, title='say "hi"', open_issues=1)
+    gh.add_milestone(1, title=QUOTE_TITLE, open_issues=1)
     wire(monkeypatch, gh)
 
-    assert run_set(config_path, 'say "hi"') == 0
+    assert run_set(config_path, QUOTE_TITLE) == 0
 
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert parsed["active_milestone"] == 'say "hi"'
+    assert parsed["active_milestone"] == QUOTE_TITLE
 
 
 def test_milestone_set_title_with_backslash_writes_valid_toml(
@@ -125,15 +128,15 @@ def test_milestone_set_title_with_backslash_writes_valid_toml(
 ):
     config_path = make_world(tmp_path)
     gh = FakeGh(REPO)
-    gh.add_milestone(1, title=r"back\\slash", open_issues=1)
+    gh.add_milestone(1, title=BACKSLASH_TITLE, open_issues=1)
     wire(monkeypatch, gh)
 
-    assert run_set(config_path, r"back\\slash") == 0
+    assert run_set(config_path, BACKSLASH_TITLE) == 0
     err = capsys.readouterr().err
     assert "Traceback" not in err
 
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert parsed["active_milestone"] == r"back\\slash"
+    assert parsed["active_milestone"] == BACKSLASH_TITLE
 
 
 def test_milestone_set_timeout_failure_raises_the_structured_error(

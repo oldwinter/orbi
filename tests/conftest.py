@@ -44,7 +44,7 @@ def git(repo: Path, *args: str) -> str:
 @pytest.fixture(autouse=True)
 def _default_cli_install_preflight(monkeypatch):
     """Default: the editable CLI install refresh (Issue #158) is a
-    no-op that reports \"unchanged\" — the in-process dispatch tests use
+    no-op that reports unchanged — the in-process dispatch tests use
     tmp repo_dirs that carry no tool env, and the real `uv tool
     install` must never run in them. The refresh's own tests and the
     wiring tests stub or exercise it explicitly (a ``monkeypatch``
