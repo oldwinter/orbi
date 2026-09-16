@@ -287,6 +287,116 @@ def test_runner_failure_history_still_uses_the_mapped_prose():
     )
 
 
+def test_opened_pr_comment_prose_emits_registered_kind(caplog):
+    with caplog.at_level("ERROR", logger="orbi.bootstrap"):
+        try:
+            raise RuntimeError("comment 502")
+        except RuntimeError:
+            journal.LOGGER.exception(
+                "issue=%s opened_pr_scene_comment_failed; "
+                "PR remains ai-pr-opened", 18,
+            )
+    events = _event_records(caplog, "opened_pr_scene_comment_failed")
+    assert len(events) == 1, caplog.text
+    assert events[0].levelno == logging.ERROR
+    assert "issue=18" in events[0].message
+    assert 'error="comment 502"' in events[0].message
+    orig = [
+        record for record in caplog.records
+        if record.message.startswith(
+            "issue=18 opened_pr_scene_comment_failed; PR remains ai-pr-opened"
+        )
+    ]
+    assert orig, caplog.text
+    assert orig[0].exc_info and orig[0].exc_info[1] is not None
+
+
+def test_opened_pr_comment_parser_maps_concatenated_format():
+    parsed = exception_events.registered_kind_and_fields(
+        "issue=%s opened_pr_scene_comment_failed; PR remains ai-pr-opened",
+        (18,),
+    )
+    assert parsed is not None
+    kind, fields = parsed
+    assert kind == "opened_pr_scene_comment_failed"
+    assert fields["issue"] == 18
+    assert "error" in fields
+
+
+def test_runner_opened_pr_comment_still_uses_the_mapped_prose():
+    from pathlib import Path
+    runner = (
+        Path(__file__).resolve().parent.parent / "src" / "orbi" / "runner.py"
+    )
+    source = runner.read_text(encoding="utf-8")
+    assert (
+        '"issue=%s opened_pr_scene_comment_failed; "\n'
+        '                "PR remains ai-pr-opened", number,'
+    ) in source
+    assert "event(\"opened_pr_scene_comment_failed\"" not in source
+    assert (
+        exception_events._PROSE_TO_KIND[
+            "issue=%s opened_pr_scene_comment_failed; PR remains ai-pr-opened"
+        ]
+        == "opened_pr_scene_comment_failed"
+    )
+    assert "opened_pr_scene_comment_failed" in JOURNAL_EVENTS
+
+
+def test_model_wait_recovered_comment_prose_emits_registered_kind(caplog):
+    with caplog.at_level("ERROR", logger="orbi.bootstrap"):
+        try:
+            raise RuntimeError("comment 502")
+        except RuntimeError:
+            journal.LOGGER.exception(
+                "issue=%s model_wait_recovered_comment_failed", 7,
+            )
+    events = _event_records(caplog, "model_wait_recovered_comment_failed")
+    assert len(events) == 1, caplog.text
+    assert events[0].levelno == logging.ERROR
+    assert "issue=7" in events[0].message
+    assert 'error="comment 502"' in events[0].message
+    orig = [
+        record for record in caplog.records
+        if record.message.startswith(
+            "issue=7 model_wait_recovered_comment_failed"
+        )
+    ]
+    assert orig, caplog.text
+    assert orig[0].exc_info and orig[0].exc_info[1] is not None
+
+
+def test_model_wait_recovered_comment_parser_maps_issue():
+    parsed = exception_events.registered_kind_and_fields(
+        "issue=%s model_wait_recovered_comment_failed", (7,),
+    )
+    assert parsed is not None
+    kind, fields = parsed
+    assert kind == "model_wait_recovered_comment_failed"
+    assert fields["issue"] == 7
+    assert "error" in fields
+
+
+def test_runner_model_wait_recovered_comment_still_uses_the_mapped_prose():
+    from pathlib import Path
+    runner = (
+        Path(__file__).resolve().parent.parent / "src" / "orbi" / "runner.py"
+    )
+    source = runner.read_text(encoding="utf-8")
+    assert source.count(
+        'LOGGER.exception(\n                "issue=%s '
+        'model_wait_recovered_comment_failed", number,'
+    ) == 1
+    assert "event(\"model_wait_recovered_comment_failed\"" not in source
+    assert (
+        exception_events._PROSE_TO_KIND[
+            "issue=%s model_wait_recovered_comment_failed"
+        ]
+        == "model_wait_recovered_comment_failed"
+    )
+    assert "model_wait_recovered_comment_failed" in JOURNAL_EVENTS
+
+
 def test_advance_failed_emits_once_with_fields(caplog):
     with caplog.at_level("ERROR", logger="orbi.bootstrap"):
         try:

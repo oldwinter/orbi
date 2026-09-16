@@ -28,6 +28,9 @@ from orbi.journal import JOURNAL_EVENTS, event
 # Failure-comment publishes are the same shape: spaced prose for a
 # registered kind the wrap would otherwise miss. Map those exact
 # format strings onto the kinds progress.py / this module register.
+# Opened-PR and model-wait recovery comments are kind-shaped tokens
+# once registered; map the exact runner format strings anyway so the
+# concatenated opened-PR line cannot drift off the kind.
 JOURNAL_EVENTS.setdefault(
     "activity_snapshot_failed",
     "reading the live Pi activity snapshot failed (best-effort; the task continues)",
@@ -36,12 +39,26 @@ JOURNAL_EVENTS.setdefault(
     "failure_reporting_failed",
     "publishing the delivery failure comment failed (the original failure still stands)",
 )
+JOURNAL_EVENTS.setdefault(
+    "opened_pr_scene_comment_failed",
+    "publishing the opened-PR scene comment failed (PR stays ai-pr-opened)",
+)
+JOURNAL_EVENTS.setdefault(
+    "model_wait_recovered_comment_failed",
+    "publishing the model-wait recovery comment failed (the run stays recoverable)",
+)
 _PROSE_TO_KIND = {
     "stop scene activity snapshot failed": "activity_snapshot_failed",
     "issue=%s activity scene failed": "activity_snapshot_failed",
     "issue=%s failure reporting failed": "failure_reporting_failed",
     "issue=%s ticket-only failure reporting failed": "failure_reporting_failed",
     "issue=%s failure history read failed": "failure_history_read_failed",
+    "issue=%s opened_pr_scene_comment_failed; PR remains ai-pr-opened": (
+        "opened_pr_scene_comment_failed"
+    ),
+    "issue=%s model_wait_recovered_comment_failed": (
+        "model_wait_recovered_comment_failed"
+    ),
 }
 
 
@@ -52,13 +69,13 @@ def _first_token(msg: str) -> str:
     parts = msg.split()
     if not parts:
         return ""
-    return parts[0].rstrip(".,;:")
+    return parts[0].rstrip(".,:;")
 
 
 def _format_keys(msg: str) -> list[str]:
     keys: list[str] = []
     for token in msg.split():
-        bare = token.rstrip(".,;:")
+        bare = token.rstrip(".,:;")
         if "=" not in bare:
             continue
         key, _, rest = bare.partition("=")
@@ -83,14 +100,16 @@ def registered_kind_and_fields(msg: object, args: tuple) -> tuple[str, dict] | N
     """Return ``(kind, fields)`` when ``msg`` carries a registered kind.
 
     Exact prose aliases in ``_PROSE_TO_KIND`` (stop-scene and failure-
-    scene snapshot reads, failure-comment publishes, and the
-    dead-loop history read in ``runner.py``) map onto a registered
-    kind first, so the English word ``activity`` is not treated as
-    the live snapshot kind. Remaining prose (``issue=%s failed``)
-    has no registered kind as a whole token and is left alone.
+    scene snapshot reads, failure-comment publishes, the opened-PR
+    and model-wait recovery comments, and the dead-loop history
+    read in ``runner.py``) map onto a registered kind first, so the
+    English word ``activity`` is not treated as the live snapshot
+    kind. Remaining prose (``issue=%s failed``) has no registered
+    kind as a whole token and is left alone.
     ``runner.py`` still calls ``event("failure_history_read_failed")``
     after the exception (that file is too large to edit here), so the
-    live path journals the kind twice until that call can drop.
+    live path journals the kind twice until that call can drop. Do
+    not wrap that site again.
     """
     if not isinstance(msg, str):
         return None
@@ -99,7 +118,7 @@ def registered_kind_and_fields(msg: object, args: tuple) -> tuple[str, dict] | N
         return prose_kind, _fields_from(msg, args)
     kind: str | None = None
     for token in msg.split():
-        bare = token.rstrip(".,;:")
+        bare = token.rstrip(".,:;")
         if bare in journal.JOURNAL_EVENTS and kind is None:
             kind = bare
     if kind is None:
