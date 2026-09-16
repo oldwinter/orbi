@@ -404,10 +404,12 @@ def _hook_source_base_on_slot() -> None:
         return
 
     def acquire_slot(*args, **kwargs):
+        from orbi.auto_release_ticket import install as install_auto_release
         from orbi.milestone_idle import install as install_milestone_idle
         from orbi.source_base import install
         install()
         install_milestone_idle()
+        install_auto_release()
         return orig(*args, **kwargs)
 
     acquire_slot._source_base_hooked = True
@@ -425,5 +427,17 @@ def _hook_milestone_idle() -> None:
     install()
 
 
+def _hook_auto_release_ticket() -> None:
+    """Issue #856: bind auto-create wraps before runner snapshots
+    ``log_format``. ``cli_source`` is imported after ``github``/``journal``
+    and before ``from orbi.journal import log_format``.
+    """
+    from orbi.auto_release_ticket import install, install_import_hooks
+
+    install_import_hooks()
+    install()
+
+
 _hook_source_base_on_slot()
 _hook_milestone_idle()
+_hook_auto_release_ticket()

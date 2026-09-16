@@ -10,6 +10,7 @@ does exactly that: reading resolves the current binding (monkeypatch's
 old-value capture) and writing fans the value out to all bindings, so
 monkeypatch's teardown fans the original back.
 """
+import orbi.auto_release_ticket as auto_release_ticket
 import orbi.cli_source as cli_source
 import orbi.github as github
 import orbi.gitops as gitops
@@ -18,7 +19,10 @@ import orbi.progress as progress
 import orbi.release as release
 import orbi.runner as runner
 
-_MODULES = (journal, github, gitops, progress, cli_source, release, runner)
+_MODULES = (
+    journal, github, gitops, progress, cli_source, release, runner,
+    auto_release_ticket,
+)
 
 
 class Seam:
