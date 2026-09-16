@@ -621,15 +621,18 @@ def milestone_set(config: RunnerConfig, config_path: Path,
     """Advance `active_milestone` to one exact Milestone title (Issue #895).
 
     The manual advance behind the `auto_next_milestone = false`
-    confirmation flow. The claim scope the Runner reads is set the same
-    way it is resolved: the title must exist as exactly ONE Milestone
-    on the source repo (GitHub Milestone titles are not unique, so a
-    duplicate exact title is a hard error, never a guess), then ONLY
-    the `active_milestone` line is rewritten — comments, blank lines
-    and every other field stay byte-identical. The variable sync is NOT
-    part of this command: the Runner's next tick publishes
-    `ORBI_ACTIVE_MILESTONE` (the bypass contract). Returns (old, new);
-    every failure raises MilestoneSetError with the config untouched.
+    confirmation flow. When that flag is still true (the load_config
+    default), the next idle tick would rewrite the same line, so this
+    command refuses and leaves the file untouched (Issue #933). The
+    claim scope the Runner reads is set the same way it is resolved:
+    the title must exist as exactly ONE Milestone on the source repo
+    (GitHub Milestone titles are not unique, so a duplicate exact title
+    is a hard error, never a guess), then ONLY the `active_milestone`
+    line is rewritten — comments, blank lines and every other field
+    stay byte-identical. The variable sync is NOT part of this command:
+    the Runner's next tick publishes `ORBI_ACTIVE_MILESTONE` (the
+    bypass contract). Returns (old, new); every failure raises
+    MilestoneSetError with the config untouched.
     """
     repo = config.source_repos[0]
     if config.active_milestone is None:
@@ -638,6 +641,14 @@ def milestone_set(config: RunnerConfig, config_path: Path,
             f"{config_path}; fix=add "
             '`active_milestone = "<current>"` to the config first '
             "(the field is never created implicitly)"
+        )
+    if config.auto_next_milestone:
+        raise MilestoneSetError(
+            "milestone_set_failed reason=auto_next_milestone "
+            f"config={config_path}: the next idle tick would rewrite "
+            "active_milestone; "
+            "fix=set `auto_next_milestone = false` in the host config "
+            "first (this command is the confirmation flow behind that flag)"
         )
     try:
         milestones = list_milestones(repo, timeout=30)
