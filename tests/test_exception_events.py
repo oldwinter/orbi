@@ -176,6 +176,68 @@ def test_runner_activity_scene_still_uses_the_mapped_prose():
     )
 
 
+def test_failure_reporting_prose_emits_registered_kind(caplog):
+    with caplog.at_level("ERROR", logger="orbi.bootstrap"):
+        try:
+            raise RuntimeError("comment 404")
+        except RuntimeError:
+            journal.LOGGER.exception(
+                "issue=%s failure reporting failed", 18,
+            )
+    events = _event_records(caplog, "failure_reporting_failed")
+    assert len(events) == 1, caplog.text
+    assert events[0].levelno == logging.ERROR
+    assert "issue=18" in events[0].message
+    assert 'error="comment 404"' in events[0].message
+    orig = [
+        record for record in caplog.records
+        if record.message.startswith("issue=18 failure reporting failed")
+    ]
+    assert orig, caplog.text
+    assert orig[0].exc_info and orig[0].exc_info[1] is not None
+
+
+def test_ticket_only_failure_reporting_prose_emits_same_kind(caplog):
+    with caplog.at_level("ERROR", logger="orbi.bootstrap"):
+        try:
+            raise RuntimeError("comment 404")
+        except RuntimeError:
+            journal.LOGGER.exception(
+                "issue=%s ticket-only failure reporting failed", 7,
+            )
+    events = _event_records(caplog, "failure_reporting_failed")
+    assert len(events) == 1, caplog.text
+    assert "issue=7" in events[0].message
+    assert 'error="comment 404"' in events[0].message
+
+
+def test_runner_failure_reporting_still_uses_the_mapped_prose():
+    from pathlib import Path
+    runner = (
+        Path(__file__).resolve().parent.parent / "src" / "orbi" / "runner.py"
+    )
+    source = runner.read_text(encoding="utf-8")
+    assert source.count(
+        'LOGGER.exception("issue=%s failure reporting failed", number)'
+    ) == 4
+    assert source.count(
+        'LOGGER.exception("issue=%s ticket-only failure reporting failed", number)'
+    ) == 1
+    assert (
+        exception_events._PROSE_TO_KIND[
+            "issue=%s failure reporting failed"
+        ]
+        == "failure_reporting_failed"
+    )
+    assert (
+        exception_events._PROSE_TO_KIND[
+            "issue=%s ticket-only failure reporting failed"
+        ]
+        == "failure_reporting_failed"
+    )
+    assert "failure_reporting_failed" in JOURNAL_EVENTS
+
+
 def test_prose_without_kind_token_does_not_emit_event(caplog):
     with caplog.at_level("ERROR", logger="orbi.bootstrap"):
         try:

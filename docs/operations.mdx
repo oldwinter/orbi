@@ -595,6 +595,7 @@ registry — in both directions (a name only in code or only in docs fails
 | `failure_comment_deduplicated` | an identical failure repeat bumped the existing comment's counter; no second comment |
 | `failure_streak_escalated` | the same failure reached the consecutive limit; the Issue goes ai-blocked |
 | `failure_history_read_failed` | the failure-history read for the dead-loop guard failed (fail-open) |
+| `failure_reporting_failed` | publishing the delivery failure comment failed (the original failure still stands) |
 | `external_takeover` | an external PR is taken over for review |
 | `external_takeover_skipped` | the external PR is not takeover-eligible |
 | `external_takeover_closed` | the external PR closed without merging; the Issue requeues |
