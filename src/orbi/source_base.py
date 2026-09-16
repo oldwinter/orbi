@@ -61,6 +61,13 @@ def _without_raw_base_entries(config):
 
 
 def _fuse(config, source_repo: str, policy=None):
+    # Hand-built stubs (a bare dict, a Mock) are not RunnerConfig.
+    # The original consumers already accepted them — CLOSED-unmerged
+    # delivery_step never reads host config. Fusion must be a no-op
+    # here: crashing on ``config.repositories`` took down the terminal
+    # ``PR closed without a merge → ai-blocked`` path.
+    if not is_dataclass(config) or isinstance(config, type):
+        return config
     if policy is None:
         try:
             policy = runner.load_repo_policy(config, source_repo)
@@ -68,7 +75,7 @@ def _fuse(config, source_repo: str, policy=None):
             policy = None
     try:
         return resolve_source_base_branch(config, source_repo, policy)
-    except TypeError:
+    except (TypeError, AttributeError):
         return config
 
 
