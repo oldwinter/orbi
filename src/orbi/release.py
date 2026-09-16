@@ -1,1 +1,1 @@
-@/tmp/for_mcp_content.txt
+LOAD_FROM_FILE
