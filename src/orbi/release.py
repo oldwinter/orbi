@@ -1,1 +1,1 @@
-/tmp/upload_content_only.txt
+LOAD_FROM_/tmp/chunk55_mcp.json
