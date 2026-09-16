@@ -41,6 +41,7 @@ _PROSE_TO_KIND = {
     "issue=%s activity scene failed": "activity_snapshot_failed",
     "issue=%s failure reporting failed": "failure_reporting_failed",
     "issue=%s ticket-only failure reporting failed": "failure_reporting_failed",
+    "issue=%s failure history read failed": "failure_history_read_failed",
 }
 
 
@@ -82,12 +83,14 @@ def registered_kind_and_fields(msg: object, args: tuple) -> tuple[str, dict] | N
     """Return ``(kind, fields)`` when ``msg`` carries a registered kind.
 
     Exact prose aliases in ``_PROSE_TO_KIND`` (stop-scene and failure-
-    scene snapshot reads, plus failure-comment publishes, in
-    ``runner.py``) map onto a registered kind first, so the English
-    word ``activity`` is not treated as the live snapshot kind.
-    Remaining prose (``issue=%s failed``, ``failure history read
-    failed`` — the latter already emits through ``event()``) has no
-    registered kind as a whole token and is left alone.
+    scene snapshot reads, failure-comment publishes, and the
+    dead-loop history read in ``runner.py``) map onto a registered
+    kind first, so the English word ``activity`` is not treated as
+    the live snapshot kind. Remaining prose (``issue=%s failed``)
+    has no registered kind as a whole token and is left alone.
+    ``runner.py`` still calls ``event("failure_history_read_failed")``
+    after the exception (that file is too large to edit here), so the
+    live path journals the kind twice until that call can drop.
     """
     if not isinstance(msg, str):
         return None
