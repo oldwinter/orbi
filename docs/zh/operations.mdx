@@ -603,6 +603,9 @@ journalctl --user -u orbi@1.service -u orbi@2.service | grep e07383c2
 | `release_milestone_incomplete` | 发布 Milestone 未达到发布完备条件 |
 | `release_ticket_armed` | 发布 Issue 进入发布状态机 |
 | `release_ticket_arm_failed` | 发布 Issue 武装失败 |
+| `release_ticket_created` | idle tick 为已完成的 Milestone 创建了发布 Issue |
+| `release_ticket_create_skipped` | idle 自动建票跳过（已有票，或无法推断 version_file） |
+| `release_ticket_create_failed` | idle 自动创建发布 Issue 失败（旁路） |
 | `release_failed` | 发布状态机失败（ai-blocked） |
 | `release_publish_closeout_failed` | 发布收尾失败 |
 | `release_milestone_evidence_failed` | 发布 Milestone 证据发布失败 |
